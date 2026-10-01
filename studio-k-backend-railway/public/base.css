@@ -1,0 +1,2 @@
+/* Local system fonts keep the admin panel independent of external font services. */
+html{scroll-behavior:smooth}::selection{background:#8653c9;color:#fff}
