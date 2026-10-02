@@ -155,6 +155,14 @@ app.post('/api/orders',async(req,res)=>{const body=z.object({productId:z.string(
 app.post('/api/orders/:id/approve',async(req,res)=>{if(req.body.confirmed!==true)throw new AppError('Confirme que o valor chegou à sua conta.');const order=store.approveOrder(req.params.id,'administrador');res.json({ok:true,deliveryPending:order.status!=='delivered'});void bot.tick();});
 app.post('/api/orders/:id/cancel',(req,res)=>{store.cancelOrder(req.params.id,'administrador');res.json({ok:true});});
 app.post('/api/orders/:id/retry',async(req,res)=>{const order=store.one('SELECT * FROM orders WHERE id=?',req.params.id);if(order?.status!=='paid')throw new AppError('Este pedido não aguarda entrega.');if(!bot.status().connected)throw new AppError('Conecte o bot para tentar novamente.',503);await bot.tick();res.json({ok:true});});
+app.post('/api/embeds/publish',async(req,res)=>{
+  const body=z.object({
+    source:z.enum(['messageStyle','template']),
+    key:z.string().min(1).max(80),
+    channelId:id
+  }).parse(req.body);
+  res.json(await bot.publishConfiguredMessage(body.source,body.key,body.channelId));
+});
 app.post('/api/tickets/publish',async(req,res)=>res.json(await bot.publishPanel('tickets',id.parse(req.body.channelId))));
 app.post('/api/verification/publish',async(req,res)=>res.json(await bot.publishPanel('verification',id.parse(req.body.channelId))));
 app.post('/api/tickets/:id/close',async(req,res)=>{await bot.closeTicket(req.params.id,'administrador');res.json({ok:true});});
