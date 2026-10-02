@@ -82,13 +82,13 @@ export function createBot(store,env=process.env){
   const channel=async channelId=>{const c=await requireGuild().channels.fetch(channelId);if(!c?.isTextBased()||!('send' in c))throw new AppError('Escolha um canal de texto do servidor.');return c;};
   async function applyVoicePresence(){
     if(!client.isReady())return null;
-    const guild=requireGuild(),cfg=store.settings().voicePresence||{},existing=getVoiceConnection(guild.id);
+    const guild=requireGuild(),guildId=guild.id||env.DISCORD_GUILD_ID,cfg=store.settings().voicePresence||{},existing=getVoiceConnection(guildId);
     if(!cfg.enabled||!cfg.channelId){if(existing)existing.destroy();return null;}
     const voice=await guild.channels.fetch(cfg.channelId);
     if(!voice||voice.type!==ChannelType.GuildVoice)throw new AppError('Escolha um canal de voz normal para a presença do bot.');
     if(existing&&existing.joinConfig.channelId===voice.id&&existing.state.status!==VoiceConnectionStatus.Destroyed)return existing;
     if(existing)existing.destroy();
-    const connection=joinVoiceChannel({channelId:voice.id,guildId:guild.id,adapterCreator:guild.voiceAdapterCreator,selfDeaf:true,selfMute:true});
+    const connection=joinVoiceChannel({channelId:voice.id,guildId,adapterCreator:guild.voiceAdapterCreator,selfDeaf:true,selfMute:true});
     try{await entersState(connection,VoiceConnectionStatus.Ready,15000);}
     catch(e){connection.destroy();throw new AppError('Não foi possível conectar o bot ao canal de voz. Confira a permissão Conectar.',503);}
     return connection;
