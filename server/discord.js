@@ -304,12 +304,10 @@ export function createBot(store,env=process.env){
   }
   const uniqueRoleIds=values=>[...new Set((values||[]).filter(Boolean))];
   const verificationRoleIds=v=>uniqueRoleIds([...(v?.roleIds||[]),...(v?.roleId?[v.roleId]:[])]);
-  const staffRoleIds=settings=>uniqueRoleIds([
-    ...(settings?.roleGroups?.staff||[]),
-    ...(settings?.roleGroups?.highStaff||[]),
-    ...(settings?.tickets?.staffRoleIds||[]),
-    ...(settings?.tickets?.staffRoleId?[settings.tickets.staffRoleId]:[])
-  ]);
+  const staffRoleIds=settings=>{
+    const global=uniqueRoleIds([...(settings?.roleGroups?.staff||[]),...(settings?.roleGroups?.highStaff||[])]);
+    return global.length?global:uniqueRoleIds([...(settings?.tickets?.staffRoleIds||[]),...(settings?.tickets?.staffRoleId?[settings.tickets.staffRoleId]:[])]);
+  };
   async function assignRoles(userId,roleIds){
     const ids=uniqueRoleIds(roleIds);if(!ids.length)return;
     const guild=requireGuild(),me=await guild.members.fetchMe(),roles=[];
