@@ -1,5 +1,6 @@
 import { Client, GatewayIntentBits, Partials, Events, ChannelType, PermissionFlagsBits, ActivityType, REST, Routes, MessageFlags, GuildScheduledEventEntityType, GuildScheduledEventPrivacyLevel, ModalBuilder, TextInputBuilder, TextInputStyle, ActionRowBuilder } from 'discord.js';
 import { randomUUID, randomBytes, createHash } from 'node:crypto';
+import { joinVoiceChannel, getVoiceConnection, VoiceConnectionStatus, entersState } from '@discordjs/voice';
 import { AppError } from './store.js';
 export function expandText(value,variables={}) {
   return String(value||'').replace(/\{([A-Za-z][A-Za-z0-9_]*)\}/g,(match,key)=>Object.prototype.hasOwnProperty.call(variables,key)?String(variables[key]??''):match);
@@ -79,6 +80,19 @@ export function createBot(store,env=process.env){
   let error='',busy=false,backupBusy=false,inviteCache=new Map();
   const requireGuild=()=>{if(!client.isReady())throw new AppError('Conecte o bot ao Discord antes desta ação.',503);const guild=client.guilds.cache.get(env.DISCORD_GUILD_ID);if(!guild)throw new AppError('O bot não está no servidor configurado.',503);return guild;};
   const channel=async channelId=>{const c=await requireGuild().channels.fetch(channelId);if(!c?.isTextBased()||!('send' in c))throw new AppError('Escolha um canal de texto do servidor.');return c;};
+  async function applyVoicePresence(){
+    if(!client.isReady())return null;
+    const guild=requireGuild(),cfg=store.settings().voicePresence||{},existing=getVoiceConnection(guild.id);
+    if(!cfg.enabled||!cfg.channelId){if(existing)existing.destroy();return null;}
+    const voice=await guild.channels.fetch(cfg.channelId);
+    if(!voice||voice.type!==ChannelType.GuildVoice)throw new AppError('Escolha um canal de voz normal para a presença do bot.');
+    if(existing&&existing.joinConfig.channelId===voice.id&&existing.state.status!==VoiceConnectionStatus.Destroyed)return existing;
+    if(existing)existing.destroy();
+    const connection=joinVoiceChannel({channelId:voice.id,guildId:guild.id,adapterCreator:guild.voiceAdapterCreator,selfDeaf:true,selfMute:true});
+    try{await entersState(connection,VoiceConnectionStatus.Ready,15000);}
+    catch(e){connection.destroy();throw new AppError('Não foi possível conectar o bot ao canal de voz. Confira a permissão Conectar.',503);}
+    return connection;
+  }
   const member=async userId=>requireGuild().members.fetch(userId);
   const memberVariables=async(userId,guild=requireGuild())=>{
     const m=await member(userId);
@@ -681,6 +695,7 @@ export function createBot(store,env=process.env){
     for(const o of store.all("SELECT id FROM orders WHERE status='pending' AND expires<=?",store.now()))store.cancelOrder(o.id);
     const s=store.settings();if(s.backups.enabled&&Date.now()-Date.parse(store.get('lastBackup','1970-01-01'))>=s.backups.intervalHours*3600000)try{await makeBackup();}catch(e){store.log('erro',`Backup: ${e.message}`);}
     if(!client.isReady())return;
+    try{await applyVoicePresence();}catch(e){store.log('aviso',`Presença em call: ${e.message}`);}
     await updateLivePanels();
     for(const o of store.all("SELECT * FROM orders WHERE status='paid' LIMIT 10"))await deliverOrder(o);
     for(const g of store.all("SELECT * FROM giveaways WHERE status IN ('active','drawn')")){if(g.status==='drawn'||Date.parse(JSON.parse(g.data).endsAt)<=Date.now())try{await finishGiveaway(g);}catch(e){store.log('erro',`Sorteio ${g.id.slice(0,8)}: ${e.message}`);}}
@@ -860,10 +875,10 @@ export function createBot(store,env=process.env){
   for(const [event,label] of [[Events.GuildRoleCreate,'criado'],[Events.GuildRoleDelete,'excluído'],[Events.GuildRoleUpdate,'alterado']])logEvent(event,'roles',(...a)=>`Cargo ${a.at(-1).name} ${label}.`);
   client.on(Events.Error,e=>{error=e.message;store.log('erro','Falha na conexão com o Discord.');});
   client.once(Events.ClientReady,async()=>{console.log(`Discord conectado como ${client.user?.tag||client.user?.username||'Studio K'}.`);
-    try{const guild=requireGuild();const commands=[{name:'ajuda',description:'Conheça o Studio K'},{name:'loja',description:'Veja produtos e serviços disponíveis'},{name:'pedido',description:'Consulte um pedido e recupere sua entrega',options:[{name:'id',description:'Código completo do pedido; deixe vazio para o mais recente',type:3,required:false}]},{name:'ticket',description:'Abra um atendimento privado'},{name:'verificar',description:'Aceite as regras e receba acesso'},{name:'notificacoes',description:'Ative ou desative mensagens privadas opcionais'}];await new REST({version:'10'}).setToken(env.DISCORD_TOKEN).put(Routes.applicationGuildCommands(env.DISCORD_CLIENT_ID||client.user.id,guild.id),{body:commands});const s=store.settings().brand;client.user.setPresence({status:s.status,activities:s.activity?[{name:s.activity,type:ActivityType[s.activityType]}]:[]});await refreshInviteCache(guild);for(const state of guild.voiceStates.cache.values())if(state.member&&!state.member.user.bot&&state.channelId)startVoiceForUser(state.id,store.now());store.log('conexão',`Conectado ao servidor ${guild.name}.`);error='';await tick();}catch(e){error=e.message;store.log('erro',e.message);}
+    try{const guild=requireGuild();const commands=[{name:'ajuda',description:'Conheça o Studio K'},{name:'loja',description:'Veja produtos e serviços disponíveis'},{name:'pedido',description:'Consulte um pedido e recupere sua entrega',options:[{name:'id',description:'Código completo do pedido; deixe vazio para o mais recente',type:3,required:false}]},{name:'ticket',description:'Abra um atendimento privado'},{name:'verificar',description:'Aceite as regras e receba acesso'},{name:'notificacoes',description:'Ative ou desative mensagens privadas opcionais'}];await new REST({version:'10'}).setToken(env.DISCORD_TOKEN).put(Routes.applicationGuildCommands(env.DISCORD_CLIENT_ID||client.user.id,guild.id),{body:commands});const s=store.settings().brand;client.user.setPresence({status:s.status,activities:s.activity?[{name:s.activity,type:ActivityType[s.activityType]}]:[]});await refreshInviteCache(guild);for(const state of guild.voiceStates.cache.values())if(state.member&&!state.member.user.bot&&state.channelId)startVoiceForUser(state.id,store.now());try{await applyVoicePresence();}catch(e){store.log('aviso',`Presença em call: ${e.message}`);}store.log('conexão',`Conectado ao servidor ${guild.name}.`);error='';await tick();}catch(e){error=e.message;store.log('erro',e.message);}
   });
   const timer=setInterval(()=>void tick(),30000);timer.unref();
-  return {status,client,channel,member,assignRole,verifyOAuthUser,sendMessage,openTicket,closeTicket,publishPanel,publishConfiguredMessage,publishProduct,createGiveaway,evaluateGiveaway,updateSalesLive,updateLivePanels,createEvent,applyBrand,makeBackup,tick,
+  return {status,client,channel,member,assignRole,verifyOAuthUser,sendMessage,openTicket,closeTicket,publishPanel,publishConfiguredMessage,publishProduct,createGiveaway,evaluateGiveaway,updateSalesLive,updateLivePanels,createEvent,applyBrand,applyVoicePresence,makeBackup,tick,
     async metadata(){
       const g=requireGuild();
       await Promise.all([g.channels.fetch(),g.roles.fetch(),g.emojis.fetch(),g.members.fetch()]);
@@ -875,6 +890,6 @@ export function createBot(store,env=process.env){
       };
     },
     async start(){if(!env.DISCORD_TOKEN)return;if(!env.DISCORD_GUILD_ID){error='Configure DISCORD_GUILD_ID.';return;}try{await client.login(env.DISCORD_TOKEN);}catch(e){error='Não foi possível conectar. Confira token, servidor e intents no Discord Developer Portal.';console.error(`Discord: ${error} ${e?.message||''}`.trim());store.log('erro',error);}},
-    async stop(){clearInterval(timer);await client.destroy();}
+    async stop(){clearInterval(timer);const vc=env.DISCORD_GUILD_ID?getVoiceConnection(env.DISCORD_GUILD_ID):null;if(vc)vc.destroy();await client.destroy();}
   };
 }
