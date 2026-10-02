@@ -220,18 +220,19 @@ export function createBot(store,env=process.env){
   }
   async function attributeInvite(memberJoined){
     try{
-      const current=await memberJoined.guild.invites.fetch(),owned=[];
+      const current=await memberJoined.guild.invites.fetch(),changed=[];
       for(const inv of current.values()){
         const before=inviteCache.get(inv.code)||0;
-        if((inv.uses||0)>before){
-          const owner=store.one('SELECT giveaway_id,user_id FROM giveaway_invites WHERE code=?',inv.code);
-          if(owner)owned.push({inv,owner});
-        }
+        if((inv.uses||0)>before)changed.push(inv);
       }
       inviteCache=new Map([...current.values()].map(inv=>[inv.code,inv.uses||0]));
-      if(owned.length===1){
-        const {inv,owner}=owned[0];
-        store.run('INSERT INTO invite_joins(giveaway_id,joined_user_id,inviter_user_id,code,joined_at,left_at) VALUES(?,?,?,?,?,NULL) ON CONFLICT(giveaway_id,joined_user_id) DO UPDATE SET inviter_user_id=excluded.inviter_user_id,code=excluded.code,joined_at=excluded.joined_at,left_at=NULL',owner.giveaway_id,memberJoined.id,owner.user_id,inv.code,store.now());
+      if(changed.length===1){
+        const inv=changed[0],now=store.now(),owner=store.one('SELECT giveaway_id,user_id FROM giveaway_invites WHERE code=?',inv.code);
+        const inviterId=owner?.user_id||inv.inviterId||inv.inviter?.id||'';
+        if(inviterId&&inviterId!==memberJoined.id){
+          store.run('INSERT INTO referral_joins(joined_user_id,inviter_user_id,code,joined_at,left_at) VALUES(?,?,?,?,NULL) ON CONFLICT(joined_user_id) DO UPDATE SET inviter_user_id=excluded.inviter_user_id,code=excluded.code,joined_at=excluded.joined_at,left_at=NULL',memberJoined.id,inviterId,inv.code,now);
+        }
+        if(owner)store.run('INSERT INTO invite_joins(giveaway_id,joined_user_id,inviter_user_id,code,joined_at,left_at) VALUES(?,?,?,?,?,NULL) ON CONFLICT(giveaway_id,joined_user_id) DO UPDATE SET inviter_user_id=excluded.inviter_user_id,code=excluded.code,joined_at=excluded.joined_at,left_at=NULL',owner.giveaway_id,memberJoined.id,owner.user_id,inv.code,now);
         void updateInviteRankingLive(true);
       }
     }catch(e){store.log('aviso',`Não foi possível atribuir convite de ${memberJoined.id}: ${String(e.message).slice(0,300)}`);}
@@ -550,9 +551,9 @@ export function createBot(store,env=process.env){
     const settings=store.settings(),cfg=settings.inviteRankingLive;if(!cfg?.enabled||!cfg.channelId||!client.isReady())return null;
     const {start,end,key,label}=currentMonth();
     const ranking=store.all(`SELECT inviter_user_id,COUNT(DISTINCT joined_user_id) AS n
-      FROM invite_joins
+      FROM referral_joins
       WHERE joined_at>=? AND joined_at<? AND left_at IS NULL
-        AND EXISTS(SELECT 1 FROM verifications v WHERE v.user_id=invite_joins.joined_user_id)
+        AND EXISTS(SELECT 1 FROM verifications v WHERE v.user_id=referral_joins.joined_user_id)
       GROUP BY inviter_user_id ORDER BY n DESC,inviter_user_id ASC LIMIT ?`,start.toISOString(),end.toISOString(),cfg.top);
     const medals=['🥇','🥈','🥉'];
     const text=ranking.length?ranking.map((r,i)=>`${medals[i]||`**${i+1}.**`} <@${r.inviter_user_id}> — **${r.n}** convite(s) válido(s)`).join('\n'):'Ainda não há convites válidos neste mês.';
@@ -704,7 +705,7 @@ export function createBot(store,env=process.env){
     if(m.guild.id!==env.DISCORD_GUILD_ID)return;
     try{
       if(key==='welcome')await attributeInvite(m);
-      else store.run("UPDATE invite_joins SET left_at=? WHERE joined_user_id=? AND left_at IS NULL",store.now(),m.id);
+      else{const leftAt=store.now();store.run("UPDATE invite_joins SET left_at=? WHERE joined_user_id=? AND left_at IS NULL",leftAt,m.id);store.run("UPDATE referral_joins SET left_at=? WHERE joined_user_id=? AND left_at IS NULL",leftAt,m.id);}
       store.run('INSERT INTO member_events(user_id,event,created) VALUES(?,?,?)',m.id,key==='welcome'?'join':'leave',store.now());
       const s=store.settings(),t=s[key];
       if(t.enabled&&t.channelId){
