@@ -365,20 +365,31 @@ document.addEventListener('click',e=>{
   const b=e.target.closest?.('[data-insert-text]');if(!b)return;e.preventDefault();insertEditorToken(b,b.dataset.insertText||'');
 });
 document.addEventListener('click',async e=>{const b=e.target.closest('[data-action]');if(!b)return;e.preventDefault();if(b.disabled)return;b.disabled=true;try{await action(b.dataset.action);}catch(error){toast(error.message,true);}finally{b.disabled=false;}});
-function setPath(object,path,value){const keys=path.split('.');let current=object;for(const key of keys.slice(0,-1))current=current[key];current[keys.at(-1)]=value;}
+function setPath(object,path,value){
+  const keys=path.split('.');let current=object;
+  for(let i=0;i<keys.length-1;i++){
+    const key=keys[i],next=keys[i+1];
+    if(current[key]===undefined||current[key]===null)current[key]=/^\d+$/.test(next)?[]:{};
+    current=current[key];
+  }
+  current[keys.at(-1)]=value;
+}
 async function fileData(file){if(file.size>2*1024*1024)throw new Error('Cada imagem pode ter até 2 MB.');if(!['image/png','image/jpeg','image/webp'].includes(file.type))throw new Error('Use PNG, JPG ou WebP.');return new Promise((resolve,reject)=>{const reader=new FileReader();reader.onload=()=>resolve(reader.result);reader.onerror=()=>reject(new Error('Não foi possível ler a imagem.'));reader.readAsDataURL(file);});}
 async function persistSettingsForm(form,{refreshAfter=false}={}){
-  const key=form.dataset.settings,all=structuredClone(state.settings),updated=all[key];
+  const key=form.dataset.settings,all=structuredClone(state.settings||{});
+  const updated=all[key]??(all[key]={});
   for(const input of form.querySelectorAll('input,select,textarea')){
     if(!input.name)continue;
     if(input.type==='file'){
-      if(input.files[0])updated[input.name.replace('File','')]=await fileData(input.files[0]);
+      if(input.files?.[0])setPath(updated,input.name.replace('File',''),await fileData(input.files[0]));
       continue;
     }
-    let value=input.type==='checkbox'?input.checked:input.type==='number'?Number(input.value):input.value;
+    let value=input.type==='checkbox'?input.checked:input.type==='number'?(input.value===''?0:Number(input.value)):input.value;
     if(input.name==='categories')value=input.value.split('\n').map(v=>v.trim()).filter(Boolean);
     setPath(updated,input.name,value);
   }
+  const liveKeys=new Set(['salesLive','communityLive','giveawaysLive','operationsLive','inviteRankingLive']);
+  if(liveKeys.has(key)&&updated.enabled&&!updated.channelId)throw new Error('Escolha o canal onde este painel automático será publicado.');
   await api('/settings','PUT',all);
   state.settings=all;
   if(refreshAfter)await refresh();
