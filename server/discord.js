@@ -746,7 +746,7 @@ ${normalized.previewAfter}
         await user.send({...localizedDelivery,allowedMentions:mentionPolicy(localizedDelivery),nonce:deliveryMessage.nonce,enforceNonce:true});
         store.run('UPDATE orders SET delivery_done=1 WHERE id=?',order.id);
       }
-      store.run("UPDATE orders SET status='delivered',error=NULL WHERE id=?",order.id);await audit('entrega',`Pedido ${order.id.slice(0,8)} entregue.`);
+      store.run("UPDATE orders SET status='delivered',delivery_done=1,delivered_at=?,error=NULL WHERE id=?",store.now(),order.id);await audit('entrega',`Pedido ${order.id.slice(0,8)} entregue.`);
     }catch(e){store.run('UPDATE orders SET error=? WHERE id=?',String(e.message).slice(0,500),order.id);}
   }
   const currentWeek=()=>{
@@ -1138,6 +1138,69 @@ ${normalized.previewAfter}
         const c=await channel(t.channel_id),oldName=c.name;await c.setName(newName,`Studio K: renomeado por ${i.user.id}`);
         store.run('UPDATE tickets SET updated=? WHERE id=?',store.now(),id);ticketAuditAppend(t.id,{action:'rename',actor:i.user.id,target:t.user_id,from:oldName,to:newName});store.recordStaffAction(i.user.id,'rename',t.id,t.user_id,{from:oldName,to:newName});await localizedEdit(i,`Ticket renomeado para **${newName}**.`);return;
       }
+      if(action.startsWith('status:')){
+        if(!await isStaff(i))throw new AppError('Somente a equipe pode alterar o status.',403);
+        const id=action.split(':')[1],t=store.one("SELECT * FROM tickets WHERE id=? AND status='open'",id);if(!t)throw new AppError('Ticket aberto não encontrado.',404);
+        await localizedEdit(i,{content:'Escolha o novo status do atendimento:',components:[row({type:3,custom_id:`status-select:${id}`,placeholder:'Status do ticket',options:[['waiting_staff','Aguardando staff'],['in_progress','Em atendimento'],['waiting_customer','Aguardando cliente'],['escalated','Escalado']].map(([value,label])=>({label,value,default:t.state===value}))})]});return;
+      }
+      if(action.startsWith('status-select:')){
+        if(!await isStaff(i))throw new AppError('Somente a equipe pode alterar o status.',403);
+        const id=action.split(':')[1],state=String(i.values?.[0]||''),allowed=new Set(['waiting_staff','in_progress','waiting_customer','escalated']);if(!allowed.has(state))throw new AppError('Status inválido.');
+        const t=store.one("SELECT * FROM tickets WHERE id=? AND status='open'",id);if(!t)throw new AppError('Ticket aberto não encontrado.',404);
+        store.run('UPDATE tickets SET state=?,updated=? WHERE id=?',state,store.now(),id);ticketAuditAppend(id,{action:'state',actor:i.user.id,target:t.user_id,state});store.recordStaffAction(i.user.id,'state',id,t.user_id,{state});
+        await localizedEdit(i,`Status atualizado para **${state}**.`);return;
+      }
+      if(action.startsWith('priority:')){
+        if(!await isStaff(i))throw new AppError('Somente a equipe pode alterar a prioridade.',403);
+        const id=action.split(':')[1],t=store.one("SELECT * FROM tickets WHERE id=? AND status='open'",id);if(!t)throw new AppError('Ticket aberto não encontrado.',404);
+        await localizedEdit(i,{content:'Escolha a prioridade:',components:[row({type:3,custom_id:`priority-select:${id}`,placeholder:'Prioridade',options:[['low','Baixa'],['normal','Normal'],['high','Alta'],['urgent','Urgente']].map(([value,label])=>({label,value,default:t.priority===value}))})]});return;
+      }
+      if(action.startsWith('priority-select:')){
+        if(!await isStaff(i))throw new AppError('Somente a equipe pode alterar a prioridade.',403);
+        const id=action.split(':')[1],priority=String(i.values?.[0]||''),allowed=new Set(['low','normal','high','urgent']);if(!allowed.has(priority))throw new AppError('Prioridade inválida.');
+        const t=store.one("SELECT * FROM tickets WHERE id=? AND status='open'",id);if(!t)throw new AppError('Ticket aberto não encontrado.',404);
+        store.run('UPDATE tickets SET priority=?,updated=? WHERE id=?',priority,store.now(),id);ticketAuditAppend(id,{action:'priority',actor:i.user.id,target:t.user_id,priority});store.recordStaffAction(i.user.id,'priority',id,t.user_id,{priority});
+        await localizedEdit(i,`Prioridade atualizada para **${priority}**.`);return;
+      }
+      if(action.startsWith('transfer:')){
+        if(!await hasStaffPermission(i,'ticketTransfer'))throw new AppError('Você não possui permissão para transferir tickets.',403);
+        const id=action.split(':')[1],t=store.one("SELECT * FROM tickets WHERE id=? AND status='open'",id);if(!t)throw new AppError('Ticket aberto não encontrado.',404);
+        await localizedEdit(i,{content:'Escolha o membro da equipe que receberá o atendimento:',components:[row({type:5,custom_id:`transfer-select:${id}`,placeholder:'Selecionar staff',min_values:1,max_values:1})]});return;
+      }
+      if(action.startsWith('transfer-select:')){
+        if(!await hasStaffPermission(i,'ticketTransfer'))throw new AppError('Você não possui permissão para transferir tickets.',403);
+        const id=action.split(':')[1],to=String(i.values?.[0]||''),t=store.one("SELECT * FROM tickets WHERE id=? AND status='open'",id);if(!t)throw new AppError('Ticket aberto não encontrado.',404);
+        const guild=requireGuild(),m=await guild.members.fetch(to),settings=store.settings(),allowedRoles=[...new Set([...staffRoleIds(settings),...(settings.permissions?.ticketManage||[])])];
+        if(!allowedRoles.some(r=>m.roles.cache.has(r))&&!m.permissions.has(PermissionFlagsBits.ManageGuild)&&!m.permissions.has(PermissionFlagsBits.Administrator))throw new AppError('Escolha um membro que pertença à equipe.');
+        store.run("UPDATE tickets SET claimed_by=?,state='in_progress',updated=? WHERE id=?",to,store.now(),id);ticketAuditAppend(id,{action:'transfer',actor:i.user.id,target:t.user_id,to});store.recordStaffAction(i.user.id,'transfer',id,t.user_id,{to});
+        try{const tc=await channel(t.channel_id);await tc.send({content:`Atendimento transferido para <@${to}> por <@${i.user.id}>.`,allowedMentions:{parse:[],users:[to,i.user.id]}});}catch{}
+        await localizedEdit(i,`Atendimento transferido para <@${to}>.`);return;
+      }
+      if(action.startsWith('reopen:')){
+        const oldId=action.split(':')[1],old=store.one("SELECT * FROM tickets WHERE id=? AND status='closed' AND user_id=?",oldId,i.user.id);if(!old)throw new AppError('Esse atendimento não pode ser reaberto.',404);
+        if(!store.settings().tickets.allowReopen)throw new AppError('A reabertura de tickets está desativada.');
+        const t=await openTicket(i.user.id,old.category,{reopenedFrom:old.id,priority:old.priority||'normal'});ticketAuditAppend(t.id,{action:'reopen',actor:i.user.id,target:i.user.id});await localizedEdit(i,{content:`Novo atendimento criado: <#${t.channel_id}>. Ele está relacionado ao ticket anterior ${old.id.slice(0,8)}.`,components:[]});return;
+      }
+      if(action==='central'||action==='central-profile'||action==='perfil'){
+        await localizedEdit(i,{content:await userProfileText(i.user.id),components:[row(button('📦 Meus pedidos','central-orders',2),button('🎫 Abrir atendimento','central-ticket',2),button('🌎 Idioma','central-language',2))]});return;
+      }
+      if(action==='central-store'){const products=store.products().filter(p=>p.active);await localizedEdit(i,products.length?{content:'**Loja Studio K**\nEscolha um produto:',components:[row({type:3,custom_id:'store-buy',placeholder:'Produto',options:products.slice(0,25).map(p=>({label:p.name.slice(0,100),description:`${money(p.priceCents)} · ${p.type==='service'?'Serviço':`${p.stock} em estoque`}`,value:p.id}))})]}:'Não há produtos disponíveis.');return;}
+      if(action==='central-ticket'){const settings=store.settings().tickets,open=Number(store.one("SELECT COUNT(*) AS n FROM tickets WHERE user_id=? AND status='open'",i.user.id)?.n||0),maxOpen=settings.maxOpen||TICKET_OPEN_LIMIT;if(open>=maxOpen)throw new AppError(`Você já possui ${maxOpen} ticket(s) aberto(s).`);const buttons=settings.categories.map((name,index)=>button(name.slice(0,80),`ticket-category:${index}`,2)),rows=[];for(let p=0;p<buttons.length;p+=5)rows.push(row(...buttons.slice(p,p+5)));await localizedEdit(i,{content:'Escolha a categoria do atendimento:',components:rows});return;}
+      if(action==='central-orders'){
+        const rows=store.all('SELECT * FROM orders WHERE user_id=? ORDER BY created DESC LIMIT 5',i.user.id);if(!rows.length){await localizedEdit(i,'Você ainda não possui pedidos.');return;}
+        const lines=rows.map(o=>{const p=JSON.parse(o.product);return`**${o.id.slice(0,8)}** · ${p.name} · ${orderStatusLabel(o.status)} · ${money(o.price)}`;});
+        await localizedEdit(i,{content:'**Seus pedidos recentes**\n'+lines.join('\n'),components:[row(button('Abrir suporte','central-ticket',2))]});return;
+      }
+      if(action==='central-language'){const current=languagePreference(i.user.id)?.language||'';await localizedEdit(i,{content:'Escolha seu idioma:',components:[row(languageSelect('set-language',current))]});return;}
+      if(action==='central-giveaways'){
+        const gs=store.all("SELECT * FROM giveaways WHERE status='active' ORDER BY created DESC LIMIT 10");if(!gs.length){await localizedEdit(i,'Não há sorteios ativos no momento.');return;}
+        const lines=gs.map(g=>{const d=JSON.parse(g.data);return`🎁 **${d.title}** · termina <t:${Math.floor(Date.parse(d.endsAt)/1000)}:R>`;});await localizedEdit(i,lines.join('\n'));return;
+      }
+      if(action==='cupom'){
+        const code=String(i.options.getString('codigo')||'').trim().toUpperCase();if(!code)throw new AppError('Informe o código do cupom.');
+        const cp=store.one('SELECT * FROM coupons WHERE code=? AND active=1',code);if(!cp)throw new AppError('Cupom inválido ou inativo.');if(cp.expires&&Date.parse(cp.expires)<=Date.now())throw new AppError('Este cupom expirou.');
+        store.set(`coupon-user:${i.user.id}`,{code,expires:Date.now()+60*60000});await localizedEdit(i,`Cupom **${code}** aplicado. Ele será usado na sua próxima compra dentro de 1 hora.`);return;
+      }
       if(action==='idioma'){
         const current=languagePreference(i.user.id)?.language||'';
         await localizedEdit(i,{content:'Escolha o idioma que o Studio K deve usar para você:',components:[row(languageSelect('set-language',current))]});
@@ -1204,8 +1267,8 @@ ${normalized.previewAfter}
         await translatedMessageEdit(i,original,language);
         return;
       }
-      if(action.startsWith('buy:')||action==='store-buy'){if(store.settings().operationsLive?.storeOpen===false)throw new AppError('A loja está fechada no momento.');if(!store.settings().sales.pixKey)throw new AppError('As vendas ainda não foram configuradas.');const order=store.createOrder(action==='store-buy'?i.values[0]:action.split(':')[1],i.user.id);void updateOperationsLive(true);await localizedEdit(i,{content:await orderText(order),components:[row(button('Enviar comprovante / falar com equipe','ticket',2))]});return;}
-      if(action==='pedido'){const orderId=i.options.getString('id');const order=orderId?store.one('SELECT * FROM orders WHERE id=? AND user_id=?',orderId,i.user.id):store.one('SELECT * FROM orders WHERE user_id=? ORDER BY created DESC LIMIT 1',i.user.id);if(!order)throw new AppError('Pedido não encontrado.');let text=order.status==='pending'?await orderText(order):`Pedido ${order.id}\nSituação: ${{paid:'Aprovado; entrega em processamento',delivered:'Entregue',cancelled:'Cancelado'}[order.status]}`;if(['paid','delivered'].includes(order.status)){const unit=store.one('SELECT secret FROM stock WHERE order_id=?',order.id);if(unit)text+=`\n\nSua entrega: ${store.decrypt(unit.secret)}`;}await localizedEdit(i,{content:text.slice(0,2000),allowedMentions:safe});return;}
+      if(action.startsWith('buy:')||action==='store-buy'){if(store.settings().operationsLive?.storeOpen===false)throw new AppError('A loja está fechada no momento.');if(!store.settings().sales.pixKey)throw new AppError('As vendas ainda não foram configuradas.');const pendingCoupon=store.get(`coupon-user:${i.user.id}`),couponCode=pendingCoupon&&Number(pendingCoupon.expires)>Date.now()?pendingCoupon.code:'';const order=store.createOrder(action==='store-buy'?i.values[0]:action.split(':')[1],i.user.id,couponCode);if(couponCode)store.run('DELETE FROM kv WHERE key=?',`coupon-user:${i.user.id}`);void updateOperationsLive(true);await localizedEdit(i,{content:await orderText(order),components:[row(button('Enviar comprovante / falar com equipe','ticket',2))]});return;}
+      if(action==='pedido'){const orderId=i.options.getString('id');const order=orderId?store.one('SELECT * FROM orders WHERE id=? AND user_id=?',orderId,i.user.id):store.one('SELECT * FROM orders WHERE user_id=? ORDER BY created DESC LIMIT 1',i.user.id);if(!order)throw new AppError('Pedido não encontrado.');let text=order.status==='pending'?await orderText(order):`**Pedido ${order.id}**\nSituação: **${orderStatusLabel(order.status)}**\nValor: **${money(order.price)}**${order.coupon_code?`\nCupom: **${order.coupon_code}** · desconto ${money(order.discount||0)}`:''}`;if(['paid','delivered'].includes(order.status)){const unit=store.one('SELECT secret FROM stock WHERE order_id=?',order.id);if(unit)text+=`\n\nSua entrega: ${store.decrypt(unit.secret)}`;}await localizedEdit(i,{content:text.slice(0,1900),components:[row(button('Abrir suporte','central-ticket',2),button('Minha conta','central-profile',2))],allowedMentions:safe});return;}
       if(action.startsWith('giveaway:')){
         const id=action.split(':')[1],g=store.one('SELECT * FROM giveaways WHERE id=?',id);
         if(!g||g.status!=='active'||Date.parse(JSON.parse(g.data).endsAt)<=Date.now())throw new AppError('Sorteio encerrado.');
@@ -1345,10 +1408,10 @@ ${normalized.previewAfter}
   });
   client.on(Events.Error,e=>{error=e.message;store.log('erro','Falha na conexão com o Discord.');});
   client.once(Events.ClientReady,async()=>{console.log(`Discord conectado como ${client.user?.tag||client.user?.username||'Studio K'}.`);
-    try{const guild=requireGuild();const commands=[{name:'ajuda',description:'Conheça o Studio K'},{name:'loja',description:'Veja produtos e serviços disponíveis'},{name:'pedido',description:'Consulte um pedido e recupere sua entrega',options:[{name:'id',description:'Código completo do pedido; deixe vazio para o mais recente',type:3,required:false}]},{name:'ticket',description:'Abra um atendimento privado'},{name:'verificar',description:'Aceite as regras e receba acesso'},{name:'notificacoes',description:'Ative ou desative mensagens privadas opcionais'},{name:'idioma',description:'Escolha o idioma das mensagens privadas do Studio K'},{name:'Traduzir mensagem',type:3}];await new REST({version:'10'}).setToken(env.DISCORD_TOKEN).put(Routes.applicationGuildCommands(env.DISCORD_CLIENT_ID||client.user.id,guild.id),{body:commands});const s=store.settings().brand;client.user.setPresence({status:s.status,activities:s.activity?[{name:s.activity,type:ActivityType[s.activityType]}]:[]});await refreshInviteCache(guild);for(const state of guild.voiceStates.cache.values())if(state.member&&!state.member.user.bot&&state.channelId)startVoiceForUser(state.id,store.now());try{await applyVoicePresence();}catch(e){store.log('aviso',`Presença em call: ${e.message}`);}store.log('conexão',`Conectado ao servidor ${guild.name}.`);error='';await tick();}catch(e){error=e.message;store.log('erro',e.message);}
+    try{const guild=requireGuild();const commands=[{name:'central',description:'Abra a Central Studio K'},{name:'perfil',description:'Veja sua conta, tickets e pedidos'},{name:'ajuda',description:'Pesquise ajuda e perguntas frequentes',options:[{name:'busca',description:'Assunto ou palavra-chave',type:3,required:false}]},{name:'loja',description:'Veja produtos e serviços disponíveis'},{name:'cupom',description:'Aplique um cupom na próxima compra',options:[{name:'codigo',description:'Código do cupom',type:3,required:true}]},{name:'pedido',description:'Consulte um pedido e recupere sua entrega',options:[{name:'id',description:'Código completo do pedido; deixe vazio para o mais recente',type:3,required:false}]},{name:'ticket',description:'Abra um atendimento privado'},{name:'verificar',description:'Aceite as regras e receba acesso'},{name:'notificacoes',description:'Escolha quais notificações deseja receber'},{name:'idioma',description:'Escolha o idioma das mensagens privadas do Studio K'},{name:'Traduzir mensagem',type:3}];await new REST({version:'10'}).setToken(env.DISCORD_TOKEN).put(Routes.applicationGuildCommands(env.DISCORD_CLIENT_ID||client.user.id,guild.id),{body:commands});const s=store.settings().brand;client.user.setPresence({status:s.status,activities:s.activity?[{name:s.activity,type:ActivityType[s.activityType]}]:[]});await refreshInviteCache(guild);for(const state of guild.voiceStates.cache.values())if(state.member&&!state.member.user.bot&&state.channelId)startVoiceForUser(state.id,store.now());try{await applyVoicePresence();}catch(e){store.log('aviso',`Presença em call: ${e.message}`);}store.log('conexão',`Conectado ao servidor ${guild.name}.`);error='';await tick();}catch(e){error=e.message;store.log('erro',e.message);}
   });
   const timer=setInterval(()=>void tick(),30000);timer.unref();
-  return {status,client,channel,member,assignRole,verifyOAuthUser,sendMessage,openTicket,closeTicket,publishPanel,publishConfiguredMessage,publishProduct,createGiveaway,evaluateGiveaway,updateSalesLive,updateLivePanels,createEvent,applyBrand,applyVoicePresence,makeBackup,tick,
+  return {status,client,channel,member,memberProfile,assignRole,verifyOAuthUser,sendMessage,openTicket,closeTicket,publishPanel,publishConfiguredMessage,publishProduct,createGiveaway,evaluateGiveaway,updateSalesLive,updateLivePanels,createEvent,applyBrand,applyVoicePresence,makeBackup,tick,
     async metadata(){
       const g=requireGuild();
       await Promise.all([g.channels.fetch(),g.roles.fetch(),g.emojis.fetch(),g.members.fetch()]);
