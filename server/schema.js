@@ -18,6 +18,8 @@ const messageStyle = (content='', embed={}) => z.object({
 const messageStylesSchema = z.object({
   ticketPanel: messageStyle('', { title:'Como podemos ajudar?', description:'Abra um atendimento privado com nossa equipe.', color:'#995cff' }),
   ticketOpen: messageStyle('{user}', { title:'{category} · Studio K', description:'Descreva o que você precisa. Nossa equipe continuará o atendimento por aqui.', color:'#995cff' }),
+  ticketStaffPanel: messageStyle('', { title:'Painel da equipe', description:'Controles restritos ao cargo de atendimento e cargos superiores.', color:'#995cff' }),
+  ticketCall: messageStyle('{user}', { title:'A equipe chamou você', description:'Há uma nova atualização no seu atendimento. Retorne ao ticket quando puder.', color:'#995cff' }),
   ticketClose: messageStyle('', { title:'Atendimento encerrado', description:'O histórico foi salvo no painel.', color:'#995cff' }),
   verificationPanel: messageStyle('', { title:'Verifique sua conta', description:'Leia as regras. Ao confirmar, você receberá acesso à comunidade.', color:'#995cff' }),
   product: messageStyle('', { title:'{product}', description:'{description}', color:'#995cff', fields:[{name:'Valor',value:'{price}',inline:true},{name:'Disponibilidade',value:'{availability}',inline:true}] }),
