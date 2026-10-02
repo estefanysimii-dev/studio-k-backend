@@ -78,9 +78,10 @@ export function openStore(directory) {
     ['reopened_from',"ALTER TABLE tickets ADD COLUMN reopened_from TEXT"],
     ['tags',"ALTER TABLE tickets ADD COLUMN tags TEXT NOT NULL DEFAULT '[]'"],
     ['coupon_code',"ALTER TABLE orders ADD COLUMN coupon_code TEXT"],
-    ['discount',"ALTER TABLE orders ADD COLUMN discount INTEGER NOT NULL DEFAULT 0"]
+    ['discount',"ALTER TABLE orders ADD COLUMN discount INTEGER NOT NULL DEFAULT 0"],
+    ['delivered_at',"ALTER TABLE orders ADD COLUMN delivered_at TEXT"]
   ]){
-    const table=['coupon_code','discount'].includes(name)?'orders':'tickets';
+    const table=['coupon_code','discount','delivered_at'].includes(name)?'orders':'tickets';
     if(!db.prepare(`PRAGMA table_info(${table})`).all().some(c=>c.name===name))db.exec(sql);
   }
   db.exec('DROP INDEX IF EXISTS open_ticket_per_user');
