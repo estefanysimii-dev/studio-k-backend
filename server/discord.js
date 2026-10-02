@@ -415,8 +415,9 @@ export function createBot(store,env=process.env){
   }
   async function assignRole(userId,roleId){return assignRoles(userId,roleId?[roleId]:[]);}
 
-  async function verifyOAuthUser(user){
+  async function verifyOAuthUser(user,language=''){
     const settings=store.settings(),v=settings.verification;
+    if(language)saveLanguage(user.id,language);
     if(!v.oauthEnabled)throw new AppError('A verificação OAuth não está ativada.');
     const roles=verificationRoleIds(v);if(!roles.length)throw new AppError('Configure ao menos um cargo liberado pela verificação.');
     const guild=requireGuild(),m=await member(user.id);
