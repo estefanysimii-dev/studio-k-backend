@@ -478,7 +478,7 @@ ${normalized.previewAfter}
         dmSent=true;
       }catch(e){store.log('aviso',`Verificação concluída para ${user.id}, mas a DM não pôde ser entregue: ${String(e.message).slice(0,300)}`);}
     }
-    await audit('verificação',`OAuth concluído e cargo liberado para ${username} (${user.id}).`,user.id);
+    await audit('verificação',`<@${user.id}> concluiu a verificação e recebeu os cargos configurados.`,user.id,{targetId:user.id});
     void updateLivePanels(true);
     return {userId:user.id,username,dmSent};
   }
@@ -1095,14 +1095,14 @@ ${normalized.previewAfter}
       }
       if(s.logs.members){
         if(key==='welcome'){
-          await audit('membro entrou',`Membro <@${m.id}> entrou no servidor.`,m.id);
+          await audit('membro entrou',`<@${m.id}> entrou no servidor.`,m.id,{targetId:m.id});
         }else{
           await wait(650);
           const banEntry=await recentAudit(m.guild,AuditLogEvent.MemberBanAdd,{targetId:m.id,maxAge:3500});
           if(!banEntry){
             const kickEntry=await recentAudit(m.guild,AuditLogEvent.MemberKick,{targetId:m.id,maxAge:3500});
-            if(kickEntry?.executorId)await audit('membro expulso',`Membro <@${m.id}> foi expulso do servidor por <@${kickEntry.executorId}>.${kickEntry.reason?` Motivo: ${kickEntry.reason}`:''}`,kickEntry.executorId);
-            else await audit('membro saiu',`Membro <@${m.id}> saiu do servidor.`,m.id);
+            if(kickEntry?.executorId)await audit('membro expulso',`<@${kickEntry.executorId}> expulsou <@${m.id}> do servidor.${kickEntry.reason?` Motivo: ${kickEntry.reason}`:''}`,kickEntry.executorId,{targetId:m.id});
+            else await audit('membro saiu',`<@${m.id}> saiu do servidor.`,m.id,{targetId:m.id});
           }
         }
       }
@@ -1137,13 +1137,13 @@ ${normalized.previewAfter}
       await wait(650);
       const entry=await recentAudit(newState.guild,AuditLogEvent.MemberDisconnect,{maxAge:2500});
       if(entry?.executorId){
-        await audit('membro removido da call',`Membro <@${newState.id}> foi removido da call <#${oldState.channelId}> por <@${entry.executorId}>.${entry.reason?` Motivo: ${entry.reason}`:''}`,entry.executorId).catch(()=>{});
+        await audit('membro removido da call',`<@${entry.executorId}> removeu <@${newState.id}> da call <#${oldState.channelId}>.${entry.reason?` Motivo: ${entry.reason}`:''}`,entry.executorId,{targetId:newState.id,channelId:oldState.channelId}).catch(()=>{});
       }
     }else if(oldState.channelId&&newState.channelId&&oldState.channelId!==newState.channelId){
       await wait(650);
       const entry=await recentAudit(newState.guild,AuditLogEvent.MemberMove,{channelId:newState.channelId,maxAge:2500});
       if(entry?.executorId){
-        await audit('membro movido de call',`Membro <@${newState.id}> foi movido de <#${oldState.channelId}> para <#${newState.channelId}> por <@${entry.executorId}>.${entry.reason?` Motivo: ${entry.reason}`:''}`,entry.executorId).catch(()=>{});
+        await audit('membro movido de call',`<@${entry.executorId}> moveu <@${newState.id}> de <#${oldState.channelId}> para <#${newState.channelId}>.${entry.reason?` Motivo: ${entry.reason}`:''}`,entry.executorId,{targetId:newState.id,channelId:newState.channelId,fromChannelId:oldState.channelId}).catch(()=>{});
       }
     }
   });
