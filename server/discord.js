@@ -577,14 +577,49 @@ export function createBot(store,env=process.env){
       if(action==='verify'||action==='verificar'){const v=store.settings().verification;if(v.oauthEnabled){const url=`${String(env.PUBLIC_URL||'').replace(/\/$/,'')}/api/oauth/discord/start`;await i.editReply({content:'Para liberar o acesso, autorize sua conta pelo Discord.',components:[row(linkButton(v.button,url))]});return;}if(!v.roleId)throw new AppError('A verificação ainda não foi configurada.');if(Date.now()-i.user.createdTimestamp<v.minimumAccountDays*86400000)throw new AppError(`Sua conta precisa ter pelo menos ${v.minimumAccountDays} dias.`);await assignRole(i.user.id,v.roleId);await i.editReply('Verificação concluída. Bem-vindo(a)!');return;}
       if(action.startsWith('buy:')||action==='store-buy'){if(!store.settings().sales.pixKey)throw new AppError('As vendas ainda não foram configuradas.');const order=store.createOrder(action==='store-buy'?i.values[0]:action.split(':')[1],i.user.id);await i.editReply({content:await orderText(order),components:[row(button('Enviar comprovante / falar com equipe','ticket',2))]});return;}
       if(action==='pedido'){const orderId=i.options.getString('id');const order=orderId?store.one('SELECT * FROM orders WHERE id=? AND user_id=?',orderId,i.user.id):store.one('SELECT * FROM orders WHERE user_id=? ORDER BY created DESC LIMIT 1',i.user.id);if(!order)throw new AppError('Pedido não encontrado.');let text=order.status==='pending'?await orderText(order):`Pedido ${order.id}\nSituação: ${{paid:'Aprovado; entrega em processamento',delivered:'Entregue',cancelled:'Cancelado'}[order.status]}`;if(['paid','delivered'].includes(order.status)){const unit=store.one('SELECT secret FROM stock WHERE order_id=?',order.id);if(unit)text+=`\n\nSua entrega: ${store.decrypt(unit.secret)}`;}await i.editReply({content:text.slice(0,2000),allowedMentions:safe});return;}
-      if(action.startsWith('giveaway:')){const id=action.split(':')[1],g=store.one('SELECT * FROM giveaways WHERE id=?',id);if(!g||g.status!=='active'||Date.parse(JSON.parse(g.data).endsAt)<=Date.now())throw new AppError('Sorteio encerrado.');const data=JSON.parse(g.data);if(data.requiredRoleId&&!i.member.roles.cache.has(data.requiredRoleId))throw new AppError('Você não possui o cargo necessário.');store.run('INSERT OR IGNORE INTO entries VALUES(?,?)',id,i.user.id);await i.editReply('Participação confirmada. Boa sorte!');return;}
+      if(action.startsWith('giveaway:')){
+        const id=action.split(':')[1],g=store.one('SELECT * FROM giveaways WHERE id=?',id);
+        if(!g||g.status!=='active'||Date.parse(JSON.parse(g.data).endsAt)<=Date.now())throw new AppError('Sorteio encerrado.');
+        const checked=await evaluateGiveaway(id,i.user.id,{enter:true,record:true});
+        const lines=checked.results.map(r=>`${r.ok?'✅':'❌'} **${r.label}** — ${r.detail}`);
+        const components=[];
+        if(checked.results.some(r=>r.type==='invites')){
+          try{const url=await giveawayInviteUrl(id,i.user.id);components.push(linkButton('Meu convite',url));}catch(e){lines.push(`⚠️ Convites: ${e.message}`);}
+        }
+        if(checked.results.some(r=>r.needsYoutube)){
+          const url=await createGoogleConnectUrl(id,i.user.id);
+          if(url)components.push(linkButton('Conectar YouTube',url));else lines.push('⚠️ YouTube: integração Google ainda não configurada.');
+        }
+        components.push(button('Verificar novamente',`giveaway:${id}`,2));
+        const head=checked.ok?'🎉 **Participação confirmada! Você está concorrendo.**':'**Complete os requisitos abaixo para participar:**';
+        await i.editReply({content:`${head}\n\n${lines.join('\n')}`.slice(0,1900),components:components.length?[row(...components.slice(0,5))]:[]});
+        return;
+      }
       await i.editReply('Ação indisponível.');
     }catch(e){store.log('erro',e.message,'interação');if(i.deferred||i.replied)await i.editReply({content:e instanceof AppError?e.message:'Não foi possível concluir. Confira as permissões do bot ou procure a equipe.',components:[]}).catch(()=>{});}
   });
   for(const [event,key] of [[Events.GuildMemberAdd,'welcome'],[Events.GuildMemberRemove,'goodbye']])client.on(event,async m=>{
-    if(m.guild.id!==env.DISCORD_GUILD_ID)return;try{const s=store.settings(),t=s[key];if(t.enabled&&t.channelId){const variables={user:`<@${m.id}>`,username:m.user.username,server:m.guild.name,count:String(m.guild.memberCount)};const content=t.content.replace(/\{(user|username|server|count)\}/g,(v,k)=>variables[k]);const e=embedPayload(t.embed,variables);const payload={content:content||undefined,embeds:e.title||e.description||e.fields?.length?[e]:[],components:linkRows(t.buttons||[],env.DISCORD_GUILD_ID)};payload.allowedMentions=mentionPolicy(payload,key==='welcome'?[m.id]:[]);await(await channel(t.channelId)).send(payload);}if(s.logs.members)await audit('membro',`${m.user.username} ${key==='welcome'?'entrou':'saiu'} do servidor.`,m.id);}catch(e){store.log('erro',e.message);}
+    if(m.guild.id!==env.DISCORD_GUILD_ID)return;
+    try{
+      if(key==='welcome')await attributeInvite(m);
+      else store.run("UPDATE invite_joins SET left_at=? WHERE joined_user_id=? AND left_at IS NULL",store.now(),m.id);
+      const s=store.settings(),t=s[key];
+      if(t.enabled&&t.channelId){
+        const variables={user:`<@${m.id}>`,username:m.user.username,server:m.guild.name,count:String(m.guild.memberCount)};
+        const content=t.content.replace(/\{(user|username|server|count)\}/g,(v,k)=>variables[k]);const e=embedPayload(t.embed,variables);
+        const payload={content:content||undefined,embeds:e.title||e.description||e.fields?.length?[e]:[],components:linkRows(t.buttons||[],env.DISCORD_GUILD_ID)};
+        payload.allowedMentions=mentionPolicy(payload,key==='welcome'?[m.id]:[]);
+        await(await channel(t.channelId)).send(payload);
+      }
+      if(s.logs.members)await audit('membro',`${m.user.username} ${key==='welcome'?'entrou':'saiu'} do servidor.`,m.id);
+    }catch(e){store.log('erro',e.message);}
   });
   client.on(Events.MessageCreate,m=>{if(m.guildId===env.DISCORD_GUILD_ID&&!m.author.bot)store.run("UPDATE tickets SET updated=? WHERE channel_id=? AND status='open'",store.now(),m.channelId);});
+  client.on(Events.VoiceStateUpdate,(oldState,newState)=>{
+    if(newState.guild.id!==env.DISCORD_GUILD_ID||newState.member?.user?.bot)return;
+    if(!oldState.channelId&&newState.channelId)startVoiceForUser(newState.id,store.now());
+    else if(oldState.channelId&&!newState.channelId)stopVoiceForUser(newState.id);
+  });
   const logEvent=(event,setting,text)=>client.on(event,(...args)=>{const object=args.at(-1),guildId=object.guild?.id||object.guildId;if(guildId===env.DISCORD_GUILD_ID&&store.settings().logs[setting])void audit(setting,text(...args)).catch(()=>{});});
   logEvent(Events.MessageDelete,'messages',m=>`Mensagem ${m.id} excluída no canal ${m.channelId}. Autor: ${m.author?.id||'não disponível'}.`);
   logEvent(Events.MessageUpdate,'messages',(a,b)=>`Mensagem ${b.id} editada no canal ${b.channelId}.`);
@@ -593,7 +628,7 @@ export function createBot(store,env=process.env){
   for(const [event,label] of [[Events.GuildRoleCreate,'criado'],[Events.GuildRoleDelete,'excluído'],[Events.GuildRoleUpdate,'alterado']])logEvent(event,'roles',(...a)=>`Cargo ${a.at(-1).name} ${label}.`);
   client.on(Events.Error,e=>{error=e.message;store.log('erro','Falha na conexão com o Discord.');});
   client.once(Events.ClientReady,async()=>{console.log(`Discord conectado como ${client.user?.tag||client.user?.username||'Studio K'}.`);
-    try{const guild=requireGuild();const commands=[{name:'ajuda',description:'Conheça o Studio K'},{name:'loja',description:'Veja produtos e serviços disponíveis'},{name:'pedido',description:'Consulte um pedido e recupere sua entrega',options:[{name:'id',description:'Código completo do pedido; deixe vazio para o mais recente',type:3,required:false}]},{name:'ticket',description:'Abra um atendimento privado'},{name:'verificar',description:'Aceite as regras e receba acesso'},{name:'notificacoes',description:'Ative ou desative mensagens privadas opcionais'}];await new REST({version:'10'}).setToken(env.DISCORD_TOKEN).put(Routes.applicationGuildCommands(env.DISCORD_CLIENT_ID||client.user.id,guild.id),{body:commands});const s=store.settings().brand;client.user.setPresence({status:s.status,activities:s.activity?[{name:s.activity,type:ActivityType[s.activityType]}]:[]});store.log('conexão',`Conectado ao servidor ${guild.name}.`);error='';await tick();}catch(e){error=e.message;store.log('erro',e.message);}
+    try{const guild=requireGuild();const commands=[{name:'ajuda',description:'Conheça o Studio K'},{name:'loja',description:'Veja produtos e serviços disponíveis'},{name:'pedido',description:'Consulte um pedido e recupere sua entrega',options:[{name:'id',description:'Código completo do pedido; deixe vazio para o mais recente',type:3,required:false}]},{name:'ticket',description:'Abra um atendimento privado'},{name:'verificar',description:'Aceite as regras e receba acesso'},{name:'notificacoes',description:'Ative ou desative mensagens privadas opcionais'}];await new REST({version:'10'}).setToken(env.DISCORD_TOKEN).put(Routes.applicationGuildCommands(env.DISCORD_CLIENT_ID||client.user.id,guild.id),{body:commands});const s=store.settings().brand;client.user.setPresence({status:s.status,activities:s.activity?[{name:s.activity,type:ActivityType[s.activityType]}]:[]});await refreshInviteCache(guild);for(const state of guild.voiceStates.cache.values())if(state.member&&!state.member.user.bot&&state.channelId)startVoiceForUser(state.id,store.now());store.log('conexão',`Conectado ao servidor ${guild.name}.`);error='';await tick();}catch(e){error=e.message;store.log('erro',e.message);}
   });
   const timer=setInterval(()=>void tick(),30000);timer.unref();
   return {status,client,channel,member,assignRole,verifyOAuthUser,sendMessage,openTicket,closeTicket,publishPanel,publishConfiguredMessage,publishProduct,createGiveaway,createEvent,applyBrand,makeBackup,tick,
