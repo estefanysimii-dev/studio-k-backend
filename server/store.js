@@ -32,6 +32,7 @@ export function openStore(directory) {
     CREATE TABLE IF NOT EXISTS giveaway_voice(giveaway_id TEXT NOT NULL REFERENCES giveaways(id),user_id TEXT NOT NULL,seconds INTEGER NOT NULL DEFAULT 0,joined_at TEXT,PRIMARY KEY(giveaway_id,user_id));
     CREATE TABLE IF NOT EXISTS events(id TEXT PRIMARY KEY,data TEXT NOT NULL,discord_id TEXT,created TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS optins(user_id TEXT PRIMARY KEY,created TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS user_preferences(user_id TEXT PRIMARY KEY,language TEXT NOT NULL DEFAULT 'pt',updated_at TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS verifications(user_id TEXT PRIMARY KEY,username TEXT NOT NULL,verified_at TEXT NOT NULL,last_authorized_at TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS member_events(id INTEGER PRIMARY KEY AUTOINCREMENT,user_id TEXT NOT NULL,event TEXT NOT NULL,created TEXT NOT NULL);
     CREATE INDEX IF NOT EXISTS member_events_created ON member_events(created);
