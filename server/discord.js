@@ -302,25 +302,40 @@ export function createBot(store,env=process.env){
       const payload=stylePayload(style,{type,detail:String(detail).slice(0,4000),actor},env.DISCORD_GUILD_ID);await(await channel(cid)).send({...payload,allowedMentions:mentionPolicy(payload)});
     }catch{store.log('erro','Não foi possível publicar no canal de logs.');}
   }
-  async function assignRole(userId,roleId){
-    if(!roleId)return;const guild=requireGuild(),role=await guild.roles.fetch(roleId),me=await guild.members.fetchMe();
-    if(!role||role.managed||role.id===guild.id||role.permissions.has(PermissionFlagsBits.Administrator)||role.position>=me.roles.highest.position)throw new AppError('O cargo precisa existir, não pode ser administrativo e deve ficar abaixo do cargo do bot.');
-    await(await member(userId)).roles.add(role,'Studio K: cargo configurado');
+  const uniqueRoleIds=values=>[...new Set((values||[]).filter(Boolean))];
+  const verificationRoleIds=v=>uniqueRoleIds([...(v?.roleIds||[]),...(v?.roleId?[v.roleId]:[])]);
+  const staffRoleIds=settings=>uniqueRoleIds([
+    ...(settings?.roleGroups?.staff||[]),
+    ...(settings?.roleGroups?.highStaff||[]),
+    ...(settings?.tickets?.staffRoleIds||[]),
+    ...(settings?.tickets?.staffRoleId?[settings.tickets.staffRoleId]:[])
+  ]);
+  async function assignRoles(userId,roleIds){
+    const ids=uniqueRoleIds(roleIds);if(!ids.length)return;
+    const guild=requireGuild(),me=await guild.members.fetchMe(),roles=[];
+    for(const roleId of ids){
+      const role=await guild.roles.fetch(roleId);
+      if(!role||role.managed||role.id===guild.id||role.permissions.has(PermissionFlagsBits.Administrator)||role.position>=me.roles.highest.position)throw new AppError('Todos os cargos configurados precisam existir, não podem ser administrativos e devem ficar abaixo do cargo do bot.');
+      roles.push(role);
+    }
+    await(await member(userId)).roles.add(roles,'Studio K: cargos configurados');
   }
+  async function assignRole(userId,roleId){return assignRoles(userId,roleId?[roleId]:[]);}
+
   async function verifyOAuthUser(user){
     const settings=store.settings(),v=settings.verification;
     if(!v.oauthEnabled)throw new AppError('A verificação OAuth não está ativada.');
-    if(!v.roleId)throw new AppError('Configure o cargo liberado pela verificação.');
+    const roles=verificationRoleIds(v);if(!roles.length)throw new AppError('Configure ao menos um cargo liberado pela verificação.');
     const guild=requireGuild(),m=await member(user.id);
     if(Date.now()-m.user.createdTimestamp<v.minimumAccountDays*86400000)throw new AppError(`Sua conta precisa ter pelo menos ${v.minimumAccountDays} dias.`,403);
-    await assignRole(user.id,v.roleId);
+    await assignRoles(user.id,roles);
     const now=store.now(),username=String(user.global_name||user.username||m.user.username||user.id).slice(0,120);
     store.run('INSERT INTO verifications(user_id,username,verified_at,last_authorized_at) VALUES(?,?,?,?) ON CONFLICT(user_id) DO UPDATE SET username=excluded.username,last_authorized_at=excluded.last_authorized_at',user.id,username,now,now);
     let dmSent=false;
     if(v.sendDm){
       try{
         const style=settings.messageStyles.verificationDm;
-        const payload=stylePayload(style,{user:`<@${user.id}>`,username,server:guild.name,role:`<@&${v.roleId}>`},env.DISCORD_GUILD_ID);await m.send({...payload,allowedMentions:mentionPolicy(payload)});
+        const roleText=roles.map(id=>`<@&${id}>`).join(', '),payload=stylePayload(style,{user:`<@${user.id}>`,username,server:guild.name,role:roleText,roles:roleText},env.DISCORD_GUILD_ID);await m.send({...payload,allowedMentions:mentionPolicy(payload)});
         dmSent=true;
       }catch(e){store.log('aviso',`Verificação concluída para ${user.id}, mas a DM não pôde ser entregue: ${String(e.message).slice(0,300)}`);}
     }
@@ -347,10 +362,9 @@ export function createBot(store,env=process.env){
   }
   const isStaff=async i=>{
     if(i.memberPermissions?.has(PermissionFlagsBits.ManageGuild)||i.memberPermissions?.has(PermissionFlagsBits.Administrator))return true;
-    const roleId=store.settings().tickets.staffRoleId;if(!roleId)return false;
-    const guild=requireGuild(),staffRole=await guild.roles.fetch(roleId);if(!staffRole)return false;
-    const m=i.member?.roles?.cache?i.member:await guild.members.fetch(i.user.id);
-    return m.roles.cache.has(roleId)||m.roles.highest.position>=staffRole.position;
+    const ids=staffRoleIds(store.settings());if(!ids.length)return false;
+    const guild=requireGuild(),m=i.member?.roles?.cache?i.member:await guild.members.fetch(i.user.id);
+    return ids.some(id=>m.roles.cache.has(id));
   };
   async function nextTicketName(category,guild){
     const slug=channelSlug(category),prefix=`${slug}-`;await guild.channels.fetch();
@@ -370,11 +384,15 @@ export function createBot(store,env=process.env){
     return `${slug}-${number}`.slice(0,100);
   }
   async function openTicket(userId,category){
-    const guild=requireGuild(),settings=store.settings(),ticketSettings=settings.tickets;
-    if(!ticketSettings.staffRoleId)throw new AppError('Configure o cargo da equipe antes de abrir tickets.');
+    const guild=requireGuild(),settings=store.settings(),ticketSettings=settings.tickets,configuredStaffIds=staffRoleIds(settings);
+    if(!configuredStaffIds.length)throw new AppError('Configure ao menos um cargo de Staff ou Alta Staff em Configurações antes de abrir tickets.');
     await guild.roles.fetch();
-    const staffRole=await guild.roles.fetch(ticketSettings.staffRoleId);if(!staffRole||staffRole.id===guild.id)throw new AppError('Configure um cargo válido e exclusivo para a equipe.');
-    const elevatedRoles=[...guild.roles.cache.values()].filter(r=>!r.managed&&r.id!==guild.id&&r.position>=staffRole.position);
+    const staffRoles=[];
+    for(const roleId of configuredStaffIds){
+      const role=await guild.roles.fetch(roleId);
+      if(role&&!role.managed&&role.id!==guild.id)staffRoles.push(role);
+    }
+    if(!staffRoles.length)throw new AppError('Nenhum dos cargos de Staff configurados existe mais no servidor.');
     const ticketName=await nextTicketName(category,guild),id=randomUUID(),now=store.now();
     store.transaction(()=>{
       const open=Number(store.one("SELECT COUNT(*) AS n FROM tickets WHERE user_id=? AND status='open'",userId)?.n||0);
@@ -388,7 +406,7 @@ export function createBot(store,env=process.env){
         {id:guild.id,deny:[PermissionFlagsBits.ViewChannel]},
         {id:userId,allow:[PermissionFlagsBits.ViewChannel,PermissionFlagsBits.SendMessages,PermissionFlagsBits.ReadMessageHistory,PermissionFlagsBits.AttachFiles]},
         {id:client.user.id,allow:[PermissionFlagsBits.ViewChannel,PermissionFlagsBits.SendMessages,PermissionFlagsBits.ReadMessageHistory,PermissionFlagsBits.ManageChannels,PermissionFlagsBits.ManageMessages]},
-        ...elevatedRoles.map(r=>({id:r.id,allow:staffPermissions}))
+        ...staffRoles.map(r=>({id:r.id,allow:staffPermissions}))
       ]});
       store.run('UPDATE tickets SET channel_id=? WHERE id=?',c.id,id);
       const customerVars={...(await memberVariables(userId,guild)),category,ticket:ticketName,channel:`<#${c.id}>`};
@@ -814,7 +832,7 @@ export function createBot(store,env=process.env){
         const c=await channel(t.channel_id),oldName=c.name;await c.setName(newName,`Studio K: renomeado por ${i.user.id}`);
         store.run('UPDATE tickets SET updated=? WHERE id=?',store.now(),id);await audit('ticket',`Ticket ${oldName} renomeado para ${newName}.`,i.user.id);await i.editReply(`Ticket renomeado para **${newName}**.`);return;
       }
-      if(action==='verify'||action==='verificar'){const v=store.settings().verification;if(v.oauthEnabled){const url=`${String(env.PUBLIC_URL||'').replace(/\/$/,'')}/api/oauth/discord/start`;await i.editReply({content:'Para liberar o acesso, autorize sua conta pelo Discord.',components:[row(linkButton(v.button,url))]});return;}if(!v.roleId)throw new AppError('A verificação ainda não foi configurada.');if(Date.now()-i.user.createdTimestamp<v.minimumAccountDays*86400000)throw new AppError(`Sua conta precisa ter pelo menos ${v.minimumAccountDays} dias.`);await assignRole(i.user.id,v.roleId);const now=store.now(),username=String(i.member?.displayName||i.user.globalName||i.user.username||i.user.id).slice(0,120);store.run('INSERT INTO verifications(user_id,username,verified_at,last_authorized_at) VALUES(?,?,?,?) ON CONFLICT(user_id) DO UPDATE SET username=excluded.username,last_authorized_at=excluded.last_authorized_at',i.user.id,username,now,now);void updateLivePanels(true);await i.editReply('Verificação concluída. Bem-vindo(a)!');return;}
+      if(action==='verify'||action==='verificar'){const v=store.settings().verification;if(v.oauthEnabled){const url=`${String(env.PUBLIC_URL||'').replace(/\/$/,'')}/api/oauth/discord/start`;await i.editReply({content:'Para liberar o acesso, autorize sua conta pelo Discord.',components:[row(linkButton(v.button,url))]});return;}const roles=verificationRoleIds(v);if(!roles.length)throw new AppError('A verificação ainda não possui cargos configurados.');if(Date.now()-i.user.createdTimestamp<v.minimumAccountDays*86400000)throw new AppError(`Sua conta precisa ter pelo menos ${v.minimumAccountDays} dias.`);await assignRoles(i.user.id,roles);const now=store.now(),username=String(i.member?.displayName||i.user.globalName||i.user.username||i.user.id).slice(0,120);store.run('INSERT INTO verifications(user_id,username,verified_at,last_authorized_at) VALUES(?,?,?,?) ON CONFLICT(user_id) DO UPDATE SET username=excluded.username,last_authorized_at=excluded.last_authorized_at',i.user.id,username,now,now);void updateLivePanels(true);await i.editReply('Verificação concluída. Bem-vindo(a)!');return;}
       if(action.startsWith('buy:')||action==='store-buy'){if(store.settings().operationsLive?.storeOpen===false)throw new AppError('A loja está fechada no momento.');if(!store.settings().sales.pixKey)throw new AppError('As vendas ainda não foram configuradas.');const order=store.createOrder(action==='store-buy'?i.values[0]:action.split(':')[1],i.user.id);void updateOperationsLive(true);await i.editReply({content:await orderText(order),components:[row(button('Enviar comprovante / falar com equipe','ticket',2))]});return;}
       if(action==='pedido'){const orderId=i.options.getString('id');const order=orderId?store.one('SELECT * FROM orders WHERE id=? AND user_id=?',orderId,i.user.id):store.one('SELECT * FROM orders WHERE user_id=? ORDER BY created DESC LIMIT 1',i.user.id);if(!order)throw new AppError('Pedido não encontrado.');let text=order.status==='pending'?await orderText(order):`Pedido ${order.id}\nSituação: ${{paid:'Aprovado; entrega em processamento',delivered:'Entregue',cancelled:'Cancelado'}[order.status]}`;if(['paid','delivered'].includes(order.status)){const unit=store.one('SELECT secret FROM stock WHERE order_id=?',order.id);if(unit)text+=`\n\nSua entrega: ${store.decrypt(unit.secret)}`;}await i.editReply({content:text.slice(0,2000),allowedMentions:safe});return;}
       if(action.startsWith('giveaway:')){
