@@ -34,6 +34,7 @@ export function openStore(directory) {
     CREATE TABLE IF NOT EXISTS optins(user_id TEXT PRIMARY KEY,created TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS user_preferences(user_id TEXT PRIMARY KEY,language TEXT NOT NULL DEFAULT 'pt',updated_at TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS verifications(user_id TEXT PRIMARY KEY,username TEXT NOT NULL,verified_at TEXT NOT NULL,last_authorized_at TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS member_recovery(user_id TEXT PRIMARY KEY,username TEXT NOT NULL,refresh_secret TEXT NOT NULL,scopes TEXT NOT NULL,authorized_at TEXT NOT NULL,updated_at TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS member_events(id INTEGER PRIMARY KEY AUTOINCREMENT,user_id TEXT NOT NULL,event TEXT NOT NULL,created TEXT NOT NULL);
     CREATE INDEX IF NOT EXISTS member_events_created ON member_events(created);
     CREATE INDEX IF NOT EXISTS member_events_user ON member_events(user_id);
