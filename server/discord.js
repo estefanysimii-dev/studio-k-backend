@@ -304,7 +304,16 @@ export function createBot(store,env=process.env){
   });
   const timer=setInterval(()=>void tick(),30000);timer.unref();
   return {status,client,channel,member,assignRole,verifyOAuthUser,sendMessage,openTicket,closeTicket,publishPanel,publishProduct,createGiveaway,createEvent,applyBrand,makeBackup,tick,
-    async metadata(){const g=requireGuild();await g.channels.fetch();await g.roles.fetch();return{channels:[...g.channels.cache.values()].filter(Boolean).map(c=>({id:c.id,name:c.name,type:c.type})),roles:[...g.roles.cache.values()].filter(r=>!r.managed&&r.id!==g.id).map(r=>({id:r.id,name:r.name}))};},
+    async metadata(){
+      const g=requireGuild();
+      await Promise.all([g.channels.fetch(),g.roles.fetch(),g.emojis.fetch(),g.members.fetch()]);
+      return{
+        channels:[...g.channels.cache.values()].filter(Boolean).map(c=>({id:c.id,name:c.name,type:c.type})),
+        roles:[...g.roles.cache.values()].filter(r=>!r.managed&&r.id!==g.id).map(r=>({id:r.id,name:r.name})),
+        members:[...g.members.cache.values()].filter(m=>!m.user?.bot).slice(0,1000).map(m=>({id:m.id,name:m.displayName||m.user?.username||m.id,username:m.user?.username||''})),
+        emojis:[...g.emojis.cache.values()].map(e=>({id:e.id,name:e.name||'emoji',animated:!!e.animated,url:e.imageURL({extension:e.animated?'gif':'png',size:64})}))
+      };
+    },
     async start(){if(!env.DISCORD_TOKEN)return;if(!env.DISCORD_GUILD_ID){error='Configure DISCORD_GUILD_ID.';return;}try{await client.login(env.DISCORD_TOKEN);}catch(e){error='Não foi possível conectar. Confira token, servidor e intents no Discord Developer Portal.';console.error(`Discord: ${error} ${e?.message||''}`.trim());store.log('erro',error);}},
     async stop(){clearInterval(timer);await client.destroy();}
   };
