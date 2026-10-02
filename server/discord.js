@@ -756,7 +756,6 @@ export function createBot(store,env=process.env){
     const day=new Date().toISOString().slice(0,10);
     store.run('INSERT INTO message_activity(day,user_id,count) VALUES(?,?,1) ON CONFLICT(day,user_id) DO UPDATE SET count=count+1',day,m.author.id);
     store.run("UPDATE tickets SET updated=? WHERE channel_id=? AND status='open'",store.now(),m.channelId);
-    void updateCommunityLive(true);
   });
   client.on(Events.VoiceStateUpdate,(oldState,newState)=>{
     if(newState.guild.id!==env.DISCORD_GUILD_ID||newState.member?.user?.bot)return;
