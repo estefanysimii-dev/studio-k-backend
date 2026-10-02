@@ -295,11 +295,15 @@ export function createBot(store,env=process.env){
     }
   }
   const status=()=>({connected:client.isReady()&&client.guilds.cache.has(env.DISCORD_GUILD_ID),configured:!!env.DISCORD_TOKEN,name:client.user?.username||'Studio K',guild:client.guilds.cache.get(env.DISCORD_GUILD_ID)?.name||null,members:client.guilds.cache.get(env.DISCORD_GUILD_ID)?.memberCount||0,latency:client.ws.ping,error});
+  const auditActor=value=>{
+    const raw=String(value??'Discord');
+    return /^\d{17,20}$/.test(raw)?`<@${raw}>`:raw;
+  };
   async function audit(type,detail,actor='Discord'){
     store.log(type,detail,actor);const cid=store.settings().logs.channelId;
     if(cid&&client.isReady())try{
       const style=store.settings().messageStyles.logs;
-      const payload=stylePayload(style,{type,detail:String(detail).slice(0,4000),actor},env.DISCORD_GUILD_ID);await(await channel(cid)).send({...payload,allowedMentions:mentionPolicy(payload)});
+      const payload=stylePayload(style,{type,detail:String(detail).slice(0,4000),actor:auditActor(actor)},env.DISCORD_GUILD_ID);await(await channel(cid)).send({...payload,allowedMentions:mentionPolicy(payload)});
     }catch{store.log('erro','Não foi possível publicar no canal de logs.');}
   }
   const uniqueRoleIds=values=>[...new Set((values||[]).filter(Boolean))];
@@ -900,11 +904,11 @@ export function createBot(store,env=process.env){
     else if(oldState.channelId&&!newState.channelId)stopVoiceForUser(newState.id);
   });
   const logEvent=(event,setting,text)=>client.on(event,(...args)=>{const object=args.at(-1),guildId=object.guild?.id||object.guildId;if(guildId===env.DISCORD_GUILD_ID&&store.settings().logs[setting])void audit(setting,text(...args)).catch(()=>{});});
-  logEvent(Events.MessageDelete,'messages',m=>`Mensagem ${m.id} excluída no canal ${m.channelId}. Autor: ${m.author?.id||'não disponível'}.`);
-  logEvent(Events.MessageUpdate,'messages',(a,b)=>`Mensagem ${b.id} editada no canal ${b.channelId}.`);
-  logEvent(Events.GuildBanAdd,'moderation',b=>`Membro ${b.user.id} banido.`);logEvent(Events.GuildBanRemove,'moderation',b=>`Banimento de ${b.user.id} removido.`);
-  for(const [event,label] of [[Events.ChannelCreate,'criado'],[Events.ChannelDelete,'excluído'],[Events.ChannelUpdate,'alterado']])logEvent(event,'channels',(...a)=>`Canal ${a.at(-1).name} ${label}.`);
-  for(const [event,label] of [[Events.GuildRoleCreate,'criado'],[Events.GuildRoleDelete,'excluído'],[Events.GuildRoleUpdate,'alterado']])logEvent(event,'roles',(...a)=>`Cargo ${a.at(-1).name} ${label}.`);
+  logEvent(Events.MessageDelete,'messages',m=>`Mensagem \`${m.id}\` excluída no canal <#${m.channelId}>. Autor: ${m.author?.id?`<@${m.author.id}>`:'não disponível'}.`);
+  logEvent(Events.MessageUpdate,'messages',(a,b)=>`Mensagem \`${b.id}\` editada no canal <#${b.channelId}>. Autor: ${b.author?.id?`<@${b.author.id}>`:'não disponível'}.`);
+  logEvent(Events.GuildBanAdd,'moderation',b=>`Membro <@${b.user.id}> banido.`);logEvent(Events.GuildBanRemove,'moderation',b=>`Banimento de <@${b.user.id}> removido.`);
+  for(const [event,label] of [[Events.ChannelCreate,'criado'],[Events.ChannelDelete,'excluído'],[Events.ChannelUpdate,'alterado']])logEvent(event,'channels',(...a)=>{const c=a.at(-1);return`Canal <#${c.id}> (**#${c.name}**) ${label}.`;});
+  for(const [event,label] of [[Events.GuildRoleCreate,'criado'],[Events.GuildRoleDelete,'excluído'],[Events.GuildRoleUpdate,'alterado']])logEvent(event,'roles',(...a)=>{const r=a.at(-1);return`Cargo <@&${r.id}> (**${r.name}**) ${label}.`;});
   client.on(Events.Error,e=>{error=e.message;store.log('erro','Falha na conexão com o Discord.');});
   client.once(Events.ClientReady,async()=>{console.log(`Discord conectado como ${client.user?.tag||client.user?.username||'Studio K'}.`);
     try{const guild=requireGuild();const commands=[{name:'ajuda',description:'Conheça o Studio K'},{name:'loja',description:'Veja produtos e serviços disponíveis'},{name:'pedido',description:'Consulte um pedido e recupere sua entrega',options:[{name:'id',description:'Código completo do pedido; deixe vazio para o mais recente',type:3,required:false}]},{name:'ticket',description:'Abra um atendimento privado'},{name:'verificar',description:'Aceite as regras e receba acesso'},{name:'notificacoes',description:'Ative ou desative mensagens privadas opcionais'}];await new REST({version:'10'}).setToken(env.DISCORD_TOKEN).put(Routes.applicationGuildCommands(env.DISCORD_CLIENT_ID||client.user.id,guild.id),{body:commands});const s=store.settings().brand;client.user.setPresence({status:s.status,activities:s.activity?[{name:s.activity,type:ActivityType[s.activityType]}]:[]});await refreshInviteCache(guild);for(const state of guild.voiceStates.cache.values())if(state.member&&!state.member.user.bot&&state.channelId)startVoiceForUser(state.id,store.now());try{await applyVoicePresence();}catch(e){store.log('aviso',`Presença em call: ${e.message}`);}store.log('conexão',`Conectado ao servidor ${guild.name}.`);error='';await tick();}catch(e){error=e.message;store.log('erro',e.message);}
