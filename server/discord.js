@@ -97,7 +97,7 @@ export function createBot(store,env=process.env){
   const preferredLanguage=userId=>normalizeLanguage(languagePreference(userId)?.language||'pt');
   const saveLanguage=(userId,language)=>{const value=normalizeLanguage(language);store.run('INSERT INTO user_preferences(user_id,language,updated_at) VALUES(?,?,?) ON CONFLICT(user_id) DO UPDATE SET language=excluded.language,updated_at=excluded.updated_at',userId,value,store.now());return value;};
   const libreTranslateUrl=()=>String(env.LIBRETRANSLATE_URL||'http://libretranslate.railway.internal:5000').replace(/\/$/,'');
-  const libreLanguage=code=>normalizeLanguage(code)==='zh-CN'?'zh':normalizeLanguage(code);
+  const libreLanguage=code=>normalizeLanguage(code)==='zh-CN'?'zh-Hans':normalizeLanguage(code);
   const translationReady=()=>!!(store.settings().translator?.enabled&&libreTranslateUrl());
   const protectTranslationText=value=>{
     const tokens=[];
