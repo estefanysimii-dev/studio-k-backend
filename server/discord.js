@@ -437,6 +437,24 @@ export function createBot(store,env=process.env){
     void updateLivePanels(true);
     return {userId:user.id,username,dmSent};
   }
+  async function completeNativeVerification(i,language){
+    const settings=store.settings(),v=settings.verification,roles=verificationRoleIds(v);
+    if(!roles.length)throw new AppError('A verificação ainda não possui cargos configurados.');
+    if(Date.now()-i.user.createdTimestamp<v.minimumAccountDays*86400000)throw new AppError(`Sua conta precisa ter pelo menos ${v.minimumAccountDays} dias.`);
+    const chosen=saveLanguage(i.user.id,language);
+    await assignRoles(i.user.id,roles);
+    const guild=requireGuild(),m=await member(i.user.id),now=store.now(),username=String(i.member?.displayName||i.user.globalName||i.user.username||i.user.id).slice(0,120);
+    store.run('INSERT INTO verifications(user_id,username,verified_at,last_authorized_at) VALUES(?,?,?,?) ON CONFLICT(user_id) DO UPDATE SET username=excluded.username,last_authorized_at=excluded.last_authorized_at',i.user.id,username,now,now);
+    if(v.sendDm){
+      try{
+        const roleText=roles.map(id=>`<@&${id}>`).join(', '),payload=styledPayload(settings.messageStyles.verificationDm,{user:`<@${i.user.id}>`,username,server:guild.name,role:roleText,roles:roleText},env.DISCORD_GUILD_ID),localized=await localizeFor(i.user.id,payload);
+        await m.send({...localized,allowedMentions:mentionPolicy(localized)});
+      }catch(e){store.log('aviso',`Verificação nativa concluída para ${i.user.id}, mas a DM não pôde ser entregue: ${String(e.message).slice(0,300)}`);}
+    }
+    void updateLivePanels(true);
+    const targetId=v.redirectChannelId||settings.welcome.channelId||'',components=targetId?[row(linkButton('Continuar no servidor',`https://discord.com/channels/${env.DISCORD_GUILD_ID}/${targetId}`))]:[];
+    await localizedEdit(i,{content:`Verificação concluída. Idioma salvo: **${languageLabel(chosen)}**. Bem-vindo(a)!`,components});
+  }
   async function sendMessage(data){
     const payload=withTranslator({content:data.content||undefined,embeds:data.embed?[embedPayload(data.embed)]:[],components:linkRows(data.buttons||[],env.DISCORD_GUILD_ID)});
     payload.allowedMentions=mentionPolicy(payload);
