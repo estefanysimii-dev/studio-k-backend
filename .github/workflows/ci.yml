@@ -11,6 +11,6 @@ jobs:
         with:
           node-version: '24'
           cache: npm
-      - run: npm ci
+      - run: npm install --omit=dev
       - run: npm run check
       - run: npm test
