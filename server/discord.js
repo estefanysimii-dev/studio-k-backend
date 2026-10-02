@@ -905,7 +905,7 @@ export function createBot(store,env=process.env){
     }catch(e){store.log('erro',e.message);}
   });
   client.on(Events.MessageCreate,m=>{
-    if(m.guildId!==env.DISCORD_GUILD_ID||m.author.bot)return;
+    if(m.guildId!==env.DISCORD_GUILD_ID||m.author.bot||m.webhookId||m.channelId===store.settings().logs.channelId)return;
     const day=new Date().toISOString().slice(0,10);
     store.run('INSERT INTO message_activity(day,user_id,count) VALUES(?,?,1) ON CONFLICT(day,user_id) DO UPDATE SET count=count+1',day,m.author.id);
     store.run("UPDATE tickets SET updated=? WHERE channel_id=? AND status='open'",store.now(),m.channelId);
@@ -946,15 +946,24 @@ export function createBot(store,env=process.env){
     const object=args.at(-1),guildId=object.guild?.id||object.guildId;
     if(guildId===env.DISCORD_GUILD_ID&&store.settings().logs[setting])void audit(type,text(...args),actor(...args)).catch(()=>{});
   });
+  const shouldIgnoreMessageLog=m=>{
+    const logChannelId=store.settings().logs.channelId;
+    return !m||m.guildId!==env.DISCORD_GUILD_ID||m.channelId===logChannelId||m.author?.bot===true||!!m.webhookId||m.system===true;
+  };
   client.on(Events.MessageDelete,async m=>{
-    if(m.guildId!==env.DISCORD_GUILD_ID||!store.settings().logs.messages)return;
+    if(shouldIgnoreMessageLog(m)||!store.settings().logs.messages)return;
     await wait(500);
     const entry=m.guild?await recentAudit(m.guild,AuditLogEvent.MessageDelete,{targetId:m.author?.id||'',channelId:m.channelId,maxAge:3000}):null;
     const actor=entry?.executorId||m.author?.id||'Discord';
     const responsible=entry?.executorId?` Excluída por <@${entry.executorId}>.`:m.author?.id?` Excluída pelo próprio autor <@${m.author.id}>.`:'';
     void audit('mensagem excluída',`Mensagem \`${m.id}\` excluída no canal <#${m.channelId}>. Autor original: ${m.author?.id?`<@${m.author.id}>`:'não disponível'}.${responsible}`,actor).catch(()=>{});
   });
-  logEvent(Events.MessageUpdate,'messages','mensagem editada',(a,b)=>`Mensagem \`${b.id}\` editada no canal <#${b.channelId}> por ${b.author?.id?`<@${b.author.id}>`:'autor não disponível'}.`,(a,b)=>b.author?.id||'Discord');
+  client.on(Events.MessageUpdate,(oldMessage,newMessage)=>{
+    if(shouldIgnoreMessageLog(newMessage)||!store.settings().logs.messages)return;
+    if(oldMessage?.content===newMessage?.content&&JSON.stringify(oldMessage?.embeds||[])===JSON.stringify(newMessage?.embeds||[]))return;
+    const actor=newMessage.author?.id||'Discord';
+    void audit('mensagem editada',`Mensagem \`${newMessage.id}\` editada no canal <#${newMessage.channelId}> por ${newMessage.author?.id?`<@${newMessage.author.id}>`:'autor não disponível'}.`,actor).catch(()=>{});
+  });
   client.on(Events.GuildBanAdd,async b=>{
     if(b.guild.id!==env.DISCORD_GUILD_ID||!store.settings().logs.moderation)return;
     await wait(500);const entry=await recentAudit(b.guild,AuditLogEvent.MemberBanAdd,{targetId:b.user.id,maxAge:3500}),actor=entry?.executorId||'Discord';
