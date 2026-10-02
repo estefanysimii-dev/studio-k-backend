@@ -393,12 +393,29 @@ export function createBot(store,env=process.env){
     const raw=String(value??'Discord');
     return /^\d{17,20}$/.test(raw)?`<@${raw}>`:raw;
   };
+  const logCategory=type=>{
+    const t=String(type||'').toLowerCase();
+    if(t.includes('ticket'))return 'tickets';
+    if(t.startsWith('membro entrou')||t.startsWith('membro saiu')||t.startsWith('membro expulso'))return 'members';
+    if(t.startsWith('mensagem '))return 'messages';
+    if(t.includes('banido')||t.includes('desbanido')||t.includes('call'))return 'moderation';
+    if(t.startsWith('canal '))return 'channels';
+    if(t.startsWith('cargo '))return 'roles';
+    if(t.includes('verificação'))return 'verification';
+    if(t.includes('entrega')||t.includes('venda')||t.includes('pedido'))return 'sales';
+    if(t.includes('feedback'))return 'feedback';
+    return 'system';
+  };
+  const configuredLogChannels=logs=>[logs.channelId,logs.ticketsChannelId,logs.membersChannelId,logs.messagesChannelId,logs.moderationChannelId,logs.channelsChannelId,logs.rolesChannelId,logs.verificationChannelId,logs.salesChannelId,logs.systemChannelId,logs.feedbackChannelId].filter(Boolean);
   async function audit(type,detail,actor='Discord'){
-    store.log(type,detail,actor);const cid=store.settings().logs.channelId;
+    store.log(type,detail,actor);
+    const logs=store.settings().logs,category=logCategory(type);
+    if(logs[category]===false)return;
+    const cid=logs[`${category}ChannelId`]||logs.channelId;
     if(cid&&client.isReady())try{
       const style=store.settings().messageStyles.logs;
       const payload=styledPayload(style,{type,detail:String(detail).slice(0,4000),actor:auditActor(actor)},env.DISCORD_GUILD_ID);await(await channel(cid)).send({...payload,allowedMentions:mentionPolicy(payload)});
-    }catch{store.log('erro','Não foi possível publicar no canal de logs.');}
+    }catch{store.log('erro',`Não foi possível publicar o log de ${category} no Discord.`);}
   }
   const uniqueRoleIds=values=>[...new Set((values||[]).filter(Boolean))];
   const verificationRoleIds=v=>uniqueRoleIds([...(v?.roleIds||[]),...(v?.roleId?[v.roleId]:[])]);
@@ -1068,7 +1085,7 @@ export function createBot(store,env=process.env){
     }catch(e){store.log('erro',e.message);}
   });
   client.on(Events.MessageCreate,m=>{
-    if(m.guildId!==env.DISCORD_GUILD_ID||m.author.bot||m.webhookId||m.channelId===store.settings().logs.channelId)return;
+    if(m.guildId!==env.DISCORD_GUILD_ID||m.author.bot||m.webhookId||configuredLogChannels(store.settings().logs).includes(m.channelId))return;
     const day=new Date().toISOString().slice(0,10);
     store.run('INSERT INTO message_activity(day,user_id,count) VALUES(?,?,1) ON CONFLICT(day,user_id) DO UPDATE SET count=count+1',day,m.author.id);
     store.run("UPDATE tickets SET updated=? WHERE channel_id=? AND status='open'",store.now(),m.channelId);
@@ -1110,8 +1127,8 @@ export function createBot(store,env=process.env){
     if(guildId===env.DISCORD_GUILD_ID&&store.settings().logs[setting])void audit(type,text(...args),actor(...args)).catch(()=>{});
   });
   const shouldIgnoreMessageLog=m=>{
-    const logChannelId=store.settings().logs.channelId;
-    return !m||m.guildId!==env.DISCORD_GUILD_ID||m.channelId===logChannelId||m.author?.bot===true||!!m.webhookId||m.system===true;
+    const logChannels=new Set(configuredLogChannels(store.settings().logs));
+    return !m||m.guildId!==env.DISCORD_GUILD_ID||logChannels.has(m.channelId)||m.author?.bot===true||!!m.webhookId||m.system===true;
   };
   client.on(Events.MessageDelete,async m=>{
     if(shouldIgnoreMessageLog(m)||!store.settings().logs.messages)return;
