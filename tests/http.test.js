@@ -6,6 +6,8 @@ import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createServer } from 'node:net';
 import { setTimeout as delay } from 'node:timers/promises';
+import { createHash, randomUUID } from 'node:crypto';
+import { openStore } from '../server/store.js';
 test('HTTP access, CSRF, persistence, sales and disconnected Discord behavior',async t=>{
   const listener=createServer();await new Promise(r=>listener.listen(0,'127.0.0.1',r));const port=listener.address().port;await new Promise(r=>listener.close(r));
   const dir=mkdtempSync(join(tmpdir(),'studio-k-http-')),origin=`http://127.0.0.1:${port}`;
@@ -46,4 +48,23 @@ test('remote first setup requires the hosting setup key',async t=>{
   assert.equal((await post()).status,403);
   assert.equal((await post('wrong-key')).status,403);
   assert.equal((await post(setupKey)).status,200);
+});
+
+
+test('public customer transcript requires its private token and supports download',async t=>{
+  const listener=createServer();await new Promise(r=>listener.listen(0,'127.0.0.1',r));const port=listener.address().port;await new Promise(r=>listener.close(r));
+  const dir=mkdtempSync(join(tmpdir(),'studio-k-transcript-http-')),origin=`http://127.0.0.1:${port}`;
+  const child=spawn(process.execPath,['server/index.js'],{cwd:resolve('.'),env:{...process.env,STUDIO_DEMO:'false',HOST:'127.0.0.1',PORT:String(port),PUBLIC_URL:origin,COOKIE_SECURE:'false',DATA_DIR:dir,DISCORD_TOKEN:'',DISCORD_GUILD_ID:'',INTEGRATION_KEY:''},stdio:'pipe'});
+  let output='';child.stdout.on('data',d=>output+=d);child.stderr.on('data',d=>output+=d);
+  t.after(async()=>{child.kill();await new Promise(r=>child.exitCode!==null?r():child.once('exit',r));rmSync(dir,{recursive:true,force:true});});
+  let ready=false;for(let i=0;i<100;i++){try{const r=await fetch(origin+'/api/auth');if(r.ok){ready=true;break;}}catch{}await delay(50);}assert.ok(ready,output);
+
+  const store=openStore(dir),id=randomUUID(),token='private-transcript-token-0123456789abcdef';
+  store.run('INSERT INTO tickets(id,user_id,channel_id,category,status,created,updated,transcript) VALUES(?,?,?,?,?,?,?,?)',id,'222222222222222222','333333333333333333','Orçamento','closed',store.now(),store.now(),'Cliente: Olá\nAtendente: Atendimento concluído.');
+  store.set(`transcript-share:${id}`,{hash:createHash('sha256').update(token).digest('hex'),created:store.now()});
+  store.db.close();
+
+  const bad=await fetch(`${origin}/api/public/tickets/${id}/transcript/token-incorreto-xxxxxxxxxxxx`);assert.equal(bad.status,404);
+  const page=await fetch(`${origin}/api/public/tickets/${id}/transcript/${token}`);assert.equal(page.status,200);const html=await page.text();assert.match(html,/Orçamento/);assert.match(html,/Cliente: Olá/);assert.match(html,/Baixar transcript/);
+  const download=await fetch(`${origin}/api/public/tickets/${id}/transcript/${token}?download=1`);assert.equal(download.status,200);assert.match(download.headers.get('content-disposition')||'',/attachment/);assert.equal(await download.text(),'Cliente: Olá\nAtendente: Atendimento concluído.');
 });
