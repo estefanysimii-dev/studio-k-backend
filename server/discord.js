@@ -571,7 +571,7 @@ ${normalized.previewAfter}
     if(e.action==='transfer')return `${actor} transferiu o atendimento para <@${e.to}>`;
     if(e.action==='state')return `${actor} alterou o status para **${e.state}**`;
     if(e.action==='priority')return `${actor} alterou a prioridade para **${e.priority}**`;
-    if(e.action==='note')return `${actor} adicionou uma nota interna`;
+    if(e.action==='note')return `${actor} adicionou nota interna: ${String(e.note||'').slice(0,180)}`;
     if(e.action==='tags')return `${actor} atualizou as tags: ${(e.tags||[]).join(', ')||'nenhuma'}`;
     if(e.action==='reopen')return `${actor} reabriu o atendimento a partir do ticket anterior`;
     return e.label||e.action||'Ação registrada';
@@ -925,6 +925,36 @@ ${normalized.previewAfter}
   async function applyBrand(){const s=store.settings().brand;requireGuild();const body={username:s.name};if(s.avatar)body.avatar=s.avatar;if(s.banner)body.banner=s.banner;await client.user.edit(body);await client.application.edit({description:s.description});client.user.setPresence({status:s.status,activities:s.activity?[{name:s.activity,type:ActivityType[s.activityType]}]:[]});await audit('identidade','Identidade do bot atualizada.','painel');}
   async function snapshot(){const guild=requireGuild();await Promise.all([guild.channels.fetch(),guild.roles.fetch(),guild.members.fetch()]);return{id:guild.id,name:guild.name,description:guild.description,roles:[...guild.roles.cache.values()].map(r=>({id:r.id,name:r.name,color:r.color,permissions:r.permissions.bitfield.toString(),position:r.position,managed:r.managed})),channels:[...guild.channels.cache.values()].filter(Boolean).map(c=>({id:c.id,name:c.name,type:c.type,parentId:c.parentId,position:c.rawPosition,topic:c.topic,overwrites:c.permissionOverwrites?[...c.permissionOverwrites.cache.values()].map(p=>({id:p.id,type:p.type,allow:p.allow.bitfield.toString(),deny:p.deny.bitfield.toString()})):[]})),members:[...guild.members.cache.values()].filter(m=>!m.user?.bot).map(m=>({id:m.id,username:m.user?.username||m.id,displayName:m.displayName||m.user?.globalName||m.user?.username||m.id,joinedAt:m.joinedAt?.toISOString?.()||null,roles:[...m.roles.cache.values()].filter(r=>r.id!==guild.id).map(r=>r.id)}))};}
   async function makeBackup(){if(backupBusy)throw new AppError('Já há um backup em andamento.',409);backupBusy=true;try{return await store.makeBackup(client.isReady()?await snapshot():null);}finally{backupBusy=false;}}
+  const orderStatusLabel=status=>({pending:'Aguardando pagamento',paid:'Pagamento aprovado / processando entrega',delivered:'Entregue',cancelled:'Cancelado'}[status]||status);
+  async function userProfileText(userId){
+    const guild=requireGuild(),m=await guild.members.fetch(userId);
+    const t=store.one("SELECT COUNT(*) AS total,SUM(CASE WHEN status='open' THEN 1 ELSE 0 END) AS open FROM tickets WHERE user_id=?",userId);
+    const o=store.one("SELECT COUNT(*) AS total,SUM(CASE WHEN status IN ('paid','delivered') THEN 1 ELSE 0 END) AS completed FROM orders WHERE user_id=?",userId);
+    const v=store.one('SELECT verified_at FROM verifications WHERE user_id=?',userId);
+    const latest=store.one('SELECT category,status,state,updated FROM tickets WHERE user_id=? ORDER BY created DESC LIMIT 1',userId);
+    return[
+      `**${m.displayName||m.user.username}** · <@${userId}>`,
+      `Entrou no servidor: ${m.joinedTimestamp?`<t:${Math.floor(m.joinedTimestamp/1000)}:D>`:'não disponível'}`,
+      `Conta criada: <t:${Math.floor(m.user.createdTimestamp/1000)}:D>`,
+      `Verificação: ${v?.verified_at?`<t:${Math.floor(Date.parse(v.verified_at)/1000)}:D>`:'não registrada'}`,
+      `Tickets: **${Number(t?.open||0)} aberto(s)** · ${Number(t?.total||0)} total`,
+      `Pedidos: **${Number(o?.completed||0)} concluído(s)** · ${Number(o?.total||0)} total`,
+      latest?`Último atendimento: **${latest.category}** · ${latest.status==='open'?latest.state:'finalizado'}`:'Último atendimento: nenhum'
+    ].join('\n');
+  }
+  const faqMatches=query=>{
+    const items=store.settings().faq?.items||[],q=String(query||'').trim().toLowerCase();
+    if(!q)return items.slice(0,25);
+    return items.filter(x=>[x.question,x.answer,x.keywords].join(' ').toLowerCase().includes(q)).slice(0,10);
+  };
+  async function publishOperationalAlert(kind,severity,title,detail,dedupeKey){
+    if(dedupeKey&&store.get('alert-dedupe:'+dedupeKey))return;
+    const id=randomUUID(),created=store.now();store.run('INSERT INTO alerts(id,kind,severity,title,detail,status,created) VALUES(?,?,?,?,?,"open",?)',id,kind,severity,title,String(detail).slice(0,1500),created);
+    if(dedupeKey)store.set('alert-dedupe:'+dedupeKey,{at:created});
+    const cfg=store.settings().alerts;if(cfg?.enabled&&cfg.channelId&&client.isReady())try{
+      const cc=await channel(cfg.channelId);await cc.send({embeds:[{title:`⚠️ ${title}`,description:String(detail).slice(0,3900),color:severity==='critical'?0xff4d67:severity==='warning'?0xffbd4a:0x995cff,timestamp:new Date().toISOString()}],allowedMentions:safe});
+    }catch(e){store.log('aviso',`Alerta operacional não pôde ser publicado: ${e.message}`);}
+  }
   async function tick(){if(busy)return;busy=true;try{
     for(const o of store.all("SELECT id FROM orders WHERE status='pending' AND expires<=?",store.now()))store.cancelOrder(o.id);
     const s=store.settings();if(s.backups.enabled&&Date.now()-Date.parse(store.get('lastBackup','1970-01-01'))>=s.backups.intervalHours*3600000)try{await makeBackup();}catch(e){store.log('erro',`Backup: ${e.message}`);}
@@ -933,10 +963,33 @@ ${normalized.previewAfter}
     await updateLivePanels();
     for(const o of store.all("SELECT * FROM orders WHERE status='paid' LIMIT 10"))await deliverOrder(o);
     for(const g of store.all("SELECT * FROM giveaways WHERE status IN ('active','drawn')")){if(g.status==='drawn'||Date.parse(JSON.parse(g.data).endsAt)<=Date.now())try{await finishGiveaway(g);}catch(e){store.log('erro',`Sorteio ${g.id.slice(0,8)}: ${e.message}`);}}
+    if(s.tickets.escalationMinutes>0){
+      const cutoff=new Date(Date.now()-s.tickets.escalationMinutes*60000).toISOString();
+      for(const t of store.all("SELECT * FROM tickets WHERE status='open' AND claimed_by IS NULL AND state='waiting_staff' AND created<=?",cutoff)){
+        store.run("UPDATE tickets SET state='escalated',priority=CASE WHEN priority='urgent' THEN priority ELSE 'high' END,updated=? WHERE id=?",store.now(),t.id);
+        ticketAuditAppend(t.id,{action:'state',actor:'sistema',target:t.user_id,state:'escalated'});
+        await publishOperationalAlert('ticket_sla','warning','Ticket escalado',`Ticket ${t.id.slice(0,8)} de <@${t.user_id}> está sem responsável há mais de ${s.tickets.escalationMinutes} min.`,`ticket-escalated:${t.id}`);
+        try{const tc=await channel(t.channel_id),roles=(s.roleGroups?.highStaff||[]).map(id=>`<@&${id}>`).join(' ');await tc.send({content:`${roles?roles+' ':''}⚠️ Este atendimento foi escalado por tempo de espera.`,allowedMentions:{parse:[],roles:s.roleGroups?.highStaff||[]}});}catch{}
+      }
+    }
+    if(s.tickets.staleReminderMinutes>0){
+      const cutoff=new Date(Date.now()-s.tickets.staleReminderMinutes*60000).toISOString();
+      for(const t of store.all("SELECT * FROM tickets WHERE status='open' AND state='waiting_customer' AND updated<=?",cutoff)){
+        const key=`ticket-stale:${t.id}:${String(t.updated).slice(0,13)}`;if(store.get(key))continue;store.set(key,{at:store.now()});
+        try{const tc=await channel(t.channel_id);await tc.send({content:`<@${t.user_id}> lembrete: seu atendimento está aguardando sua resposta.`,allowedMentions:{parse:[],users:[t.user_id]}});}catch{}
+      }
+    }
+    if(s.alerts?.lowStock){
+      for(const p of store.products().filter(p=>p.type==='digital'&&p.stock<=s.sales.lowStockThreshold))await publishOperationalAlert('low_stock',p.stock===0?'critical':'warning','Estoque baixo',`**${p.name}** possui ${p.stock} unidade(s) disponível(is).`,`stock:${p.id}:${p.stock}`);
+    }
+    if(s.alerts?.deletedMessagesThreshold){
+      const since=new Date(Date.now()-10*60000).toISOString(),deleted=store.one("SELECT COUNT(*) AS n FROM logs WHERE type='mensagem excluída' AND created>=?",since)?.n||0;
+      if(deleted>=s.alerts.deletedMessagesThreshold)await publishOperationalAlert('message_deletes','warning','Muitas mensagens apagadas',`${deleted} mensagens foram apagadas nos últimos 10 minutos.`,`deleted:${new Date().toISOString().slice(0,15)}`);
+    }
     if(s.tickets.autoCloseHours)for(const t of store.all("SELECT * FROM tickets WHERE status='open' AND updated<?",new Date(Date.now()-s.tickets.autoCloseHours*3600000).toISOString()))try{await closeTicket(t.id,'inatividade');}catch(e){store.log('erro',`Ticket ${t.id.slice(0,8)}: ${e.message}`);}
   }catch(e){store.log('erro',e.message);}finally{busy=false;}}
   client.on(Events.InteractionCreate,async i=>{
-    const customId=String(i.customId||''),privateInteraction=(i.isButton()||i.isStringSelectMenu()||i.isModalSubmit())&&(customId.startsWith('feedback')||customId.startsWith('translate'));
+    const customId=String(i.customId||''),privateInteraction=(i.isButton()||i.isStringSelectMenu()||i.isModalSubmit())&&(customId.startsWith('feedback')||customId.startsWith('translate')||customId.startsWith('reopen'));
     if((i.guildId!==env.DISCORD_GUILD_ID&&!privateInteraction)||(!i.isChatInputCommand()&&!i.isMessageContextMenuCommand()&&!i.isButton()&&!i.isStringSelectMenu()&&!i.isModalSubmit()))return;
     if(i.isButton()&&i.customId.startsWith('feedback:')){
       try{
@@ -986,6 +1039,24 @@ ${normalized.previewAfter}
         if(deferred)await localizedEdit(i,msg).catch(()=>{});else await localizedReply(i,{content:msg}).catch(()=>{});
       }
       return;
+    }
+    if(i.isButton()&&i.customId.startsWith('note:')){
+      try{if(!await isStaff(i))throw new AppError('Somente a equipe pode adicionar notas.',403);const id=i.customId.split(':')[1];if(!store.one("SELECT id FROM tickets WHERE id=? AND status='open'",id))throw new AppError('Ticket aberto não encontrado.',404);const modal=new ModalBuilder().setCustomId(`note-submit:${id}`).setTitle('Nota interna');const input=new TextInputBuilder().setCustomId('note-text').setLabel('Nota visível apenas para a equipe').setStyle(TextInputStyle.Paragraph).setRequired(true).setMaxLength(1000);modal.addComponents(new ActionRowBuilder().addComponents(input));await i.showModal(modal);}catch(e){await localizedReply(i,{content:e.message,flags:MessageFlags.Ephemeral}).catch(()=>{});}return;
+    }
+    if(i.isModalSubmit()&&i.customId.startsWith('note-submit:')){
+      try{if(!await isStaff(i))throw new AppError('Somente a equipe pode adicionar notas.',403);const id=i.customId.split(':')[1],t=store.one("SELECT * FROM tickets WHERE id=? AND status='open'",id);if(!t)throw new AppError('Ticket aberto não encontrado.',404);const note=String(i.fields.getTextInputValue('note-text')||'').trim();store.run('INSERT INTO ticket_notes(id,ticket_id,actor,note,private,created) VALUES(?,?,?,?,1,?)',randomUUID(),id,i.user.id,note,store.now());ticketAuditAppend(id,{action:'note',actor:i.user.id,target:t.user_id,note});store.recordStaffAction(i.user.id,'note',id,t.user_id);await localizedReply(i,{content:'Nota interna adicionada.',flags:MessageFlags.Ephemeral});}catch(e){await localizedReply(i,{content:e.message,flags:MessageFlags.Ephemeral}).catch(()=>{});}return;
+    }
+    if(i.isButton()&&i.customId.startsWith('tags:')){
+      try{if(!await isStaff(i))throw new AppError('Somente a equipe pode editar tags.',403);const id=i.customId.split(':')[1],t=store.one("SELECT * FROM tickets WHERE id=? AND status='open'",id);if(!t)throw new AppError('Ticket aberto não encontrado.',404);const modal=new ModalBuilder().setCustomId(`tags-submit:${id}`).setTitle('Tags do ticket');let tags=[];try{tags=JSON.parse(t.tags||'[]')}catch{}const input=new TextInputBuilder().setCustomId('tags-text').setLabel('Tags separadas por vírgula').setStyle(TextInputStyle.Short).setRequired(false).setMaxLength(300).setValue(tags.join(', ').slice(0,300));modal.addComponents(new ActionRowBuilder().addComponents(input));await i.showModal(modal);}catch(e){await localizedReply(i,{content:e.message,flags:MessageFlags.Ephemeral}).catch(()=>{});}return;
+    }
+    if(i.isModalSubmit()&&i.customId.startsWith('tags-submit:')){
+      try{if(!await isStaff(i))throw new AppError('Somente a equipe pode editar tags.',403);const id=i.customId.split(':')[1],t=store.one("SELECT * FROM tickets WHERE id=? AND status='open'",id);if(!t)throw new AppError('Ticket aberto não encontrado.',404);const tags=[...new Set(String(i.fields.getTextInputValue('tags-text')||'').split(',').map(x=>x.trim()).filter(Boolean))].slice(0,10);store.run('UPDATE tickets SET tags=?,updated=? WHERE id=?',JSON.stringify(tags),store.now(),id);ticketAuditAppend(id,{action:'tags',actor:i.user.id,target:t.user_id,tags});await localizedReply(i,{content:`Tags atualizadas: ${tags.join(', ')||'nenhuma'}.`,flags:MessageFlags.Ephemeral});}catch(e){await localizedReply(i,{content:e.message,flags:MessageFlags.Ephemeral}).catch(()=>{});}return;
+    }
+    if(i.isButton()&&i.customId.startsWith('close:')){
+      try{if(!await hasStaffPermission(i,'ticketClose'))throw new AppError('Você não possui permissão para finalizar tickets.',403);const id=i.customId.split(':')[1];if(!store.one("SELECT id FROM tickets WHERE id=? AND status='open'",id))throw new AppError('Ticket aberto não encontrado.',404);const modal=new ModalBuilder().setCustomId(`close-submit:${id}`).setTitle('Finalizar atendimento');const input=new TextInputBuilder().setCustomId('close-reason').setLabel('Motivo do encerramento').setStyle(TextInputStyle.Paragraph).setRequired(true).setMinLength(2).setMaxLength(500);modal.addComponents(new ActionRowBuilder().addComponents(input));await i.showModal(modal);}catch(e){await localizedReply(i,{content:e.message,flags:MessageFlags.Ephemeral}).catch(()=>{});}return;
+    }
+    if(i.isModalSubmit()&&i.customId.startsWith('close-submit:')){
+      try{if(!await hasStaffPermission(i,'ticketClose'))throw new AppError('Você não possui permissão para finalizar tickets.',403);const id=i.customId.split(':')[1],reason=String(i.fields.getTextInputValue('close-reason')||'').trim();await i.deferReply({flags:MessageFlags.Ephemeral});await closeTicket(id,i.user.id,reason);await localizedEdit(i,'Atendimento encerrado e registrado.');}catch(e){if(i.deferred)await localizedEdit(i,e.message).catch(()=>{});else await localizedReply(i,{content:e.message,flags:MessageFlags.Ephemeral}).catch(()=>{});}return;
     }
     if(i.isButton()&&i.customId.startsWith('rename:')){
       try{
