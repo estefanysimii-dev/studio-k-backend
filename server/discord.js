@@ -504,7 +504,11 @@ export function createBot(store,env=process.env){
     if(!message)message=await c.send({...payload,allowedMentions:mentionPolicy(payload)});
     const next={messageId:message.id,channelId:cfg.channelId,signature,checkedAt:Date.now()};store.set(storageKey,next);return next;
   }
-  const updatedRelative=()=>`<t:${Math.floor(Date.now()/1000)}:R>`;
+  const updatedRelative=()=>{
+    const timeZone=process.env.APP_TIMEZONE||'America/Cuiaba';
+    const time=new Intl.DateTimeFormat('pt-BR',{timeZone,hour:'2-digit',minute:'2-digit',hour12:false}).format(new Date()).replace(':','h');
+    return `hoje às ${time}`;
+  };
   async function updateCommunityLive(force=false){
     const settings=store.settings(),cfg=settings.communityLive;if(!cfg?.enabled||!cfg.channelId||!client.isReady())return null;
     const guild=requireGuild(),{start,end,key}=currentWeek(),now=new Date();
