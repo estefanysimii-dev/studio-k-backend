@@ -8,3 +8,32 @@
 
 /* Studio K custom logo */
 .brand-logo{width:48px;height:48px;object-fit:contain;object-position:center;flex-shrink:0;display:block}.login-card .brand-logo{width:64px;height:64px}.boot-logo{width:86px;height:86px;margin-bottom:10px}
+
+.embed-editor-layout{display:grid;grid-template-columns:minmax(0,1.35fr) minmax(320px,.85fr);gap:22px;align-items:start}
+.embed-editor-controls{min-width:0}
+.embed-preview-panel{position:sticky;top:82px;min-width:0;background:#15121b;border:1px solid var(--line);border-radius:12px;padding:18px}
+.preview-title{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:14px}
+.preview-title .section-label{margin:0}
+.embed-template-grid>div{min-width:0}
+.embed-template-grid>div>.card+section.card,.embed-template-grid>div>section.card+section.card{margin-top:20px}
+.mention-tools{margin-top:20px;background:#15121b}
+.mention-tools>p{margin:8px 0 14px}
+.mention-insert-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}
+.mention-insert-grid label{display:flex;flex-direction:column;gap:7px;font-size:.75rem;color:var(--muted);font-weight:600}
+.mention-insert-grid select{width:100%}
+.emoji-picker{margin-top:16px}
+.emoji-picker>strong{display:block;font-size:.75rem;color:#d7cbe6;margin-bottom:10px}
+.emoji-grid{display:flex;flex-wrap:wrap;gap:8px;max-height:180px;overflow:auto;padding:2px}
+.emoji-insert{display:inline-flex;align-items:center;gap:7px;padding:7px 9px;border:1px solid var(--line);background:#211b29;border-radius:8px;min-width:0}
+.emoji-insert:hover{border-color:#76539a;background:#2a2135}
+.emoji-insert img{width:24px;height:24px;object-fit:contain;flex-shrink:0}
+.emoji-insert span{font-size:.72rem;max-width:110px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.discord-mention{display:inline-block;background:#5865f233;color:#c9cdfb;border-radius:3px;padding:0 2px;font-weight:600}
+.discord-inline-emoji{width:22px;height:22px;object-fit:contain;vertical-align:-5px;margin:0 1px}
+@media(max-width:1180px){
+  .embed-editor-layout{grid-template-columns:1fr}
+  .embed-preview-panel{position:static}
+}
+@media(max-width:760px){
+  .mention-insert-grid{grid-template-columns:1fr}
+}
