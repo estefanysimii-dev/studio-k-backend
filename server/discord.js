@@ -407,14 +407,39 @@ export function createBot(store,env=process.env){
     return 'system';
   };
   const configuredLogChannels=logs=>[logs.channelId,logs.ticketsChannelId,logs.membersChannelId,logs.messagesChannelId,logs.moderationChannelId,logs.channelsChannelId,logs.rolesChannelId,logs.verificationChannelId,logs.salesChannelId,logs.systemChannelId,logs.feedbackChannelId].filter(Boolean);
-  async function audit(type,detail,actor='Discord'){
-    store.log(type,detail,actor);
+  const previewText=value=>String(value??'').replace(/\s+/g,' ').trim().slice(0,500);
+  const inferAuditTarget=(detail,actor)=>{
+    const ids=[...String(detail||'').matchAll(/<@!?(\d{17,20})>/g)].map(m=>m[1]);
+    const actorId=/^\d{17,20}$/.test(String(actor||''))?String(actor):'';
+    return ids.find(id=>id!==actorId)||ids[0]||'';
+  };
+  async function audit(type,detail,actor='Discord',meta={}){
+    const normalized={...meta};
+    normalized.targetId=String(normalized.targetId||inferAuditTarget(detail,actor)||'');
+    normalized.channelId=String(normalized.channelId||'');
+    normalized.previewBefore=previewText(normalized.previewBefore);
+    normalized.previewAfter=previewText(normalized.previewAfter);
+    store.log(type,detail,actor,normalized);
     const logs=store.settings().logs,category=logCategory(type);
     if(logs[category]===false)return;
     const cid=logs[`${category}ChannelId`]||logs.channelId;
     if(cid&&client.isReady())try{
       const style=store.settings().messageStyles.logs;
-      const payload=styledPayload(style,{type,detail:String(detail).slice(0,4000),actor:auditActor(actor)},env.DISCORD_GUILD_ID);await(await channel(cid)).send({...payload,allowedMentions:mentionPolicy(payload)});
+      const payload=styledPayload(style,{type,detail:String(detail).slice(0,4000),actor:auditActor(actor)},env.DISCORD_GUILD_ID);
+      if(payload.embeds?.[0]){
+        const fields=[...(payload.embeds[0].fields||[])];
+        fields.push({name:'Ator',value:auditActor(actor),inline:true});
+        fields.push({name:'Afetado',value:normalized.targetId?`<@${normalized.targetId}>`:(normalized.targetLabel||'Não se aplica'),inline:true});
+        if(normalized.channelId)fields.push({name:'Canal',value:`<#${normalized.channelId}>`,inline:true});
+        if(normalized.previewBefore)fields.push({name:normalized.previewAfter?'Antes':'Mensagem',value:`\`\`\`
+${normalized.previewBefore}
+\`\`\``.slice(0,1024),inline:false});
+        if(normalized.previewAfter)fields.push({name:'Depois',value:`\`\`\`
+${normalized.previewAfter}
+\`\`\``.slice(0,1024),inline:false});
+        payload.embeds[0].fields=fields.slice(0,25);
+      }
+      await(await channel(cid)).send({...payload,allowedMentions:mentionPolicy(payload)});
     }catch{store.log('erro',`Não foi possível publicar o log de ${category} no Discord.`);}
   }
   const uniqueRoleIds=values=>[...new Set((values||[]).filter(Boolean))];
@@ -1134,28 +1159,42 @@ export function createBot(store,env=process.env){
     if(shouldIgnoreMessageLog(m)||!store.settings().logs.messages)return;
     await wait(500);
     const entry=m.guild?await recentAudit(m.guild,AuditLogEvent.MessageDelete,{targetId:m.author?.id||'',channelId:m.channelId,maxAge:3000}):null;
-    const actor=entry?.executorId||m.author?.id||'Discord';
-    const responsible=entry?.executorId?` Excluída por <@${entry.executorId}>.`:m.author?.id?` Excluída pelo próprio autor <@${m.author.id}>.`:'';
-    void audit('mensagem excluída',`Mensagem \`${m.id}\` excluída no canal <#${m.channelId}>. Autor original: ${m.author?.id?`<@${m.author.id}>`:'não disponível'}.${responsible}`,actor).catch(()=>{});
+    const actor=entry?.executorId||m.author?.id||'Discord',target=m.author?.id||'';
+    const actorText=/^\d{17,20}$/.test(String(actor))?`<@${actor}>`:'Discord';
+    const targetText=target?`<@${target}>`:'autor não disponível';
+    const detail=`${actorText} excluiu uma mensagem de ${targetText} em <#${m.channelId}>.`;
+    void audit('mensagem excluída',detail,actor,{targetId:target,channelId:m.channelId,messageId:m.id,previewBefore:m.content||'[conteúdo não disponível no cache]'}).catch(()=>{});
   });
   client.on(Events.MessageUpdate,(oldMessage,newMessage)=>{
     if(shouldIgnoreMessageLog(newMessage)||!store.settings().logs.messages)return;
     if(oldMessage?.content===newMessage?.content&&JSON.stringify(oldMessage?.embeds||[])===JSON.stringify(newMessage?.embeds||[]))return;
-    const actor=newMessage.author?.id||'Discord';
-    void audit('mensagem editada',`Mensagem \`${newMessage.id}\` editada no canal <#${newMessage.channelId}> por ${newMessage.author?.id?`<@${newMessage.author.id}>`:'autor não disponível'}.`,actor).catch(()=>{});
+    const actor=newMessage.author?.id||'Discord',target=newMessage.author?.id||'';
+    const actorText=target?`<@${target}>`:'autor não disponível';
+    const detail=`${actorText} editou a própria mensagem em <#${newMessage.channelId}>.`;
+    void audit('mensagem editada',detail,actor,{targetId:target,channelId:newMessage.channelId,messageId:newMessage.id,previewBefore:oldMessage?.content||'[conteúdo anterior não disponível]',previewAfter:newMessage?.content||'[conteúdo atual não disponível]'}).catch(()=>{});
   });
   client.on(Events.GuildBanAdd,async b=>{
     if(b.guild.id!==env.DISCORD_GUILD_ID||!store.settings().logs.moderation)return;
     await wait(500);const entry=await recentAudit(b.guild,AuditLogEvent.MemberBanAdd,{targetId:b.user.id,maxAge:3500}),actor=entry?.executorId||'Discord';
-    void audit('membro banido',`Membro <@${b.user.id}> foi banido${entry?.executorId?` por <@${entry.executorId}>`:''}.${entry?.reason?` Motivo: ${entry.reason}`:''}`,actor).catch(()=>{});
+    const actorText=entry?.executorId?`<@${entry.executorId}>`:'Discord';void audit('membro banido',`${actorText} baniu <@${b.user.id}>.${entry?.reason?` Motivo: ${entry.reason}`:''}`,actor,{targetId:b.user.id}).catch(()=>{});
   });
   client.on(Events.GuildBanRemove,async b=>{
     if(b.guild.id!==env.DISCORD_GUILD_ID||!store.settings().logs.moderation)return;
     await wait(500);const entry=await recentAudit(b.guild,AuditLogEvent.MemberBanRemove,{targetId:b.user.id,maxAge:3500}),actor=entry?.executorId||'Discord';
-    void audit('membro desbanido',`Banimento de <@${b.user.id}> removido${entry?.executorId?` por <@${entry.executorId}>`:''}.${entry?.reason?` Motivo: ${entry.reason}`:''}`,actor).catch(()=>{});
+    const actorText=entry?.executorId?`<@${entry.executorId}>`:'Discord';void audit('membro desbanido',`${actorText} removeu o banimento de <@${b.user.id}>.${entry?.reason?` Motivo: ${entry.reason}`:''}`,actor,{targetId:b.user.id}).catch(()=>{});
   });
-  for(const [event,label] of [[Events.ChannelCreate,'criado'],[Events.ChannelDelete,'excluído'],[Events.ChannelUpdate,'alterado']])logEvent(event,'channels',`canal ${label}`,(...a)=>{const c=a.at(-1);return`Canal <#${c.id}> (**#${c.name}**) foi ${label}.`;});
-  for(const [event,label] of [[Events.GuildRoleCreate,'criado'],[Events.GuildRoleDelete,'excluído'],[Events.GuildRoleUpdate,'alterado']])logEvent(event,'roles',`cargo ${label}`,(...a)=>{const r=a.at(-1);return`Cargo <@&${r.id}> (**${r.name}**) foi ${label}.`;});
+  const channelAuditType={criado:AuditLogEvent.ChannelCreate,excluído:AuditLogEvent.ChannelDelete,alterado:AuditLogEvent.ChannelUpdate};
+  for(const [event,label] of [[Events.ChannelCreate,'criado'],[Events.ChannelDelete,'excluído'],[Events.ChannelUpdate,'alterado']])client.on(event,async(...args)=>{
+    const ch=args.at(-1);if(ch.guild?.id!==env.DISCORD_GUILD_ID||!store.settings().logs.channels)return;
+    await wait(400);const entry=await recentAudit(ch.guild,channelAuditType[label],{targetId:ch.id,maxAge:3000}),actor=entry?.executorId||'Discord',actorText=entry?.executorId?`<@${entry.executorId}>`:'Discord';
+    void audit(`canal ${label}`,`${actorText} ${label==='criado'?'criou':label==='excluído'?'excluiu':'alterou'} o canal **#${ch.name}** (<#${ch.id}>).`,actor,{targetLabel:`#${ch.name}`,channelId:ch.id}).catch(()=>{});
+  });
+  const roleAuditType={criado:AuditLogEvent.RoleCreate,excluído:AuditLogEvent.RoleDelete,alterado:AuditLogEvent.RoleUpdate};
+  for(const [event,label] of [[Events.GuildRoleCreate,'criado'],[Events.GuildRoleDelete,'excluído'],[Events.GuildRoleUpdate,'alterado']])client.on(event,async(...args)=>{
+    const role=args.at(-1);if(role.guild?.id!==env.DISCORD_GUILD_ID||!store.settings().logs.roles)return;
+    await wait(400);const entry=await recentAudit(role.guild,roleAuditType[label],{targetId:role.id,maxAge:3000}),actor=entry?.executorId||'Discord',actorText=entry?.executorId?`<@${entry.executorId}>`:'Discord';
+    void audit(`cargo ${label}`,`${actorText} ${label==='criado'?'criou':label==='excluído'?'excluiu':'alterou'} o cargo <@&${role.id}> (**${role.name}**).`,actor,{targetLabel:role.name}).catch(()=>{});
+  });
   client.on(Events.Error,e=>{error=e.message;store.log('erro','Falha na conexão com o Discord.');});
   client.once(Events.ClientReady,async()=>{console.log(`Discord conectado como ${client.user?.tag||client.user?.username||'Studio K'}.`);
     try{const guild=requireGuild();const commands=[{name:'ajuda',description:'Conheça o Studio K'},{name:'loja',description:'Veja produtos e serviços disponíveis'},{name:'pedido',description:'Consulte um pedido e recupere sua entrega',options:[{name:'id',description:'Código completo do pedido; deixe vazio para o mais recente',type:3,required:false}]},{name:'ticket',description:'Abra um atendimento privado'},{name:'verificar',description:'Aceite as regras e receba acesso'},{name:'notificacoes',description:'Ative ou desative mensagens privadas opcionais'},{name:'idioma',description:'Escolha o idioma das mensagens privadas do Studio K'},{name:'Traduzir mensagem',type:3}];await new REST({version:'10'}).setToken(env.DISCORD_TOKEN).put(Routes.applicationGuildCommands(env.DISCORD_CLIENT_ID||client.user.id,guild.id),{body:commands});const s=store.settings().brand;client.user.setPresence({status:s.status,activities:s.activity?[{name:s.activity,type:ActivityType[s.activityType]}]:[]});await refreshInviteCache(guild);for(const state of guild.voiceStates.cache.values())if(state.member&&!state.member.user.bot&&state.channelId)startVoiceForUser(state.id,store.now());try{await applyVoicePresence();}catch(e){store.log('aviso',`Presença em call: ${e.message}`);}store.log('conexão',`Conectado ao servidor ${guild.name}.`);error='';await tick();}catch(e){error=e.message;store.log('erro',e.message);}
