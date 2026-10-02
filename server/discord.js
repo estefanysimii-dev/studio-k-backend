@@ -507,12 +507,44 @@ export function createBot(store,env=process.env){
   const updatedRelative=()=>`<t:${Math.floor(Date.now()/1000)}:R>`;
   async function updateCommunityLive(force=false){
     const settings=store.settings(),cfg=settings.communityLive;if(!cfg?.enabled||!cfg.channelId||!client.isReady())return null;
-    const guild=requireGuild(),{start,end,key}=currentWeek();
+    const guild=requireGuild(),{start,end,key}=currentWeek(),now=new Date();
+    const dayStart=new Date(now);dayStart.setUTCHours(0,0,0,0);
+    const dayEnd=new Date(dayStart.getTime()+86400000);
+    const monthStart=new Date(Date.UTC(now.getUTCFullYear(),now.getUTCMonth(),1));
+    const monthEnd=new Date(Date.UTC(now.getUTCFullYear(),now.getUTCMonth()+1,1));
+    const sevenDayKey=new Date(Date.now()-6*86400000).toISOString().slice(0,10);
+    const todayKey=dayStart.toISOString().slice(0,10);
+
+    const newToday=Number(store.one("SELECT COUNT(*) AS n FROM member_events WHERE event='join' AND created>=? AND created<?",dayStart.toISOString(),dayEnd.toISOString())?.n||0);
     const newWeek=Number(store.one("SELECT COUNT(*) AS n FROM member_events WHERE event='join' AND created>=? AND created<?",start.toISOString(),end.toISOString())?.n||0);
     const leftWeek=Number(store.one("SELECT COUNT(*) AS n FROM member_events WHERE event='leave' AND created>=? AND created<?",start.toISOString(),end.toISOString())?.n||0);
+    const newMonth=Number(store.one("SELECT COUNT(*) AS n FROM member_events WHERE event='join' AND created>=? AND created<?",monthStart.toISOString(),monthEnd.toISOString())?.n||0);
+    const leftMonth=Number(store.one("SELECT COUNT(*) AS n FROM member_events WHERE event='leave' AND created>=? AND created<?",monthStart.toISOString(),monthEnd.toISOString())?.n||0);
     const verifiedWeek=Number(store.one("SELECT COUNT(*) AS n FROM verifications WHERE verified_at>=? AND verified_at<?",start.toISOString(),end.toISOString())?.n||0);
-    const vars={members:String(guild.memberCount||0),newWeek:String(newWeek),verifiedWeek:String(verifiedWeek),leftWeek:String(leftWeek),updated:updatedRelative()};
-    const signature=`${key}:${guild.memberCount}:${newWeek}:${verifiedWeek}:${leftWeek}:${cfg.channelId}`;
+    const verifiedTotal=Number(store.one("SELECT COUNT(*) AS n FROM verifications")?.n||0);
+    const messagesToday=Number(store.one("SELECT COALESCE(SUM(count),0) AS n FROM message_activity WHERE day=?",todayKey)?.n||0);
+    const activeMembersWeek=Number(store.one("SELECT COUNT(DISTINCT user_id) AS n FROM message_activity WHERE day>=?",sevenDayKey)?.n||0);
+    const voiceNow=[...guild.voiceStates.cache.values()].filter(v=>v.channelId&&v.member&&!v.member.user.bot).length;
+    const boosts=Number(guild.premiumSubscriptionCount||0);
+    const openTickets=Number(store.one("SELECT COUNT(*) AS n FROM tickets WHERE status='open'")?.n||0);
+
+    const vars={
+      members:String(guild.memberCount||0),
+      newToday:String(newToday),
+      newWeek:String(newWeek),
+      leftWeek:String(leftWeek),
+      growthWeek:String(newWeek-leftWeek),
+      growthMonth:String(newMonth-leftMonth),
+      verifiedWeek:String(verifiedWeek),
+      verifiedTotal:String(verifiedTotal),
+      voiceNow:String(voiceNow),
+      boosts:String(boosts),
+      openTickets:String(openTickets),
+      messagesToday:String(messagesToday),
+      activeMembersWeek:String(activeMembersWeek),
+      updated:updatedRelative()
+    };
+    const signature=`${key}:${todayKey}:${guild.memberCount}:${newToday}:${newWeek}:${leftWeek}:${newMonth}:${leftMonth}:${verifiedWeek}:${verifiedTotal}:${voiceNow}:${boosts}:${openTickets}:${messagesToday}:${activeMembersWeek}:${cfg.channelId}`;
     return upsertLiveMessage('community-live-message',cfg,settings.messageStyles.communityLive,vars,signature,force);
   }
   async function updateGiveawaysLive(force=false){
@@ -719,7 +751,13 @@ export function createBot(store,env=process.env){
       void updateLivePanels(true);
     }catch(e){store.log('erro',e.message);}
   });
-  client.on(Events.MessageCreate,m=>{if(m.guildId===env.DISCORD_GUILD_ID&&!m.author.bot)store.run("UPDATE tickets SET updated=? WHERE channel_id=? AND status='open'",store.now(),m.channelId);});
+  client.on(Events.MessageCreate,m=>{
+    if(m.guildId!==env.DISCORD_GUILD_ID||m.author.bot)return;
+    const day=new Date().toISOString().slice(0,10);
+    store.run('INSERT INTO message_activity(day,user_id,count) VALUES(?,?,1) ON CONFLICT(day,user_id) DO UPDATE SET count=count+1',day,m.author.id);
+    store.run("UPDATE tickets SET updated=? WHERE channel_id=? AND status='open'",store.now(),m.channelId);
+    void updateCommunityLive(true);
+  });
   client.on(Events.VoiceStateUpdate,(oldState,newState)=>{
     if(newState.guild.id!==env.DISCORD_GUILD_ID||newState.member?.user?.bot)return;
     if(!oldState.channelId&&newState.channelId)startVoiceForUser(newState.id,store.now());
