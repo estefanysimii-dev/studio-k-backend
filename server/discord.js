@@ -146,16 +146,25 @@ export function createBot(store,env=process.env){
     const ticket=store.one('SELECT * FROM tickets WHERE id=?',id);if(!ticket)throw new AppError('Ticket não encontrado.',404);if(ticket.status==='closed')return;
     const c=await channel(ticket.channel_id),messages=[];let before;
     for(let page=0;page<50;page++){const batch=await c.messages.fetch({limit:100,before});if(!batch.size)break;messages.push(...batch.values());before=batch.last().id;if(batch.size<100)break;}
+    const ticketName=c.name;
     const transcript=messages.reverse().map(m=>`[${m.createdAt.toISOString()}] ${m.author?.tag||'desconhecido'} (${m.author?.id||''}): ${m.content||''}${m.attachments.size?'\n'+[...m.attachments.values()].map(a=>a.url).join('\n'):''}${m.embeds.length?'\n'+m.embeds.map(e=>[e.title,e.description].filter(Boolean).join('\n')).join('\n'):''}`).join('\n\n');
-    const shareToken=randomBytes(32).toString('base64url');
-    store.run('UPDATE tickets SET transcript=? WHERE id=?',transcript,id);
-    store.set(`transcript-share:${id}`,{hash:createHash('sha256').update(shareToken).digest('hex'),created:store.now()});
-    await c.permissionOverwrites.edit(ticket.user_id,{SendMessages:false});
-    const style=store.settings().messageStyles.ticketClose;
+    const shareToken=randomBytes(32).toString('base64url'),now=store.now();
+    store.run("UPDATE tickets SET transcript=?,status='closed',updated=? WHERE id=?",transcript,now,id);
+    store.set(`transcript-share:${id}`,{hash:createHash('sha256').update(shareToken).digest('hex'),created:now});
     const publicBase=(env.PUBLIC_URL||'').replace(/\/$/,'');
     const transcriptUrl=`${publicBase}/api/public/tickets/${id}/transcript/${shareToken}`;
-    await c.send({...stylePayload(style,{ticket:c.name,transcript:transcriptUrl}),components:[row(linkButton('Abrir transcript',transcriptUrl))],allowedMentions:safe});
-    store.run("UPDATE tickets SET status='closed',updated=? WHERE id=?",store.now(),id);await audit('ticket',`Ticket ${c.name} encerrado e transcript disponibilizado ao cliente.`,actor);
+    let dmSent=false;
+    try{
+      const user=await member(ticket.user_id),style=store.settings().messageStyles.ticketClose;
+      await user.send({...stylePayload(style,{ticket:ticketName,transcript:transcriptUrl,category:ticket.category}),components:[row(linkButton('Abrir transcript',transcriptUrl))],allowedMentions:safe});
+      dmSent=true;
+    }catch(e){
+      store.log('aviso',`Ticket ${ticketName} encerrado, mas a DM com o transcript não pôde ser entregue: ${String(e.message).slice(0,300)}`,actor);
+    }
+    await audit('ticket',`Ticket ${ticketName} encerrado${dmSent?' e transcript enviado por DM':' sem entrega da DM'}. O canal será removido.`,actor);
+    try{await c.delete(`Studio K: ticket encerrado por ${actor}`);}
+    catch(e){store.log('erro',`Ticket ${ticketName} foi encerrado, mas o canal não pôde ser removido: ${String(e.message).slice(0,300)}`,actor);throw new AppError('O atendimento foi encerrado e o transcript salvo, mas não foi possível apagar o canal. Confira a permissão Gerenciar Canais do bot.',500);}
+    return {dmSent,transcriptUrl};
   }
   async function publishPanel(kind,channelId){
     const s=store.settings(),c=await channel(channelId);let payload;
