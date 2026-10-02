@@ -37,3 +37,13 @@
 @media(max-width:760px){
   .mention-insert-grid{grid-template-columns:1fr}
 }
+
+.link-buttons-editor{display:grid;gap:12px;margin-bottom:12px}
+.link-button-row{display:grid;grid-template-columns:1.15fr .8fr 1.3fr 1.1fr .9fr auto;gap:10px;align-items:end;padding:13px;border:1px solid var(--line);border-radius:10px;background:#15121b}
+.link-button-row .field{margin:0}
+.link-button-actions{display:flex;align-items:flex-end;padding-bottom:2px}
+.discord-link-buttons{display:flex;flex-wrap:wrap;gap:8px;margin-top:9px}
+.discord-link-button{display:inline-flex;align-items:center;gap:5px;background:#4e5058;color:#fff;border-radius:3px;padding:7px 12px;font-size:.78rem;font-weight:600;line-height:1.2}
+.discord-link-button small{font-size:.65rem;color:#d5d7db;font-weight:500}
+@media(max-width:1280px){.link-button-row{grid-template-columns:1fr 1fr}.link-button-actions{grid-column:1/-1}}
+@media(max-width:700px){.link-button-row{grid-template-columns:1fr}}
