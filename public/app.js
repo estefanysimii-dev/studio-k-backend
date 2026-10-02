@@ -19,19 +19,19 @@ function mentionEmojiTools(prefix='embed'){
   const channels=(metadata.channels||[]).filter(c=>c.name).slice().sort((a,b)=>a.name.localeCompare(b.name,'pt-BR'));
   const emojis=(metadata.emojis||[]).slice().sort((a,b)=>a.name.localeCompare(b.name,'pt-BR'));
   const options=(items,kind)=>items.map(item=>{
-    const token=kind==='member'?\`<@\${item.id}>\`:kind==='role'?\`<@&\${item.id}>\`:\`<#\${item.id}>\`;
-    const label=kind==='channel'?\`# \${item.name}\`:kind==='role'?\`@\${item.name}\`:\`@\${item.name}\`;
-    return \`<option value="\${esc(token)}">\${esc(label)}</option>\`;
+    const token=kind==='member'?`<@${item.id}>`:kind==='role'?`<@&${item.id}>`:`<#${item.id}>`;
+    const label=kind==='channel'?`# ${item.name}`:kind==='role'?`@${item.name}`:`@${item.name}`;
+    return `<option value="${esc(token)}">${esc(label)}</option>`;
   }).join('');
-  return \`<details class="mention-tools"><summary>Menções avançadas e emojis do servidor</summary>
+  return `<details class="mention-tools"><summary>Menções avançadas e emojis do servidor</summary>
     <p>Digite IDs manualmente ou selecione abaixo. Pessoa: <code>&lt;@ID&gt;</code> · Cargo: <code>&lt;@&amp;ID&gt;</code> · Canal: <code>&lt;#ID&gt;</code>.</p>
     <div class="mention-insert-grid">
-      <label>Pessoa<select data-insert-token><option value="">Selecionar pessoa…</option>\${options(members,'member')}</select></label>
-      <label>Cargo<select data-insert-token><option value="">Selecionar cargo…</option>\${options(roles,'role')}</select></label>
-      <label>Canal<select data-insert-token><option value="">Selecionar canal…</option>\${options(channels,'channel')}</select></label>
+      <label>Pessoa<select data-insert-token><option value="">Selecionar pessoa…</option>${options(members,'member')}</select></label>
+      <label>Cargo<select data-insert-token><option value="">Selecionar cargo…</option>${options(roles,'role')}</select></label>
+      <label>Canal<select data-insert-token><option value="">Selecionar canal…</option>${options(channels,'channel')}</select></label>
     </div>
-    <div class="emoji-picker"><strong>Emojis do servidor</strong>\${emojis.length?\`<div class="emoji-grid">\${emojis.map(e=>{const syntax=\`<\${e.animated?'a':''}:\${e.name}:\${e.id}>\`;return \`<button type="button" class="emoji-insert" data-insert-text="\${esc(syntax)}" title=":\${esc(e.name)}:"><img src="\${esc(e.url)}" alt=":\${esc(e.name)}:" loading="lazy"><span>:\${esc(e.name)}:</span></button>\`;}).join('')}</div>\`:'<p class="subtle compact">Nenhum emoji personalizado encontrado neste servidor.</p>'}</div>
-  </details>\`;
+    <div class="emoji-picker"><strong>Emojis do servidor</strong>${emojis.length?`<div class="emoji-grid">${emojis.map(e=>{const syntax=`<${e.animated?'a':''}:${e.name}:${e.id}>`;return `<button type="button" class="emoji-insert" data-insert-text="${esc(syntax)}" title=":${esc(e.name)}:"><img src="${esc(e.url)}" alt=":${esc(e.name)}:" loading="lazy"><span>:${esc(e.name)}:</span></button>`;}).join('')}</div>`:'<p class="subtle compact">Nenhum emoji personalizado encontrado neste servidor.</p>'}</div>
+  </details>`;
 }
 
 const toggle=(label,name,checked)=>`<label class="toggle-label"><input type="checkbox" name="${esc(name)}" ${checked?'checked':''}>${esc(label)}</label>`;
@@ -78,17 +78,17 @@ function discordRichText(value){
     out+=esc(text.slice(last,match.index));
     if(match[3]){
       const emoji=(metadata.emojis||[]).find(e=>e.id===match[3]),animated=match[1]==='a'||emoji?.animated;
-      const src=emoji?.url||\`https://cdn.discordapp.com/emojis/\${match[3]}.\${animated?'gif':'png'}?size=48&quality=lossless\`;
-      out+=\`<img class="discord-inline-emoji" src="\${esc(src)}" alt=":\${esc(match[2])}:" title=":\${esc(match[2])}:">\`;
+      const src=emoji?.url||`https://cdn.discordapp.com/emojis/${match[3]}.${animated?'gif':'png'}?size=48&quality=lossless`;
+      out+=`<img class="discord-inline-emoji" src="${esc(src)}" alt=":${esc(match[2])}:" title=":${esc(match[2])}:">`;
     }else if(match[4]){
-      const member=(metadata.members||[]).find(m=>m.id===match[4]),label=member?.name||\`usuário-\${match[4].slice(-4)}\`;
-      out+=\`<span class="discord-mention">@\${esc(label)}</span>\`;
+      const member=(metadata.members||[]).find(m=>m.id===match[4]),label=member?.name||`usuário-${match[4].slice(-4)}`;
+      out+=`<span class="discord-mention">@${esc(label)}</span>`;
     }else if(match[5]){
-      const role=(metadata.roles||[]).find(r=>r.id===match[5]),label=role?.name||\`cargo-\${match[5].slice(-4)}\`;
-      out+=\`<span class="discord-mention">@\${esc(label)}</span>\`;
+      const role=(metadata.roles||[]).find(r=>r.id===match[5]),label=role?.name||`cargo-${match[5].slice(-4)}`;
+      out+=`<span class="discord-mention">@${esc(label)}</span>`;
     }else if(match[6]){
-      const channel=(metadata.channels||[]).find(c=>c.id===match[6]),label=channel?.name||\`canal-\${match[6].slice(-4)}\`;
-      out+=\`<span class="discord-mention">#\${esc(label)}</span>\`;
+      const channel=(metadata.channels||[]).find(c=>c.id===match[6]),label=channel?.name||`canal-${match[6].slice(-4)}`;
+      out+=`<span class="discord-mention">#${esc(label)}</span>`;
     }
     last=re.lastIndex;
   }
