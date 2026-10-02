@@ -574,7 +574,7 @@ export function createBot(store,env=process.env){
       payload=styledPayload(s.messageStyles.ticketPanel,staticVars,env.DISCORD_GUILD_ID);payload.components=[...(payload.components||[]),row(button(s.tickets.button,'ticket-open',1))];
     }else{
       const controls=[button(s.verification.button,'verify',1)];
-      if(s.verification.oauthEnabled)controls.push(linkButton('Usar navegador',`${String(env.PUBLIC_URL||'').replace(/\/$/,'')}/api/oauth/discord/start`));
+      if(s.verification.oauthEnabled)controls.push(button('Usar navegador','verify-browser',2));
       payload=styledPayload(s.messageStyles.verificationPanel,staticVars,env.DISCORD_GUILD_ID);payload.components=[...(payload.components||[]),row(...controls)];
     }
     const message=await c.send({...payload,allowedMentions:mentionPolicy(payload)});await audit('painel',`Painel de ${kind} publicado.`,'painel');return{id:message.id};
