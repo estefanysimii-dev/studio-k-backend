@@ -17,7 +17,7 @@ export function openStore(directory) {
     CREATE TABLE IF NOT EXISTS stock(id TEXT PRIMARY KEY,product_id TEXT NOT NULL REFERENCES products(id),secret TEXT NOT NULL,order_id TEXT UNIQUE);
     CREATE TABLE IF NOT EXISTS orders(id TEXT PRIMARY KEY,user_id TEXT NOT NULL,product_id TEXT NOT NULL REFERENCES products(id),product TEXT NOT NULL,price INTEGER NOT NULL,status TEXT NOT NULL,created TEXT NOT NULL,expires TEXT NOT NULL,approved_by TEXT,role_done INTEGER NOT NULL DEFAULT 0,delivery_done INTEGER NOT NULL DEFAULT 0,error TEXT,receipt TEXT);
     CREATE TABLE IF NOT EXISTS tickets(id TEXT PRIMARY KEY,user_id TEXT NOT NULL,channel_id TEXT UNIQUE,category TEXT NOT NULL,status TEXT NOT NULL,created TEXT NOT NULL,updated TEXT NOT NULL,claimed_by TEXT,transcript TEXT);
-    CREATE UNIQUE INDEX IF NOT EXISTS open_ticket_per_user ON tickets(user_id) WHERE status='open';
+    CREATE INDEX IF NOT EXISTS tickets_open_user ON tickets(user_id,status);
     CREATE TABLE IF NOT EXISTS giveaways(id TEXT PRIMARY KEY,data TEXT NOT NULL,status TEXT NOT NULL,message_id TEXT,winners TEXT,created TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS entries(giveaway_id TEXT NOT NULL REFERENCES giveaways(id),user_id TEXT NOT NULL,PRIMARY KEY(giveaway_id,user_id));
     CREATE TABLE IF NOT EXISTS giveaway_attempts(giveaway_id TEXT NOT NULL REFERENCES giveaways(id),user_id TEXT NOT NULL,status TEXT NOT NULL,detail TEXT NOT NULL,updated TEXT NOT NULL,PRIMARY KEY(giveaway_id,user_id));
@@ -41,8 +41,24 @@ export function openStore(directory) {
     CREATE TABLE IF NOT EXISTS logs(id INTEGER PRIMARY KEY AUTOINCREMENT,type TEXT NOT NULL,actor TEXT NOT NULL,detail TEXT NOT NULL,created TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS templates(id TEXT PRIMARY KEY,name TEXT NOT NULL,data TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS requests(key TEXT PRIMARY KEY,result TEXT NOT NULL,created TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS feedback_requests(
+      id TEXT PRIMARY KEY,
+      type TEXT NOT NULL,
+      source_id TEXT NOT NULL,
+      user_id TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'pending',
+      rating INTEGER,
+      comment TEXT,
+      meta TEXT NOT NULL DEFAULT '{}',
+      created TEXT NOT NULL,
+      submitted_at TEXT
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS feedback_source_unique ON feedback_requests(type,source_id);
+    CREATE INDEX IF NOT EXISTS feedback_user_status ON feedback_requests(user_id,status);
   `);
   if(!db.prepare('PRAGMA table_info(orders)').all().some(c=>c.name==='approved_at'))db.exec('ALTER TABLE orders ADD COLUMN approved_at TEXT');
+  db.exec('DROP INDEX IF EXISTS open_ticket_per_user');
+  db.exec('CREATE INDEX IF NOT EXISTS tickets_open_user ON tickets(user_id,status)');
   // Backfill referral_joins from previously tracked giveaway invite joins where possible.
   if(db.prepare('SELECT COUNT(*) AS n FROM referral_joins').get().n===0){
     const legacy=db.prepare('SELECT joined_user_id,inviter_user_id,code,joined_at,left_at FROM invite_joins ORDER BY joined_at').all();
