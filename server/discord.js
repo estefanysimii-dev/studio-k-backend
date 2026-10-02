@@ -829,7 +829,24 @@ export function createBot(store,env=process.env){
         const c=await channel(t.channel_id),oldName=c.name;await c.setName(newName,`Studio K: renomeado por ${i.user.id}`);
         store.run('UPDATE tickets SET updated=? WHERE id=?',store.now(),id);await audit('ticket',`Ticket ${oldName} renomeado para ${newName}.`,i.user.id);await i.editReply(`Ticket renomeado para **${newName}**.`);return;
       }
-      if(action==='verify'||action==='verificar'){const v=store.settings().verification;const roles=verificationRoleIds(v);if(!roles.length)throw new AppError('A verificação ainda não possui cargos configurados.');if(Date.now()-i.user.createdTimestamp<v.minimumAccountDays*86400000)throw new AppError(`Sua conta precisa ter pelo menos ${v.minimumAccountDays} dias.`);await assignRoles(i.user.id,roles);const now=store.now(),username=String(i.member?.displayName||i.user.globalName||i.user.username||i.user.id).slice(0,120);store.run('INSERT INTO verifications(user_id,username,verified_at,last_authorized_at) VALUES(?,?,?,?) ON CONFLICT(user_id) DO UPDATE SET username=excluded.username,last_authorized_at=excluded.last_authorized_at',i.user.id,username,now,now);void updateLivePanels(true);await i.editReply('Verificação concluída. Bem-vindo(a)!');return;}
+      if(action==='verify'||action==='verificar'){
+        const settings=store.settings(),v=settings.verification,roles=verificationRoleIds(v);
+        if(!roles.length)throw new AppError('A verificação ainda não possui cargos configurados.');
+        if(Date.now()-i.user.createdTimestamp<v.minimumAccountDays*86400000)throw new AppError(`Sua conta precisa ter pelo menos ${v.minimumAccountDays} dias.`);
+        await assignRoles(i.user.id,roles);
+        const guild=requireGuild(),m=await member(i.user.id),now=store.now(),username=String(i.member?.displayName||i.user.globalName||i.user.username||i.user.id).slice(0,120);
+        store.run('INSERT INTO verifications(user_id,username,verified_at,last_authorized_at) VALUES(?,?,?,?) ON CONFLICT(user_id) DO UPDATE SET username=excluded.username,last_authorized_at=excluded.last_authorized_at',i.user.id,username,now,now);
+        if(v.sendDm){
+          try{
+            const roleText=roles.map(id=>`<@&${id}>`).join(', '),payload=stylePayload(settings.messageStyles.verificationDm,{user:`<@${i.user.id}>`,username,server:guild.name,role:roleText,roles:roleText},env.DISCORD_GUILD_ID);
+            await m.send({...payload,allowedMentions:mentionPolicy(payload)});
+          }catch(e){store.log('aviso',`Verificação nativa concluída para ${i.user.id}, mas a DM não pôde ser entregue: ${String(e.message).slice(0,300)}`);}
+        }
+        void updateLivePanels(true);
+        const targetId=v.redirectChannelId||settings.welcome.channelId||'',components=targetId?[row(linkButton('Continuar no servidor',`https://discord.com/channels/${env.DISCORD_GUILD_ID}/${targetId}`))]:[];
+        await i.editReply({content:'Verificação concluída. Bem-vindo(a)!',components});
+        return;
+      }
       if(action.startsWith('buy:')||action==='store-buy'){if(store.settings().operationsLive?.storeOpen===false)throw new AppError('A loja está fechada no momento.');if(!store.settings().sales.pixKey)throw new AppError('As vendas ainda não foram configuradas.');const order=store.createOrder(action==='store-buy'?i.values[0]:action.split(':')[1],i.user.id);void updateOperationsLive(true);await i.editReply({content:await orderText(order),components:[row(button('Enviar comprovante / falar com equipe','ticket',2))]});return;}
       if(action==='pedido'){const orderId=i.options.getString('id');const order=orderId?store.one('SELECT * FROM orders WHERE id=? AND user_id=?',orderId,i.user.id):store.one('SELECT * FROM orders WHERE user_id=? ORDER BY created DESC LIMIT 1',i.user.id);if(!order)throw new AppError('Pedido não encontrado.');let text=order.status==='pending'?await orderText(order):`Pedido ${order.id}\nSituação: ${{paid:'Aprovado; entrega em processamento',delivered:'Entregue',cancelled:'Cancelado'}[order.status]}`;if(['paid','delivered'].includes(order.status)){const unit=store.one('SELECT secret FROM stock WHERE order_id=?',order.id);if(unit)text+=`\n\nSua entrega: ${store.decrypt(unit.secret)}`;}await i.editReply({content:text.slice(0,2000),allowedMentions:safe});return;}
       if(action.startsWith('giveaway:')){
