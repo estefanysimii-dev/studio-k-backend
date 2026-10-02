@@ -196,6 +196,7 @@ export function createBot(store,env=process.env){
     const ok=results.every(r=>r.ok);
     if(record)store.run('INSERT INTO giveaway_attempts(giveaway_id,user_id,status,detail,updated) VALUES(?,?,?,?,?) ON CONFLICT(giveaway_id,user_id) DO UPDATE SET status=excluded.status,detail=excluded.detail,updated=excluded.updated',giveawayId,userId,ok?'eligible':'incomplete',JSON.stringify(results),store.now());
     if(enter){if(ok)store.run('INSERT OR IGNORE INTO entries VALUES(?,?)',giveawayId,userId);else store.run('DELETE FROM entries WHERE giveaway_id=? AND user_id=?',giveawayId,userId);}
+    void updateGiveawaysLive(true);
     return{ok,results,data,giveaway};
   }
   async function createGoogleConnectUrl(giveawayId,userId){
@@ -231,6 +232,7 @@ export function createBot(store,env=process.env){
       if(owned.length===1){
         const {inv,owner}=owned[0];
         store.run('INSERT INTO invite_joins(giveaway_id,joined_user_id,inviter_user_id,code,joined_at,left_at) VALUES(?,?,?,?,?,NULL) ON CONFLICT(giveaway_id,joined_user_id) DO UPDATE SET inviter_user_id=excluded.inviter_user_id,code=excluded.code,joined_at=excluded.joined_at,left_at=NULL',owner.giveaway_id,memberJoined.id,owner.user_id,inv.code,store.now());
+        void updateInviteRankingLive(true);
       }
     }catch(e){store.log('aviso',`Não foi possível atribuir convite de ${memberJoined.id}: ${String(e.message).slice(0,300)}`);}
   }
@@ -277,6 +279,7 @@ export function createBot(store,env=process.env){
       }catch(e){store.log('aviso',`Verificação concluída para ${user.id}, mas a DM não pôde ser entregue: ${String(e.message).slice(0,300)}`);}
     }
     await audit('verificação',`OAuth concluído e cargo liberado para ${username} (${user.id}).`,user.id);
+    void updateLivePanels(true);
     return {userId:user.id,username,dmSent};
   }
   async function sendMessage(data){
@@ -352,7 +355,7 @@ export function createBot(store,env=process.env){
         button('Chamar cliente',`call:${id}`,2),
         button('Finalizar',`close:${id}`,4)
       )],allowedMentions:mentionPolicy(staffPayload)});
-      await audit('ticket',`Ticket ${ticketName} aberto: ${category}`,userId);return store.one('SELECT * FROM tickets WHERE id=?',id);
+      await audit('ticket',`Ticket ${ticketName} aberto: ${category}`,userId);void updateOperationsLive(true);return store.one('SELECT * FROM tickets WHERE id=?',id);
     }catch(e){
       if(!c)store.run('DELETE FROM tickets WHERE id=?',id);
       else store.log('erro',`Ticket ${id.slice(0,8)} criado, mas mensagem inicial falhou.`);
@@ -382,6 +385,7 @@ export function createBot(store,env=process.env){
     await audit('ticket',`Ticket ${ticketName} encerrado${dmSent?' e transcript enviado por DM':' sem entrega da DM'}. O canal será removido.`,actor);
     try{await c.delete(`Studio K: ticket encerrado por ${actor}`);}
     catch(e){store.log('erro',`Ticket ${ticketName} foi encerrado, mas o canal não pôde ser removido: ${String(e.message).slice(0,300)}`,actor);throw new AppError('O atendimento foi encerrado e o transcript salvo, mas não foi possível apagar o canal. Confira a permissão Gerenciar Canais do bot.',500);}
+    void updateOperationsLive(true);
     return {dmSent,transcriptUrl};
   }
   async function publishPanel(kind,channelId){
@@ -575,6 +579,7 @@ export function createBot(store,env=process.env){
     if((data.requirements||[]).some(r=>r.type==='voiceMinutes')){
       for(const state of requireGuild().voiceStates.cache.values())if(state.member&&!state.member.user.bot&&state.channelId)startVoiceForUser(state.id,store.now());
     }
+    void updateGiveawaysLive(true);
     return{id};
   }
   async function finishGiveaway(g){
@@ -593,6 +598,7 @@ export function createBot(store,env=process.env){
     const payload=stylePayload(store.settings().messageStyles.giveawayResult,{title:data.title,result});
     const c=await channel(data.channelId);await c.messages.edit(g.message_id,{...payload,components:payload.components||[],allowedMentions:mentionPolicy(payload,winners||[])});
     store.run("UPDATE giveaways SET status='ended' WHERE id=?",g.id);
+    void updateGiveawaysLive(true);
   }
   async function createEvent(data){const event=await requireGuild().scheduledEvents.create({name:data.name,description:data.description||undefined,scheduledStartTime:new Date(data.startsAt),scheduledEndTime:new Date(data.endsAt),privacyLevel:GuildScheduledEventPrivacyLevel.GuildOnly,entityType:GuildScheduledEventEntityType.External,entityMetadata:{location:data.location}});const id=randomUUID();store.run('INSERT INTO events VALUES(?,?,?,?)',id,JSON.stringify(data),event.id,store.now());return{id,discordId:event.id};}
   async function applyBrand(){const s=store.settings().brand;requireGuild();const body={username:s.name};if(s.avatar)body.avatar=s.avatar;if(s.banner)body.banner=s.banner;await client.user.edit(body);await client.application.edit({description:s.description});client.user.setPresence({status:s.status,activities:s.activity?[{name:s.activity,type:ActivityType[s.activityType]}]:[]});await audit('identidade','Identidade do bot atualizada.','painel');}
@@ -671,7 +677,7 @@ export function createBot(store,env=process.env){
         store.run('UPDATE tickets SET updated=? WHERE id=?',store.now(),id);await audit('ticket',`Ticket ${oldName} renomeado para ${newName}.`,i.user.id);await i.editReply(`Ticket renomeado para **${newName}**.`);return;
       }
       if(action==='verify'||action==='verificar'){const v=store.settings().verification;if(v.oauthEnabled){const url=`${String(env.PUBLIC_URL||'').replace(/\/$/,'')}/api/oauth/discord/start`;await i.editReply({content:'Para liberar o acesso, autorize sua conta pelo Discord.',components:[row(linkButton(v.button,url))]});return;}if(!v.roleId)throw new AppError('A verificação ainda não foi configurada.');if(Date.now()-i.user.createdTimestamp<v.minimumAccountDays*86400000)throw new AppError(`Sua conta precisa ter pelo menos ${v.minimumAccountDays} dias.`);await assignRole(i.user.id,v.roleId);await i.editReply('Verificação concluída. Bem-vindo(a)!');return;}
-      if(action.startsWith('buy:')||action==='store-buy'){if(store.settings().operationsLive?.storeOpen===false)throw new AppError('A loja está fechada no momento.');if(!store.settings().sales.pixKey)throw new AppError('As vendas ainda não foram configuradas.');const order=store.createOrder(action==='store-buy'?i.values[0]:action.split(':')[1],i.user.id);await i.editReply({content:await orderText(order),components:[row(button('Enviar comprovante / falar com equipe','ticket',2))]});return;}
+      if(action.startsWith('buy:')||action==='store-buy'){if(store.settings().operationsLive?.storeOpen===false)throw new AppError('A loja está fechada no momento.');if(!store.settings().sales.pixKey)throw new AppError('As vendas ainda não foram configuradas.');const order=store.createOrder(action==='store-buy'?i.values[0]:action.split(':')[1],i.user.id);void updateOperationsLive(true);await i.editReply({content:await orderText(order),components:[row(button('Enviar comprovante / falar com equipe','ticket',2))]});return;}
       if(action==='pedido'){const orderId=i.options.getString('id');const order=orderId?store.one('SELECT * FROM orders WHERE id=? AND user_id=?',orderId,i.user.id):store.one('SELECT * FROM orders WHERE user_id=? ORDER BY created DESC LIMIT 1',i.user.id);if(!order)throw new AppError('Pedido não encontrado.');let text=order.status==='pending'?await orderText(order):`Pedido ${order.id}\nSituação: ${{paid:'Aprovado; entrega em processamento',delivered:'Entregue',cancelled:'Cancelado'}[order.status]}`;if(['paid','delivered'].includes(order.status)){const unit=store.one('SELECT secret FROM stock WHERE order_id=?',order.id);if(unit)text+=`\n\nSua entrega: ${store.decrypt(unit.secret)}`;}await i.editReply({content:text.slice(0,2000),allowedMentions:safe});return;}
       if(action.startsWith('giveaway:')){
         const id=action.split(':')[1],g=store.one('SELECT * FROM giveaways WHERE id=?',id);
