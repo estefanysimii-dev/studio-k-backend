@@ -427,7 +427,7 @@ export function createBot(store,env=process.env){
     if(v.sendDm){
       try{
         const style=settings.messageStyles.verificationDm;
-        const roleText=roles.map(id=>`<@&${id}>`).join(', '),payload=styledPayload(style,{user:`<@${user.id}>`,username,server:guild.name,role:roleText,roles:roleText},env.DISCORD_GUILD_ID);await m.send({...payload,allowedMentions:mentionPolicy(payload)});
+        const roleText=roles.map(id=>`<@&${id}>`).join(', '),payload=styledPayload(style,{user:`<@${user.id}>`,username,server:guild.name,role:roleText,roles:roleText},env.DISCORD_GUILD_ID),localized=await localizeFor(user.id,payload);await m.send({...localized,allowedMentions:mentionPolicy(localized)});
         dmSent=true;
       }catch(e){store.log('aviso',`Verificação concluída para ${user.id}, mas a DM não pôde ser entregue: ${String(e.message).slice(0,300)}`);}
     }
@@ -436,12 +436,13 @@ export function createBot(store,env=process.env){
     return {userId:user.id,username,dmSent};
   }
   async function sendMessage(data){
-    const payload={content:data.content||undefined,embeds:data.embed?[embedPayload(data.embed)]:[],components:linkRows(data.buttons||[],env.DISCORD_GUILD_ID)};
+    const payload=withTranslator({content:data.content||undefined,embeds:data.embed?[embedPayload(data.embed)]:[],components:linkRows(data.buttons||[],env.DISCORD_GUILD_ID)});
     payload.allowedMentions=mentionPolicy(payload);
     let result;
     if(data.target==='dm'){
       if(!store.one('SELECT user_id FROM optins WHERE user_id=?',data.targetId))throw new AppError('O membro precisa ativar /notificacoes antes de receber mensagens deste editor.');
-      result=await(await member(data.targetId)).send(payload);
+      const localized=await localizeFor(data.targetId,payload);localized.allowedMentions=mentionPolicy(localized);
+      result=await(await member(data.targetId)).send(localized);
     }else{
       const c=await channel(data.targetId);
       if(data.webhookName){
@@ -535,7 +536,8 @@ export function createBot(store,env=process.env){
       const closeVars={user:`<@${ticket.user_id}>`,username:user.displayName||user.user.globalName||user.user.username||ticket.user_id,server:c.guild.name,ticket:ticketName,transcript:transcriptUrl,category:ticket.category};
       const closePayload=styledPayload(style,closeVars,env.DISCORD_GUILD_ID),feedback=createFeedbackRequest('ticket',id,ticket.user_id,{ticket:ticketName,category:ticket.category});
       const finalRow=feedback?row(linkButton('Abrir transcript',transcriptUrl),button('Dar feedback',`feedback:${feedback.id}`,2)):row(linkButton('Abrir transcript',transcriptUrl));
-      await user.send({...closePayload,components:[...(closePayload.components||[]).slice(0,4),finalRow],allowedMentions:mentionPolicy(closePayload,[ticket.user_id])});
+      const closeMessage={...closePayload,components:[...(closePayload.components||[]).slice(0,4),finalRow],allowedMentions:mentionPolicy(closePayload,[ticket.user_id])},localizedClose=await localizeFor(ticket.user_id,closeMessage);
+      await user.send({...localizedClose,allowedMentions:mentionPolicy(localizedClose,[ticket.user_id])});
       dmSent=true;
     }catch(e){
       store.log('aviso',`Ticket ${ticketName} encerrado, mas a DM com o transcript não pôde ser entregue: ${String(e.message).slice(0,300)}`,actor);
@@ -568,11 +570,11 @@ export function createBot(store,env=process.env){
         count:String(requireGuild().memberCount)
       };
       const content=expandText(t.content||'',variables),e=embedPayload(t.embed||{},variables);
-      const payload={
+      const payload=withTranslator({
         content:content||undefined,
         embeds:hasEmbed(e)?[e]:[],
         components:linkRows(t.buttons||[],env.DISCORD_GUILD_ID)
-      };
+      });
       payload.allowedMentions=mentionPolicy(payload);
       const message=await c.send(payload);
       await audit('mensagem',`${key==='welcome'?'Boas-vindas':'Saída'} publicada separadamente pelo painel.`,'painel');
@@ -618,7 +620,8 @@ export function createBot(store,env=process.env){
         const feedback=p.type==='digital'?createFeedbackRequest('order',order.id,order.user_id,{product:p.name}):null;
         const components=[...(payload.components||[])].slice(0,4);
         if(feedback)components.push(row(button('Dar feedback',`feedback:${feedback.id}`,2)));
-        await user.send({...payload,components,allowedMentions:mentionPolicy(payload),nonce:createHash('sha256').update(order.id).digest('hex').slice(0,24),enforceNonce:true});
+        const deliveryMessage={...payload,components,allowedMentions:mentionPolicy(payload),nonce:createHash('sha256').update(order.id).digest('hex').slice(0,24),enforceNonce:true},localizedDelivery=await localizeFor(order.user_id,deliveryMessage);
+        await user.send({...localizedDelivery,allowedMentions:mentionPolicy(localizedDelivery),nonce:deliveryMessage.nonce,enforceNonce:true});
         store.run('UPDATE orders SET delivery_done=1 WHERE id=?',order.id);
       }
       store.run("UPDATE orders SET status='delivered',error=NULL WHERE id=?",order.id);await audit('entrega',`Pedido ${order.id.slice(0,8)} entregue.`);
@@ -911,7 +914,7 @@ export function createBot(store,env=process.env){
         const callPayload=styledPayload(style,variables,env.DISCORD_GUILD_ID);await c.send({...callPayload,allowedMentions:mentionPolicy(callPayload,[t.user_id])});
         let dmSent=false;
         if(settings.tickets.callDm){
-          try{const dmPayload=styledPayload(settings.messageStyles.ticketCallDm,variables,env.DISCORD_GUILD_ID);await(await member(t.user_id)).send({...dmPayload,allowedMentions:mentionPolicy(dmPayload)});dmSent=true;}
+          try{const dmPayload=styledPayload(settings.messageStyles.ticketCallDm,variables,env.DISCORD_GUILD_ID),localizedDm=await localizeFor(t.user_id,dmPayload);await(await member(t.user_id)).send({...localizedDm,allowedMentions:mentionPolicy(localizedDm)});dmSent=true;}
           catch(e){store.log('aviso',`Cliente chamado em ${c.name}, mas a DM falhou: ${String(e.message).slice(0,300)}`);}
         }
         store.run('UPDATE tickets SET updated=? WHERE id=?',store.now(),id);await audit('ticket',`Cliente chamado no ticket ${c.name}${dmSent?' e por DM':''}.`,i.user.id);await i.editReply(dmSent?'Cliente chamado no ticket e no privado.':'Cliente chamado no ticket. A DM não pôde ser entregue.');return;
@@ -974,7 +977,7 @@ export function createBot(store,env=process.env){
       if(t.enabled&&t.channelId){
         const variables={user:`<@${m.id}>`,username:m.user.username,server:m.guild.name,count:String(m.guild.memberCount)};
         const content=t.content.replace(/\{(user|username|server|count)\}/g,(v,k)=>variables[k]);const e=embedPayload(t.embed,variables);
-        const payload={content:content||undefined,embeds:e.title||e.description||e.fields?.length?[e]:[],components:linkRows(t.buttons||[],env.DISCORD_GUILD_ID)};
+        const payload=withTranslator({content:content||undefined,embeds:e.title||e.description||e.fields?.length?[e]:[],components:linkRows(t.buttons||[],env.DISCORD_GUILD_ID)});
         payload.allowedMentions=mentionPolicy(payload,key==='welcome'?[m.id]:[]);
         await(await channel(t.channelId)).send(payload);
       }
