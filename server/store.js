@@ -25,6 +25,8 @@ export function openStore(directory) {
     CREATE TABLE IF NOT EXISTS youtube_accounts(user_id TEXT PRIMARY KEY,channel_id TEXT NOT NULL,channel_title TEXT NOT NULL,refresh_secret TEXT NOT NULL,connected_at TEXT NOT NULL,updated_at TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS giveaway_invites(giveaway_id TEXT NOT NULL REFERENCES giveaways(id),user_id TEXT NOT NULL,code TEXT NOT NULL UNIQUE,created TEXT NOT NULL,PRIMARY KEY(giveaway_id,user_id));
     CREATE TABLE IF NOT EXISTS invite_joins(giveaway_id TEXT NOT NULL REFERENCES giveaways(id),joined_user_id TEXT NOT NULL,inviter_user_id TEXT NOT NULL,code TEXT NOT NULL,joined_at TEXT NOT NULL,left_at TEXT,PRIMARY KEY(giveaway_id,joined_user_id));
+    CREATE TABLE IF NOT EXISTS referral_joins(joined_user_id TEXT PRIMARY KEY,inviter_user_id TEXT NOT NULL,code TEXT NOT NULL,joined_at TEXT NOT NULL,left_at TEXT);
+    CREATE INDEX IF NOT EXISTS referral_joins_inviter ON referral_joins(inviter_user_id,joined_at);
     CREATE INDEX IF NOT EXISTS invite_joins_inviter ON invite_joins(giveaway_id,inviter_user_id);
     CREATE TABLE IF NOT EXISTS voice_activity(user_id TEXT PRIMARY KEY,seconds INTEGER NOT NULL DEFAULT 0,joined_at TEXT);
     CREATE TABLE IF NOT EXISTS giveaway_voice(giveaway_id TEXT NOT NULL REFERENCES giveaways(id),user_id TEXT NOT NULL,seconds INTEGER NOT NULL DEFAULT 0,joined_at TEXT,PRIMARY KEY(giveaway_id,user_id));
@@ -39,6 +41,12 @@ export function openStore(directory) {
     CREATE TABLE IF NOT EXISTS requests(key TEXT PRIMARY KEY,result TEXT NOT NULL,created TEXT NOT NULL);
   `);
   if(!db.prepare('PRAGMA table_info(orders)').all().some(c=>c.name==='approved_at'))db.exec('ALTER TABLE orders ADD COLUMN approved_at TEXT');
+  // Backfill referral_joins from previously tracked giveaway invite joins where possible.
+  if(db.prepare('SELECT COUNT(*) AS n FROM referral_joins').get().n===0){
+    const legacy=db.prepare('SELECT joined_user_id,inviter_user_id,code,joined_at,left_at FROM invite_joins ORDER BY joined_at').all();
+    const ins=db.prepare('INSERT INTO referral_joins(joined_user_id,inviter_user_id,code,joined_at,left_at) VALUES(?,?,?,?,?) ON CONFLICT(joined_user_id) DO UPDATE SET inviter_user_id=excluded.inviter_user_id,code=excluded.code,joined_at=excluded.joined_at,left_at=excluded.left_at');
+    for(const row of legacy)ins.run(row.joined_user_id,row.inviter_user_id,row.code,row.joined_at,row.left_at);
+  }
   // Backfill member_events once from existing member audit logs when available.
   if(db.prepare('SELECT COUNT(*) AS n FROM member_events').get().n===0){
     const legacy=db.prepare("SELECT actor,detail,created FROM logs WHERE type='membro' ORDER BY id").all();
