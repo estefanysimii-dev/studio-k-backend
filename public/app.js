@@ -256,7 +256,75 @@ async function action(name){
   if(type==='retry'){await api(`/orders/${sub}/retry`,'POST',{});await refresh();toast('Tentativa de entrega processada. Confira o status do pedido.');return;}
   if(type==='publish'){modal(sub==='tickets'?'Publicar painel de tickets':'Publicar verificação',idField('Canal de publicação','channelId',''),async d=>{await api(`/${sub}/publish`,'POST',{channelId:d.get('channelId')});toast('Painel publicado no Discord.');});return;}
   if(type==='ticket'&&sub==='close'){confirmAction('Encerrar atendimento','O histórico será salvo, o transcript será enviado por DM ao cliente e este canal será removido.',async()=>{await api(`/tickets/${arg}/close`,'POST',{});await refresh();toast('Atendimento encerrado.');});return;}
-  if(type==='giveaway'){modal('Criar sorteio',`${field('Prêmio / título','title','',{required:true})}${field('Descrição e regras','description','',{type:'textarea'})}${idField('Canal de publicação','channelId','')}<div class="form-grid">${field('Encerramento (horário local)','endsAt',localTime(86400000),{type:'datetime-local',required:true})}${field('Quantidade de vencedores','winners',1,{type:'number',min:1,max:20,required:true})}</div>${idField('Cargo necessário (opcional)','requiredRoleId','','roles')}`,async d=>{await api('/giveaways','POST',{...Object.fromEntries(d),winners:Number(d.get('winners')),endsAt:new Date(d.get('endsAt')).toISOString()});await refresh();toast('Sorteio publicado.');},'Criar e publicar');return;}
+  if(type==='giveaway'){
+    if(sub==='new'){
+      const yt=state.integrations?.youtube||{};
+      modal('Criar sorteio com requisitos',`
+        ${field('Prêmio / título','title','',{required:true})}
+        ${field('Descrição e regras','description','',{type:'textarea'})}
+        ${idField('Canal de publicação','channelId','')}
+        <div class="form-grid">
+          ${field('Encerramento (horário local)','endsAt',localTime(86400000),{type:'datetime-local',required:true})}
+          ${field('Quantidade de vencedores','winners',1,{type:'number',min:1,max:20,required:true})}
+        </div>
+        <h3 class="section-label">REQUISITOS DO DISCORD</h3>
+        ${toggle('Exigir verificação Studio K','reqVerified',false)}
+        ${idField('Cargo obrigatório (opcional)','requiredRoleId','','roles')}
+        <div class="form-grid">
+          ${field('Idade mínima da conta (dias)','accountAgeDays','',{type:'number',min:1,max:3650})}
+          ${field('Tempo mínimo no servidor (dias)','serverAgeDays','',{type:'number',min:1,max:3650})}
+          ${field('Convites válidos necessários','inviteCount','',{type:'number',min:1,max:1000})}
+          ${field('Permanência mínima do convidado (horas)','inviteMinStayHours',0,{type:'number',min:0,max:8760})}
+          ${field('Idade mínima da conta convidada (dias)','inviteMinAccountDays',0,{type:'number',min:0,max:3650})}
+          ${field('Tempo em call necessário (minutos)','voiceMinutes','',{type:'number',min:1,max:100000})}
+        </div>
+        ${toggle('Convites só contam após o convidado concluir a verificação','inviteRequireVerified',true)}
+        <h3 class="section-label">REAÇÃO EM MENSAGEM</h3>
+        <div class="form-grid">
+          ${idField('Canal da mensagem','reactionChannelId','')}
+          ${field('ID da mensagem','reactionMessageId','',{placeholder:'ID da mensagem do Discord'})}
+          ${field('Emoji exigido','reactionEmoji','',{placeholder:'👍 ou <:emoji:ID>'})}
+        </div>
+        <h3 class="section-label">YOUTUBE</h3>
+        <div class="notice ${yt.configured?'':'warning'}">${icon('info')}<span>${yt.configured?'Integração Google/YouTube pronta para uso.':'Configure GOOGLE_CLIENT_ID e GOOGLE_CLIENT_SECRET no Railway para validar estes requisitos.'}</span></div>
+        ${field('Canal obrigatório do YouTube','youtubeChannel','',{placeholder:'@canal, URL ou Channel ID'})}
+        ${field('Vídeo que precisa receber like','youtubeVideo','',{placeholder:'URL do YouTube ou ID do vídeo'})}
+        <h3 class="section-label">APROVAÇÃO MANUAL</h3>
+        ${field('Requisito manual (opcional)','manualLabel','',{placeholder:'Ex.: Enviar print no ticket'})}
+      `,async d=>{
+        const requirements=[];
+        if(d.has('reqVerified'))requirements.push({id:'',type:'verified'});
+        const accountAgeDays=Number(d.get('accountAgeDays')||0);if(accountAgeDays>0)requirements.push({id:'',type:'accountAge',days:accountAgeDays});
+        const serverAgeDays=Number(d.get('serverAgeDays')||0);if(serverAgeDays>0)requirements.push({id:'',type:'serverAge',days:serverAgeDays});
+        const inviteCount=Number(d.get('inviteCount')||0);if(inviteCount>0)requirements.push({id:'',type:'invites',count:inviteCount,minStayHours:Number(d.get('inviteMinStayHours')||0),minAccountDays:Number(d.get('inviteMinAccountDays')||0),requireVerified:d.has('inviteRequireVerified')});
+        const voiceMinutes=Number(d.get('voiceMinutes')||0);if(voiceMinutes>0)requirements.push({id:'',type:'voiceMinutes',minutes:voiceMinutes});
+        const rc=String(d.get('reactionChannelId')||''),rm=String(d.get('reactionMessageId')||''),re=String(d.get('reactionEmoji')||'').trim();
+        if(rc||rm||re){if(!rc||!rm||!re)throw new Error('Para exigir reação, preencha canal, ID da mensagem e emoji.');requirements.push({id:'',type:'reaction',channelId:rc,messageId:rm,emoji:re});}
+        const youtubeChannel=String(d.get('youtubeChannel')||'').trim();if(youtubeChannel)requirements.push({id:'',type:'youtubeSubscription',channel:youtubeChannel});
+        const youtubeVideo=String(d.get('youtubeVideo')||'').trim();if(youtubeVideo)requirements.push({id:'',type:'youtubeLike',video:youtubeVideo});
+        const manualLabel=String(d.get('manualLabel')||'').trim();if(manualLabel)requirements.push({id:'',type:'manual',label:manualLabel});
+        const data={
+          title:d.get('title'),description:d.get('description')||'',channelId:d.get('channelId'),
+          endsAt:new Date(d.get('endsAt')).toISOString(),winners:Number(d.get('winners')),
+          requiredRoleId:d.get('requiredRoleId')||'',requirements
+        };
+        await api('/giveaways','POST',data);await refresh();toast('Sorteio publicado com os requisitos configurados.');
+      },'Criar e publicar');
+      return;
+    }
+    if(sub==='attempts'){
+      const g=state.giveaways.find(x=>x.id===arg);if(!g)throw new Error('Sorteio não encontrado.');
+      const attempts=await api(`/giveaways/${arg}/attempts`);
+      const memberName=id=>metadata.members?.find(m=>m.id===id)?.name||id;
+      const body=attempts.length?attempts.map(a=>`<article class="attempt-card"><div class="module-row"><strong>${esc(memberName(a.user_id))}</strong><span class="badge ${a.eligible?'good':'warn'}">${a.eligible?'Elegível':'Pendente'}</span></div><p class="mono">${esc(a.user_id)}</p><div class="requirement-results">${a.detail.map(r=>`<div class="requirement-result"><span>${r.ok?'✅':'❌'}</span><div><strong>${esc(r.label)}</strong><small>${esc(r.detail)}</small></div>${r.manual?`<button type="button" class="small ${r.ok?'ghost':'primary'}" data-action="giveawaymanual:${r.ok?'revoke':'approve'}:${g.id}:${a.user_id}:${r.id}">${r.ok?'Revogar':'Aprovar'}</button>`:''}</div>`).join('')}</div></article>`).join(''):'<p class="subtle">Ninguém verificou os requisitos deste sorteio ainda.</p>';
+      modal(`Participantes · ${g.data.title}`,body,async()=>{},'Fechar');return;
+    }
+  }
+  if(type==='giveawaymanual'){
+    const giveawayId=arg,userId=parts[3],requirementId=parts[4],approved=sub==='approve';
+    await api(`/giveaways/${giveawayId}/manual`,'POST',{userId,requirementId,approved});
+    $('#modal')?.close();await refresh();toast(approved?'Requisito aprovado e participação revalidada.':'Aprovação revogada e participação revalidada.');return;
+  }
   if(type==='event'){modal('Agendar evento',`${field('Nome do evento','name','',{required:true})}${field('Descrição','description','',{type:'textarea'})}<div class="form-grid">${field('Início (horário local)','startsAt',localTime(86400000),{type:'datetime-local',required:true})}${field('Fim (horário local)','endsAt',localTime(90000000),{type:'datetime-local',required:true})}</div>${field('Local ou link','location','',{required:true,placeholder:'Canal de voz, link da transmissão…'})}`,async d=>{await api('/events','POST',{...Object.fromEntries(d),startsAt:new Date(d.get('startsAt')).toISOString(),endsAt:new Date(d.get('endsAt')).toISOString()});await refresh();toast('Evento criado no Discord.');},'Criar evento');return;}
   if(type==='backup'){
     if(sub==='new'){await api('/backups','POST',{});await refresh();toast('Backup concluído.');return;}
