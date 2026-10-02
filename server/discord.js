@@ -687,7 +687,57 @@ export function createBot(store,env=process.env){
     if(s.tickets.autoCloseHours)for(const t of store.all("SELECT * FROM tickets WHERE status='open' AND updated<?",new Date(Date.now()-s.tickets.autoCloseHours*3600000).toISOString()))try{await closeTicket(t.id,'inatividade');}catch(e){store.log('erro',`Ticket ${t.id.slice(0,8)}: ${e.message}`);}
   }catch(e){store.log('erro',e.message);}finally{busy=false;}}
   client.on(Events.InteractionCreate,async i=>{
-    if(i.guildId!==env.DISCORD_GUILD_ID||(!i.isChatInputCommand()&&!i.isButton()&&!i.isStringSelectMenu()&&!i.isModalSubmit()))return;
+    const feedbackInteraction=(i.isButton()||i.isModalSubmit())&&String(i.customId||'').startsWith('feedback');
+    if((i.guildId!==env.DISCORD_GUILD_ID&&!feedbackInteraction)||(!i.isChatInputCommand()&&!i.isButton()&&!i.isStringSelectMenu()&&!i.isModalSubmit()))return;
+    if(i.isButton()&&i.customId.startsWith('feedback:')){
+      try{
+        const id=i.customId.split(':')[1],request=store.one('SELECT * FROM feedback_requests WHERE id=?',id);
+        if(!request||request.user_id!==i.user.id)throw new AppError('Este pedido de feedback não pertence a você.',403);
+        if(request.status==='submitted'){await i.reply({content:'Você já enviou seu feedback. Obrigada! 💜'});return;}
+        const stars=[1,2,3,4,5].map(n=>button(`${n} ⭐`,`feedback-rate:${id}:${n}`,2));
+        await i.reply({content:'Como você avalia sua experiência? Escolha de **1 a 5 estrelas**:',components:[row(...stars)]});
+      }catch(e){await i.reply({content:e instanceof AppError?e.message:'Não foi possível abrir o feedback.'}).catch(()=>{});}
+      return;
+    }
+    if(i.isButton()&&i.customId.startsWith('feedback-rate:')){
+      try{
+        const [,id,ratingRaw]=i.customId.split(':'),rating=Number(ratingRaw),request=store.one('SELECT * FROM feedback_requests WHERE id=?',id);
+        if(!request||request.user_id!==i.user.id)throw new AppError('Este pedido de feedback não pertence a você.',403);
+        if(request.status==='submitted')throw new AppError('Você já enviou seu feedback.');
+        if(!Number.isInteger(rating)||rating<1||rating>5)throw new AppError('Nota inválida.');
+        const modal=new ModalBuilder().setCustomId(`feedback-submit:${id}:${rating}`).setTitle(`Feedback · ${rating} estrela${rating===1?'':'s'}`);
+        const input=new TextInputBuilder().setCustomId('feedback-comment').setLabel('Conte como foi sua experiência').setStyle(TextInputStyle.Paragraph).setRequired(true).setMinLength(3).setMaxLength(1500).setPlaceholder('Escreva seu feedback sobre o atendimento ou compra.');
+        modal.addComponents(new ActionRowBuilder().addComponents(input));
+        await i.showModal(modal);
+      }catch(e){await i.reply({content:e instanceof AppError?e.message:'Não foi possível abrir o formulário.'}).catch(()=>{});}
+      return;
+    }
+    if(i.isModalSubmit()&&i.customId.startsWith('feedback-submit:')){
+      let deferred=false,id='';
+      try{
+        const [,feedbackId,ratingRaw]=i.customId.split(':');id=feedbackId;const rating=Number(ratingRaw);
+        await i.deferReply();deferred=true;
+        const request=store.one('SELECT * FROM feedback_requests WHERE id=?',id);
+        if(!request||request.user_id!==i.user.id)throw new AppError('Este pedido de feedback não pertence a você.',403);
+        if(request.status==='submitted')throw new AppError('Você já enviou seu feedback.');
+        if(!Number.isInteger(rating)||rating<1||rating>5)throw new AppError('Nota inválida.');
+        const comment=String(i.fields.getTextInputValue('feedback-comment')||'').trim();if(comment.length<3)throw new AppError('Escreva um comentário sobre sua experiência.');
+        const claim=store.run("UPDATE feedback_requests SET status='publishing' WHERE id=? AND user_id=? AND status='pending'",id,i.user.id);
+        if(!claim.changes)throw new AppError('Este feedback já foi processado.');
+        try{
+          await publishFeedback(request,rating,comment,i.user);
+          store.run("UPDATE feedback_requests SET status='submitted',rating=?,comment=?,submitted_at=? WHERE id=?",rating,comment,store.now(),id);
+        }catch(e){
+          store.run("UPDATE feedback_requests SET status='pending' WHERE id=? AND status='publishing'",id);
+          throw e;
+        }
+        await i.editReply(`Obrigada pelo feedback! 💜 Sua avaliação **${feedbackStars(rating)} ${rating}/5** foi enviada.`);
+      }catch(e){
+        const msg=e instanceof AppError?e.message:'Não foi possível enviar seu feedback.';
+        if(deferred)await i.editReply(msg).catch(()=>{});else await i.reply({content:msg}).catch(()=>{});
+      }
+      return;
+    }
     if(i.isButton()&&i.customId.startsWith('rename:')){
       try{
         if(!await isStaff(i))throw new AppError('Somente a equipe pode renomear tickets.',403);
