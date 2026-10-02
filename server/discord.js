@@ -17,13 +17,35 @@ export function embedPayload(e={},variables={}) {
   return result;
 }
 const hasEmbed=e=>!!(e.title||e.description||e.url||e.author||e.footer||e.image||e.thumbnail||e.timestamp||e.fields?.length);
-const stylePayload=(style,variables={})=>{
-  const embed=embedPayload(style?.embed||{},variables);
-  return {content:expandText(style?.content||'',variables)||undefined,embeds:hasEmbed(embed)?[embed]:[]};
+const buttonEmoji=value=>{
+  const raw=String(value||'').trim();if(!raw)return undefined;
+  const custom=raw.match(/^<(a?):([A-Za-z0-9_]+):(\d+)>$/);
+  return custom?{id:custom[3],name:custom[2],animated:custom[1]==='a'}:{name:raw};
 };
 const button=(label,custom_id,style=1)=>({type:2,label,custom_id,style});
-const linkButton=(label,url)=>({type:2,label,style:5,url});
+const linkButton=(label,url,emoji='')=>({type:2,label,style:5,url,...(buttonEmoji(emoji)?{emoji:buttonEmoji(emoji)}:{})});
 const row=(...components)=>({type:1,components});
+const linkRows=(buttons=[],guildId='')=>{
+  if(!buttons?.length)return[];
+  const components=buttons.slice(0,5).map(b=>{
+    const url=b.type==='channel'
+      ? `https://discord.com/channels/${guildId}/${b.channelId}`
+      : b.url;
+    return linkButton(b.label,url,b.emoji);
+  });
+  return components.length?[row(...components)]:[];
+};
+const stylePayload=(style,variables={},guildId=process.env.DISCORD_GUILD_ID||'')=>{
+  const embed=embedPayload(style?.embed||{},variables);
+  return {content:expandText(style?.content||'',variables)||undefined,embeds:hasEmbed(embed)?[embed]:[],components:linkRows(style?.buttons||[],guildId)};
+};
+const mentionPolicy=(payload={},extraUsers=[],extraRoles=[])=>{
+  const text=[payload.content||'',JSON.stringify(payload.embeds||[])].join('\n');
+  const users=[...text.matchAll(/<@!?(\d+)>/g)].map(m=>m[1]);
+  const roles=[...text.matchAll(/<@&(\d+)>/g)].map(m=>m[1]);
+  return {parse:[],users:[...new Set([...users,...extraUsers])].slice(0,100),roles:[...new Set([...roles,...extraRoles])].slice(0,100),repliedUser:false};
+};
+const safe={parse:[],users:[],roles:[],repliedUser:false};
 const money=n=>(n/100).toLocaleString('pt-BR',{style:'currency',currency:'BRL'});
 const safe={parse:[]};
 const channelSlug=value=>String(value||'ticket').normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/^-+|-+$/g,'').slice(0,80)||'ticket';
@@ -38,7 +60,7 @@ export function createBot(store,env=process.env){
     store.log(type,detail,actor);const cid=store.settings().logs.channelId;
     if(cid&&client.isReady())try{
       const style=store.settings().messageStyles.logs;
-      await(await channel(cid)).send({...stylePayload(style,{type,detail:String(detail).slice(0,4000),actor}),allowedMentions:safe});
+      const payload=stylePayload(style,{type,detail:String(detail).slice(0,4000),actor},env.DISCORD_GUILD_ID);await(await channel(cid)).send({...payload,allowedMentions:mentionPolicy(payload)});
     }catch{store.log('erro','Não foi possível publicar no canal de logs.');}
   }
   async function assignRole(userId,roleId){
@@ -59,7 +81,7 @@ export function createBot(store,env=process.env){
     if(v.sendDm){
       try{
         const style=settings.messageStyles.verificationDm;
-        await m.send({...stylePayload(style,{user:username,username,server:guild.name,role:`<@&${v.roleId}>`}),allowedMentions:safe});
+        const payload=stylePayload(style,{user:username,username,server:guild.name,role:`<@&${v.roleId}>`},env.DISCORD_GUILD_ID);await m.send({...payload,allowedMentions:mentionPolicy(payload)});
         dmSent=true;
       }catch(e){store.log('aviso',`Verificação concluída para ${user.id}, mas a DM não pôde ser entregue: ${String(e.message).slice(0,300)}`);}
     }
@@ -67,7 +89,8 @@ export function createBot(store,env=process.env){
     return {userId:user.id,username,dmSent};
   }
   async function sendMessage(data){
-    const payload={content:data.content||undefined,embeds:data.embed?[embedPayload(data.embed)]:[],allowedMentions:safe};
+    const payload={content:data.content||undefined,embeds:data.embed?[embedPayload(data.embed)]:[],components:linkRows(data.buttons||[],env.DISCORD_GUILD_ID)};
+    payload.allowedMentions=mentionPolicy(payload);
     let result;
     if(data.target==='dm'){
       if(!store.one('SELECT user_id FROM optins WHERE user_id=?',data.targetId))throw new AppError('O membro precisa ativar /notificacoes antes de receber mensagens deste editor.');
@@ -127,14 +150,14 @@ export function createBot(store,env=process.env){
       ]});
       store.run('UPDATE tickets SET channel_id=? WHERE id=?',c.id,id);
       const customerPayload=stylePayload(settings.messageStyles.ticketOpen,{user:`<@${userId}>`,category,server:guild.name,ticket:ticketName});
-      await c.send({...customerPayload,allowedMentions:{users:[userId]}});
+      await c.send({...customerPayload,allowedMentions:mentionPolicy(customerPayload,[userId])});
       const staffPayload=stylePayload(settings.messageStyles.ticketStaffPanel,{user:`<@${userId}>`,category,server:guild.name,ticket:ticketName});
-      await c.send({...staffPayload,components:[row(
+      await c.send({...staffPayload,components:[...(staffPayload.components||[]),row(
         button('Assumir atendimento',`claim:${id}`,1),
         button('Renomear',`rename:${id}`,2),
         button('Chamar cliente',`call:${id}`,2),
         button('Finalizar',`close:${id}`,4)
-      )],allowedMentions:safe});
+      )],allowedMentions:mentionPolicy(staffPayload)});
       await audit('ticket',`Ticket ${ticketName} aberto: ${category}`,userId);return store.one('SELECT * FROM tickets WHERE id=?',id);
     }catch(e){
       if(!c)store.run('DELETE FROM tickets WHERE id=?',id);
@@ -156,7 +179,7 @@ export function createBot(store,env=process.env){
     let dmSent=false;
     try{
       const user=await member(ticket.user_id),style=store.settings().messageStyles.ticketClose;
-      await user.send({...stylePayload(style,{ticket:ticketName,transcript:transcriptUrl,category:ticket.category}),components:[row(linkButton('Abrir transcript',transcriptUrl))],allowedMentions:safe});
+      const closePayload=stylePayload(style,{ticket:ticketName,transcript:transcriptUrl,category:ticket.category},env.DISCORD_GUILD_ID);await user.send({...closePayload,components:[...(closePayload.components||[]),row(linkButton('Abrir transcript',transcriptUrl))],allowedMentions:mentionPolicy(closePayload)});
       dmSent=true;
     }catch(e){
       store.log('aviso',`Ticket ${ticketName} encerrado, mas a DM com o transcript não pôde ser entregue: ${String(e.message).slice(0,300)}`,actor);
@@ -169,21 +192,21 @@ export function createBot(store,env=process.env){
   async function publishPanel(kind,channelId){
     const s=store.settings(),c=await channel(channelId);let payload;
     if(kind==='tickets'){
-      payload={...stylePayload(s.messageStyles.ticketPanel),components:[row({type:3,custom_id:'ticket-category',placeholder:s.tickets.button.slice(0,150),options:s.tickets.categories.map((name,i)=>({label:name,value:String(i)}))})]};
+      payload=stylePayload(s.messageStyles.ticketPanel,{},env.DISCORD_GUILD_ID);payload.components=[...(payload.components||[]),row({type:3,custom_id:'ticket-category',placeholder:s.tickets.button.slice(0,150),options:s.tickets.categories.map((name,i)=>({label:name,value:String(i)}))})];
     }else{
       const verifyComponent=s.verification.oauthEnabled
         ? linkButton(s.verification.button,`${String(env.PUBLIC_URL||'').replace(/\/$/,'')}/api/oauth/discord/start`)
         : button(s.verification.button,'verify');
-      payload={...stylePayload(s.messageStyles.verificationPanel),components:[row(verifyComponent)]};
+      payload=stylePayload(s.messageStyles.verificationPanel,{},env.DISCORD_GUILD_ID);payload.components=[...(payload.components||[]),row(verifyComponent)];
     }
-    const message=await c.send({...payload,allowedMentions:safe});await audit('painel',`Painel de ${kind} publicado.`,'painel');return{id:message.id};
+    const message=await c.send({...payload,allowedMentions:mentionPolicy(payload)});await audit('painel',`Painel de ${kind} publicado.`,'painel');return{id:message.id};
   }
   async function publishProduct(productId,channelId){
     const p=store.products().find(p=>p.id===productId);if(!p)throw new AppError('Produto não encontrado.',404);
     const availability=p.type==='service'?'Sob demanda':`${p.stock} unidade(s)`;
     const payload=stylePayload(store.settings().messageStyles.product,{product:p.name,description:p.description||'Peça pelo botão abaixo.',price:money(p.priceCents),availability,category:p.category});
     if(p.image&&payload.embeds[0]&&!payload.embeds[0].image)payload.embeds[0].image={url:p.image};
-    const m=await(await channel(channelId)).send({...payload,components:[row(button('Comprar com Pix',`buy:${p.id}`))],allowedMentions:safe});return{id:m.id};
+    const m=await(await channel(channelId)).send({...payload,components:[...(payload.components||[]),row(button('Comprar com Pix',`buy:${p.id}`))],allowedMentions:mentionPolicy(payload)});return{id:m.id};
   }
   async function orderText(order){const s=store.settings().sales,p=JSON.parse(order.product);return`**Pedido ${order.id}**\n${p.name} · **${money(order.price)}**\n\nChave Pix: **${s.pixKey}**\nRecebedor: ${s.recipient}\n${s.instructions}\n\nValidade: <t:${Math.floor(Date.parse(order.expires)/1000)}:R>. A entrega depende da conferência manual do pagamento.\nConsulte novamente com /pedido.`;}
   async function deliverOrder(order){
@@ -196,7 +219,7 @@ export function createBot(store,env=process.env){
         else{const ticket=await openTicket(order.user_id,`Serviço: ${p.name}`);delivery=`Seu atendimento: <#${ticket.channel_id}>`;}
         const user=await member(order.user_id),style=store.settings().messageStyles.orderDelivery;
         const payload=stylePayload(style,{product:p.name,order:order.id,delivery,instructions:p.delivery||''});
-        await user.send({...payload,allowedMentions:safe,nonce:createHash('sha256').update(order.id).digest('hex').slice(0,24),enforceNonce:true});
+        await user.send({...payload,allowedMentions:mentionPolicy(payload),nonce:createHash('sha256').update(order.id).digest('hex').slice(0,24),enforceNonce:true});
         store.run('UPDATE orders SET delivery_done=1 WHERE id=?',order.id);
       }
       store.run("UPDATE orders SET status='delivered',error=NULL WHERE id=?",order.id);await audit('entrega',`Pedido ${order.id.slice(0,8)} entregue.`);
@@ -206,7 +229,7 @@ export function createBot(store,env=process.env){
     const c=await channel(data.channelId),id=randomUUID();store.run('INSERT INTO giveaways(id,data,status,created) VALUES(?,?,?,?)',id,JSON.stringify(data),'draft',store.now());
     const roleLine=data.requiredRoleId?`\nCargo necessário: <@&${data.requiredRoleId}>`:'';
     const payload=stylePayload(store.settings().messageStyles.giveaway,{title:data.title,description:data.description,ends:`<t:${Math.floor(Date.parse(data.endsAt)/1000)}:R>`,winners:data.winners,roleLine});
-    const message=await c.send({...payload,components:[row(button('Participar do sorteio',`giveaway:${id}`))],allowedMentions:safe});
+    const message=await c.send({...payload,components:[...(payload.components||[]),row(button('Participar do sorteio',`giveaway:${id}`))],allowedMentions:mentionPolicy(payload)});
     store.run("UPDATE giveaways SET status='active',message_id=? WHERE id=?",message.id,id);return{id};
   }
   async function finishGiveaway(g){
@@ -219,7 +242,7 @@ export function createBot(store,env=process.env){
     }
     const result=winners.length?`Vencedor(es): ${winners.map(id=>`<@${id}>`).join(', ')}`:'Não houve participantes elegíveis.';
     const payload=stylePayload(store.settings().messageStyles.giveawayResult,{title:data.title,result});
-    const c=await channel(data.channelId);await c.messages.edit(g.message_id,{...payload,components:[],allowedMentions:safe});
+    const c=await channel(data.channelId);await c.messages.edit(g.message_id,{...payload,components:payload.components||[],allowedMentions:mentionPolicy(payload)});
     store.run("UPDATE giveaways SET status='ended' WHERE id=?",g.id);
   }
   async function createEvent(data){const event=await requireGuild().scheduledEvents.create({name:data.name,description:data.description||undefined,scheduledStartTime:new Date(data.startsAt),scheduledEndTime:new Date(data.endsAt),privacyLevel:GuildScheduledEventPrivacyLevel.GuildOnly,entityType:GuildScheduledEventEntityType.External,entityMetadata:{location:data.location}});const id=randomUUID();store.run('INSERT INTO events VALUES(?,?,?,?)',id,JSON.stringify(data),event.id,store.now());return{id,discordId:event.id};}
@@ -259,17 +282,17 @@ export function createBot(store,env=process.env){
       }
       if(action==='loja'){const products=store.products().filter(p=>p.active);await i.editReply(products.length?{content:'**Catálogo Studio K**\nSelecione um produto para comprar.',components:[row({type:3,custom_id:'store-buy',placeholder:'Escolha um produto',options:products.slice(0,25).map(p=>({label:p.name.slice(0,100),description:`${money(p.priceCents)} · ${p.type==='service'?'Serviço':`${p.stock} em estoque`}`,value:p.id}))})]}:'Ainda não há produtos disponíveis.');return;}
       if(action==='ticket'||action==='ticket-category'){const category=action==='ticket-category'?store.settings().tickets.categories[Number(i.values[0])]:store.settings().tickets.categories[0];if(!category)throw new AppError('Categoria indisponível.');const t=await openTicket(i.user.id,category);await i.editReply(`Seu atendimento: <#${t.channel_id}>`);return;}
-      if(action.startsWith('claim:')){if(!await isStaff(i))throw new AppError('Somente a equipe pode assumir tickets.',403);const id=action.split(':')[1],changed=store.run("UPDATE tickets SET claimed_by=?,updated=? WHERE id=? AND status='open' AND claimed_by IS NULL",i.user.id,store.now(),id);if(changed.changes){const t=store.one('SELECT * FROM tickets WHERE id=?',id),c=await channel(t.channel_id),style=store.settings().messageStyles.ticketClaim;await c.send({...stylePayload(style,{staff:`<@${i.user.id}>`,user:`<@${t.user_id}>`,ticket:c.name,category:t.category}),allowedMentions:{users:[i.user.id,t.user_id]}});await audit('ticket',`Ticket ${c.name} assumido.`,i.user.id);}await i.editReply(changed.changes?'Atendimento atribuído a você.':'Esse atendimento já está atribuído ou encerrado.');return;}
+      if(action.startsWith('claim:')){if(!await isStaff(i))throw new AppError('Somente a equipe pode assumir tickets.',403);const id=action.split(':')[1],changed=store.run("UPDATE tickets SET claimed_by=?,updated=? WHERE id=? AND status='open' AND claimed_by IS NULL",i.user.id,store.now(),id);if(changed.changes){const t=store.one('SELECT * FROM tickets WHERE id=?',id),c=await channel(t.channel_id),style=store.settings().messageStyles.ticketClaim;const claimPayload=stylePayload(style,{staff:`<@${i.user.id}>`,user:`<@${t.user_id}>`,ticket:c.name,category:t.category},env.DISCORD_GUILD_ID);await c.send({...claimPayload,allowedMentions:mentionPolicy(claimPayload,[i.user.id,t.user_id])});await audit('ticket',`Ticket ${c.name} assumido.`,i.user.id);}await i.editReply(changed.changes?'Atendimento atribuído a você.':'Esse atendimento já está atribuído ou encerrado.');return;}
       if(action.startsWith('close:')){if(!await isStaff(i))throw new AppError('Somente a equipe pode finalizar tickets.',403);const t=store.one('SELECT * FROM tickets WHERE id=?',action.split(':')[1]);if(!t)throw new AppError('Ticket não encontrado.',404);await closeTicket(t.id,i.user.id);await i.editReply('Atendimento encerrado.');return;}
       if(action.startsWith('call:')){
         if(!await isStaff(i))throw new AppError('Somente a equipe pode chamar o cliente.',403);
         const id=action.split(':')[1],t=store.one("SELECT * FROM tickets WHERE id=? AND status='open'",id);if(!t)throw new AppError('Ticket aberto não encontrado.',404);
         const c=await channel(t.channel_id),settings=store.settings(),style=settings.messageStyles.ticketCall;
         const variables={user:`<@${t.user_id}>`,ticket:c.name,category:t.category,channel:`<#${c.id}>`,server:c.guild.name};
-        await c.send({...stylePayload(style,variables),allowedMentions:{users:[t.user_id]}});
+        const callPayload=stylePayload(style,variables,env.DISCORD_GUILD_ID);await c.send({...callPayload,allowedMentions:mentionPolicy(callPayload,[t.user_id])});
         let dmSent=false;
         if(settings.tickets.callDm){
-          try{await(await member(t.user_id)).send({...stylePayload(settings.messageStyles.ticketCallDm,variables),allowedMentions:safe});dmSent=true;}
+          try{const dmPayload=stylePayload(settings.messageStyles.ticketCallDm,variables,env.DISCORD_GUILD_ID);await(await member(t.user_id)).send({...dmPayload,allowedMentions:mentionPolicy(dmPayload)});dmSent=true;}
           catch(e){store.log('aviso',`Cliente chamado em ${c.name}, mas a DM falhou: ${String(e.message).slice(0,300)}`);}
         }
         store.run('UPDATE tickets SET updated=? WHERE id=?',store.now(),id);await audit('ticket',`Cliente chamado no ticket ${c.name}${dmSent?' e por DM':''}.`,i.user.id);await i.editReply(dmSent?'Cliente chamado no ticket e no privado.':'Cliente chamado no ticket. A DM não pôde ser entregue.');return;
@@ -289,7 +312,7 @@ export function createBot(store,env=process.env){
     }catch(e){store.log('erro',e.message,'interação');if(i.deferred||i.replied)await i.editReply({content:e instanceof AppError?e.message:'Não foi possível concluir. Confira as permissões do bot ou procure a equipe.',components:[]}).catch(()=>{});}
   });
   for(const [event,key] of [[Events.GuildMemberAdd,'welcome'],[Events.GuildMemberRemove,'goodbye']])client.on(event,async m=>{
-    if(m.guild.id!==env.DISCORD_GUILD_ID)return;try{const s=store.settings(),t=s[key];if(t.enabled&&t.channelId){const variables={user:`<@${m.id}>`,username:m.user.username,server:m.guild.name,count:String(m.guild.memberCount)};const content=t.content.replace(/\{(user|username|server|count)\}/g,(v,k)=>variables[k]);const e=embedPayload(t.embed,variables);await(await channel(t.channelId)).send({content:content||undefined,embeds:e.title||e.description||e.fields?.length?[e]:[],allowedMentions:{users:key==='welcome'?[m.id]:[]}});}if(s.logs.members)await audit('membro',`${m.user.username} ${key==='welcome'?'entrou':'saiu'} do servidor.`,m.id);}catch(e){store.log('erro',e.message);}
+    if(m.guild.id!==env.DISCORD_GUILD_ID)return;try{const s=store.settings(),t=s[key];if(t.enabled&&t.channelId){const variables={user:`<@${m.id}>`,username:m.user.username,server:m.guild.name,count:String(m.guild.memberCount)};const content=t.content.replace(/\{(user|username|server|count)\}/g,(v,k)=>variables[k]);const e=embedPayload(t.embed,variables);const payload={content:content||undefined,embeds:e.title||e.description||e.fields?.length?[e]:[],components:linkRows(t.buttons||[],env.DISCORD_GUILD_ID)};payload.allowedMentions=mentionPolicy(payload,key==='welcome'?[m.id]:[]);await(await channel(t.channelId)).send(payload);}if(s.logs.members)await audit('membro',`${m.user.username} ${key==='welcome'?'entrou':'saiu'} do servidor.`,m.id);}catch(e){store.log('erro',e.message);}
   });
   client.on(Events.MessageCreate,m=>{if(m.guildId===env.DISCORD_GUILD_ID&&!m.author.bot)store.run("UPDATE tickets SET updated=? WHERE channel_id=? AND status='open'",store.now(),m.channelId);});
   const logEvent=(event,setting,text)=>client.on(event,(...args)=>{const object=args.at(-1),guildId=object.guild?.id||object.guildId;if(guildId===env.DISCORD_GUILD_ID&&store.settings().logs[setting])void audit(setting,text(...args)).catch(()=>{});});
