@@ -22,6 +22,7 @@ export function openStore(directory) {
     CREATE TABLE IF NOT EXISTS entries(giveaway_id TEXT NOT NULL REFERENCES giveaways(id),user_id TEXT NOT NULL,PRIMARY KEY(giveaway_id,user_id));
     CREATE TABLE IF NOT EXISTS events(id TEXT PRIMARY KEY,data TEXT NOT NULL,discord_id TEXT,created TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS optins(user_id TEXT PRIMARY KEY,created TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS verifications(user_id TEXT PRIMARY KEY,username TEXT NOT NULL,verified_at TEXT NOT NULL,last_authorized_at TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS logs(id INTEGER PRIMARY KEY AUTOINCREMENT,type TEXT NOT NULL,actor TEXT NOT NULL,detail TEXT NOT NULL,created TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS templates(id TEXT PRIMARY KEY,name TEXT NOT NULL,data TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS requests(key TEXT PRIMARY KEY,result TEXT NOT NULL,created TEXT NOT NULL);
