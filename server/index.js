@@ -199,7 +199,7 @@ app.get('/api/public/tickets/:id/transcript/:token',(req,res)=>{
 app.use('/api',(req,res,next)=>{req.session=session(req);if(!req.session)return res.status(401).json({error:'Entre no painel para continuar.'});res.setHeader('Cache-Control','no-store');if(!['GET','HEAD'].includes(req.method)){return sameOrigin(req,res,()=>{if(req.headers['x-csrf-token']!==req.session.csrf)return res.status(403).json({error:'Sua sessão mudou. Atualize a página.'});next();});}next();});
 app.post('/api/logout',(req,res)=>{store.run('DELETE FROM sessions WHERE id=?',req.session.id);res.clearCookie('studio_session',{path:'/'});res.json({ok:true});});
 app.get('/api/state',(req,res)=>{
-  const settings=store.settings(),products=store.products();const orders=store.all('SELECT * FROM orders ORDER BY created DESC LIMIT 200').map(o=>({...o,product:JSON.parse(o.product)}));
+  const settings=store.settings(),products=store.products().map(p=>{const stats=store.one("SELECT COUNT(*) AS total,SUM(CASE WHEN s.order_id IS NULL THEN 1 ELSE 0 END) AS available,SUM(CASE WHEN s.order_id IS NOT NULL AND COALESCE(o.status,'') IN ('pending','paid') THEN 1 ELSE 0 END) AS reserved,SUM(CASE WHEN COALESCE(o.status,'')='delivered' THEN 1 ELSE 0 END) AS delivered FROM stock s LEFT JOIN orders o ON o.id=s.order_id WHERE s.product_id=?",p.id)||{};return{...p,stockStats:{total:Number(stats.total||0),available:Number(stats.available||0),reserved:Number(stats.reserved||0),delivered:Number(stats.delivered||0)}}});const orders=store.all('SELECT * FROM orders ORDER BY created DESC LIMIT 200').map(o=>({...o,product:JSON.parse(o.product)}));
   const summary=store.one("SELECT COUNT(*) AS orders,COALESCE(SUM(CASE WHEN status IN ('paid','delivered') THEN price ELSE 0 END),0) AS revenue,SUM(CASE WHEN status='pending' THEN 1 ELSE 0 END) AS pending FROM orders");
   const tickets=store.all("SELECT id,user_id,channel_id,category,status,state,priority,created,updated,claimed_by,closed_reason,reopened_from,tags FROM tickets ORDER BY created DESC LIMIT 300").map(t=>({...t,tags:(()=>{try{return JSON.parse(t.tags||'[]')}catch{return[]}})()}));
   const openTickets=tickets.filter(t=>t.status==='open'),now=Date.now();
@@ -270,7 +270,7 @@ app.post('/api/embeds/publish',async(req,res)=>{
 });
 app.post('/api/tickets/publish',async(req,res)=>res.json(await bot.publishPanel('tickets',id.parse(req.body.channelId))));
 app.post('/api/verification/publish',async(req,res)=>res.json(await bot.publishPanel('verification',id.parse(req.body.channelId))));
-app.post('/api/tickets/:id/close',async(req,res)=>{await bot.closeTicket(req.params.id,'administrador');res.json({ok:true});});
+app.post('/api/tickets/:id/close',async(req,res)=>{const body=z.object({reason:z.string().trim().min(2).max(500)}).parse(req.body);await bot.closeTicket(req.params.id,'administrador',body.reason);res.json({ok:true});});
 app.get('/api/tickets/:id/transcript',(req,res)=>{const t=store.one('SELECT transcript FROM tickets WHERE id=?',req.params.id);if(!t?.transcript)throw new AppError('O histórico estará disponível após encerrar o ticket.',404);res.attachment(`ticket-${req.params.id}.txt`).type('text/plain').send(t.transcript);});
 app.post('/api/giveaways',async(req,res)=>res.json(await bot.createGiveaway(giveawaySchema.parse(req.body))));
 app.get('/api/giveaways/:id/attempts',(req,res)=>{
