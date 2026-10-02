@@ -73,7 +73,7 @@ export const settingsSchema = z.object({
   feedback: z.object({ enabled:z.boolean().default(true), channelId:optionalId, tickets:z.boolean().default(true), orders:z.boolean().default(true) }).prefault({}),
   voicePresence: z.object({ enabled:z.boolean().default(false), channelId:optionalId }).prefault({}),
   translator: z.object({ enabled:z.boolean().default(false) }).prefault({}),
-  logs: z.object({ channelId: optionalId, members: z.boolean().default(true), messages: z.boolean().default(true), moderation: z.boolean().default(true), channels: z.boolean().default(true), roles: z.boolean().default(true) }).prefault({}),
+  logs: z.object({ channelId: optionalId, tickets: z.boolean().default(true), ticketsChannelId: optionalId, members: z.boolean().default(true), membersChannelId: optionalId, messages: z.boolean().default(true), messagesChannelId: optionalId, moderation: z.boolean().default(true), moderationChannelId: optionalId, channels: z.boolean().default(true), channelsChannelId: optionalId, roles: z.boolean().default(true), rolesChannelId: optionalId, verification: z.boolean().default(true), verificationChannelId: optionalId, sales: z.boolean().default(true), salesChannelId: optionalId, system: z.boolean().default(true), systemChannelId: optionalId, feedback: z.boolean().default(true), feedbackChannelId: optionalId }).prefault({}),
   backups: z.object({ enabled: z.boolean().default(true), intervalHours: z.number().int().min(1).max(720).default(24), retain: z.number().int().min(2).max(100).default(14) }).prefault({})
 });
 export const defaults = settingsSchema.parse({});
