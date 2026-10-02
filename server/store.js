@@ -36,6 +36,8 @@ export function openStore(directory) {
     CREATE TABLE IF NOT EXISTS member_events(id INTEGER PRIMARY KEY AUTOINCREMENT,user_id TEXT NOT NULL,event TEXT NOT NULL,created TEXT NOT NULL);
     CREATE INDEX IF NOT EXISTS member_events_created ON member_events(created);
     CREATE INDEX IF NOT EXISTS member_events_user ON member_events(user_id);
+    CREATE TABLE IF NOT EXISTS message_activity(day TEXT NOT NULL,user_id TEXT NOT NULL,count INTEGER NOT NULL DEFAULT 0,PRIMARY KEY(day,user_id));
+    CREATE INDEX IF NOT EXISTS message_activity_user ON message_activity(user_id,day);
     CREATE TABLE IF NOT EXISTS logs(id INTEGER PRIMARY KEY AUTOINCREMENT,type TEXT NOT NULL,actor TEXT NOT NULL,detail TEXT NOT NULL,created TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS templates(id TEXT PRIMARY KEY,name TEXT NOT NULL,data TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS requests(key TEXT PRIMARY KEY,result TEXT NOT NULL,created TEXT NOT NULL);
