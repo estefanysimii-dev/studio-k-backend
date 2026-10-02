@@ -45,7 +45,7 @@ const mentionPolicy=(payload={},extraUsers=[],extraRoles=[])=>{
   const roles=[...text.matchAll(/<@&(\d+)>/g)].map(m=>m[1]);
   return {parse:[],users:[...new Set([...users,...extraUsers])].slice(0,100),roles:[...new Set([...roles,...extraRoles])].slice(0,100),repliedUser:false};
 };
-const safe={parse:[],users:[],roles:[],repliedUser:false};
+const safe={parse:[]};
 const money=n=>(n/100).toLocaleString('pt-BR',{style:'currency',currency:'BRL'});
 const channelSlug=value=>String(value||'ticket').normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/^-+|-+$/g,'').slice(0,80)||'ticket';
 export function createBot(store,env=process.env){
