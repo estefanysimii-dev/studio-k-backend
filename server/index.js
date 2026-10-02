@@ -24,6 +24,7 @@ const hash=value=>createHash('sha256').update(value).digest('hex');
 const setupKey=process.env.SETUP_KEY||'',setupKeyRequired=!demo&&host!=='127.0.0.1';
 const cookieOptions={httpOnly:true,sameSite:'strict',secure:process.env.COOKIE_SECURE==='true',path:'/',maxAge:12*3600000};
 const oauthRedirect=new URL('/api/oauth/discord/callback',base).toString();
+const googleRedirect=new URL('/api/oauth/google/callback',base).toString();
 const oauthCookieOptions={httpOnly:true,sameSite:'lax',secure:process.env.COOKIE_SECURE==='true',path:'/api/oauth/discord',maxAge:10*60000};
 const cookieValue=(req,name)=>(req.headers.cookie||'').split(';').map(c=>c.trim()).find(c=>c.startsWith(name+'='))?.slice(name.length+1)||'';
 const oauthPage=(title,message,ok=false,targetUrl='')=>{
@@ -94,6 +95,59 @@ app.get('/api/oauth/discord/callback',async(req,res)=>{
   }
 });
 
+
+const youtubePage=(title,message,ok=false,targetUrl='')=>{
+  const href=targetUrl||`https://discord.com/channels/${encodeURIComponent(process.env.DISCORD_GUILD_ID||'')}`;
+  return `<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Studio K · YouTube</title><style>body{margin:0;background:#0d0c13;color:#f5f1ff;font:15px/1.55 system-ui,-apple-system,Segoe UI,sans-serif;display:grid;min-height:100vh;place-items:center}.card{width:min(650px,calc(100% - 36px));box-sizing:border-box;background:#17141f;border:1px solid #30283d;border-radius:18px;padding:28px;box-shadow:0 24px 70px #0006}.mark{width:54px;height:54px;border-radius:14px;background:#995cff;display:grid;place-items:center;font-weight:900;font-size:26px;margin-bottom:18px}.eyebrow{font-size:12px;letter-spacing:.14em;text-transform:uppercase;color:#ad7cff;font-weight:800}h1{font-size:27px;margin:5px 0 10px}.ok{color:#75e6a4}.bad{color:#ff9aa9}p{color:#bdb5c9}.button{display:inline-block;margin-top:18px;padding:11px 15px;border-radius:10px;background:#995cff;color:white;text-decoration:none;font-weight:800}</style></head><body><main class="card"><div class="mark">K</div><div class="eyebrow">Studio K · YouTube</div><h1 class="${ok?'ok':'bad'}">${title}</h1><p>${message}</p><a class="button" href="${htmlEscape(href)}">Voltar ao sorteio</a></main></body></html>`;
+};
+app.get('/api/oauth/google/start',(req,res)=>{
+  if(!process.env.GOOGLE_CLIENT_ID||!process.env.GOOGLE_CLIENT_SECRET)throw new AppError('A integração Google/YouTube ainda não foi configurada.',503);
+  const raw=String(req.query.t||''),link=store.get(`google-link:${hash(raw)}`);
+  if(!raw||!link||Number(link.expires)<Date.now())throw new AppError('Este link de conexão expirou. Volte ao Discord e clique em Verificar novamente.',403);
+  store.run('DELETE FROM kv WHERE key=?',`google-link:${hash(raw)}`);
+  const state=randomBytes(32).toString('base64url');
+  store.set(`google-oauth:${hash(state)}`,{...link,expires:Date.now()+10*60000});
+  const params=new URLSearchParams({
+    client_id:process.env.GOOGLE_CLIENT_ID,
+    redirect_uri:googleRedirect,
+    response_type:'code',
+    scope:'https://www.googleapis.com/auth/youtube.readonly',
+    access_type:'offline',
+    prompt:'consent',
+    include_granted_scopes:'true',
+    state
+  });
+  res.redirect(`https://accounts.google.com/o/oauth2/v2/auth?${params}`);
+});
+app.get('/api/oauth/google/callback',async(req,res)=>{
+  try{
+    const state=String(req.query.state||''),link=store.get(`google-oauth:${hash(state)}`);
+    store.run('DELETE FROM kv WHERE key=?',`google-oauth:${hash(state)}`);
+    if(req.query.error)throw new AppError('A autorização do YouTube foi cancelada ou recusada.',400);
+    if(!state||!link||Number(link.expires)<Date.now())throw new AppError('A conexão com o YouTube expirou. Volte ao sorteio e tente novamente.',403);
+    const code=String(req.query.code||'');if(!code)throw new AppError('O Google não retornou o código de autorização.',400);
+    const tokenResponse=await fetch('https://oauth2.googleapis.com/token',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:new URLSearchParams({client_id:process.env.GOOGLE_CLIENT_ID,client_secret:process.env.GOOGLE_CLIENT_SECRET,code,grant_type:'authorization_code',redirect_uri:googleRedirect})});
+    const token=await tokenResponse.json().catch(()=>({}));
+    if(!tokenResponse.ok||!token.access_token)throw new AppError('Não foi possível concluir a autorização do YouTube.',502);
+    const existing=store.one('SELECT * FROM youtube_accounts WHERE user_id=?',link.userId);
+    const refreshToken=token.refresh_token||(existing?store.decrypt(existing.refresh_secret):'');
+    if(!refreshToken)throw new AppError('O Google não forneceu acesso renovável. Tente conectar novamente e confirme todas as permissões.',502);
+    const channelResponse=await fetch('https://www.googleapis.com/youtube/v3/channels?part=id,snippet&mine=true',{headers:{Authorization:`Bearer ${token.access_token}`}});
+    const channelData=await channelResponse.json().catch(()=>({})),yt=channelData.items?.[0];
+    if(!channelResponse.ok||!yt?.id)throw new AppError('Não foi possível identificar o canal do YouTube desta conta.',502);
+    const now=store.now();
+    store.run('INSERT INTO youtube_accounts(user_id,channel_id,channel_title,refresh_secret,connected_at,updated_at) VALUES(?,?,?,?,?,?) ON CONFLICT(user_id) DO UPDATE SET channel_id=excluded.channel_id,channel_title=excluded.channel_title,refresh_secret=excluded.refresh_secret,updated_at=excluded.updated_at',link.userId,yt.id,String(yt.snippet?.title||yt.id).slice(0,200),store.encrypt(refreshToken),existing?.connected_at||now,now);
+    const checked=await bot.evaluateGiveaway(link.giveawayId,link.userId,{enter:true,record:true});
+    const giveaway=store.one('SELECT data FROM giveaways WHERE id=?',link.giveawayId),data=giveaway?JSON.parse(giveaway.data):null;
+    const target=data?.channelId?`https://discord.com/channels/${encodeURIComponent(process.env.DISCORD_GUILD_ID||'')}/${encodeURIComponent(data.channelId)}`:'';
+    res.setHeader('X-Robots-Tag','noindex, nofollow, noarchive');
+    res.type('html').send(youtubePage(checked.ok?'Participação confirmada':'YouTube conectado',checked.ok?'Sua conta do YouTube foi validada e todos os requisitos do sorteio estão concluídos.':'Sua conta do YouTube foi conectada. Volte ao Discord e veja quais requisitos ainda faltam.',true,target));
+  }catch(e){
+    res.status(e instanceof AppError?e.status:500);res.setHeader('X-Robots-Tag','noindex, nofollow, noarchive');
+    res.type('html').send(youtubePage('Não foi possível conectar',htmlEscape(e instanceof AppError?e.message:'Tente novamente pelo botão do sorteio.')));
+  }
+});
+
 app.post('/api/setup',loginLimit,sameOrigin,(req,res)=>{
   if(demo)throw new AppError('Use a entrada de demonstração.');
   if(store.get('password'))throw new AppError('A senha já foi definida.',409);
@@ -146,10 +200,10 @@ app.post('/api/logout',(req,res)=>{store.run('DELETE FROM sessions WHERE id=?',r
 app.get('/api/state',(req,res)=>{
   const settings=store.settings(),products=store.products();const orders=store.all('SELECT * FROM orders ORDER BY created DESC LIMIT 200').map(o=>({...o,product:JSON.parse(o.product)}));
   const summary=store.one("SELECT COUNT(*) AS orders,COALESCE(SUM(CASE WHEN status IN ('paid','delivered') THEN price ELSE 0 END),0) AS revenue,SUM(CASE WHEN status='pending' THEN 1 ELSE 0 END) AS pending FROM orders");
-  res.json({demo,status:bot.status(),oauth:{configured:!!(process.env.DISCORD_CLIENT_ID&&process.env.DISCORD_CLIENT_SECRET),redirectUri:oauthRedirect},settings,products,orders,summary,tickets:store.all('SELECT id,user_id,channel_id,category,status,created,updated,claimed_by FROM tickets ORDER BY created DESC LIMIT 200'),giveaways:store.all('SELECT * FROM giveaways ORDER BY created DESC LIMIT 100').map(g=>({...g,data:JSON.parse(g.data),entries:store.one('SELECT COUNT(*) AS n FROM entries WHERE giveaway_id=?',g.id).n})),events:store.all('SELECT * FROM events ORDER BY created DESC LIMIT 100').map(e=>({...e,data:JSON.parse(e.data)})),logs:store.all('SELECT * FROM logs ORDER BY id DESC LIMIT 100'),templates:store.all('SELECT * FROM templates ORDER BY name').map(t=>({...t,data:JSON.parse(t.data)})),lastBackup:store.get('lastBackup'),backups:readdirSync(join(store.dir,'backups')).filter(f=>f.endsWith('.json')).sort().reverse()});
+  res.json({demo,status:bot.status(),oauth:{configured:!!(process.env.DISCORD_CLIENT_ID&&process.env.DISCORD_CLIENT_SECRET),redirectUri:oauthRedirect},integrations:{youtube:{configured:!!(process.env.GOOGLE_CLIENT_ID&&process.env.GOOGLE_CLIENT_SECRET),redirectUri:googleRedirect}},settings,products,orders,summary,tickets:store.all('SELECT id,user_id,channel_id,category,status,created,updated,claimed_by FROM tickets ORDER BY created DESC LIMIT 200'),giveaways:store.all('SELECT * FROM giveaways ORDER BY created DESC LIMIT 100').map(g=>({...g,data:JSON.parse(g.data),entries:store.one('SELECT COUNT(*) AS n FROM entries WHERE giveaway_id=?',g.id).n,attempts:store.one('SELECT COUNT(*) AS n FROM giveaway_attempts WHERE giveaway_id=?',g.id).n,incomplete:store.one("SELECT COUNT(*) AS n FROM giveaway_attempts WHERE giveaway_id=? AND status='incomplete'",g.id).n})),events:store.all('SELECT * FROM events ORDER BY created DESC LIMIT 100').map(e=>({...e,data:JSON.parse(e.data)})),logs:store.all('SELECT * FROM logs ORDER BY id DESC LIMIT 100'),templates:store.all('SELECT * FROM templates ORDER BY name').map(t=>({...t,data:JSON.parse(t.data)})),lastBackup:store.get('lastBackup'),backups:readdirSync(join(store.dir,'backups')).filter(f=>f.endsWith('.json')).sort().reverse()});
 });
 app.get('/api/discord/metadata',async(req,res)=>res.json(await bot.metadata()));
-app.put('/api/settings',(req,res)=>{const settings=settingsSchema.parse(req.body);store.set('settings',settings);store.log('configuração','Configurações atualizadas.','administrador');res.json({ok:true});});
+app.put('/api/settings',async(req,res)=>{const settings=settingsSchema.parse(req.body);store.set('settings',settings);store.log('configuração','Configurações atualizadas.','administrador');if(settings.salesLive?.enabled&&bot.status().connected)await bot.updateSalesLive(true);res.json({ok:true});});
 app.post('/api/brand/apply',async(req,res)=>{await bot.applyBrand();res.json({ok:true});});
 app.post('/api/messages',async(req,res)=>res.json(await bot.sendMessage(messageSchema.parse(req.body))));
 app.post('/api/templates',(req,res)=>{const body=z.object({name:z.string().min(1).max(80),data:z.unknown()}).parse(req.body);const data=templateSchema.parse(body.data);const tid=randomUUID();store.run('INSERT INTO templates VALUES(?,?,?)',tid,body.name,JSON.stringify(data));res.json({id:tid});});
@@ -175,6 +229,19 @@ app.post('/api/verification/publish',async(req,res)=>res.json(await bot.publishP
 app.post('/api/tickets/:id/close',async(req,res)=>{await bot.closeTicket(req.params.id,'administrador');res.json({ok:true});});
 app.get('/api/tickets/:id/transcript',(req,res)=>{const t=store.one('SELECT transcript FROM tickets WHERE id=?',req.params.id);if(!t?.transcript)throw new AppError('O histórico estará disponível após encerrar o ticket.',404);res.attachment(`ticket-${req.params.id}.txt`).type('text/plain').send(t.transcript);});
 app.post('/api/giveaways',async(req,res)=>res.json(await bot.createGiveaway(giveawaySchema.parse(req.body))));
+app.get('/api/giveaways/:id/attempts',(req,res)=>{
+  const giveaway=store.one('SELECT * FROM giveaways WHERE id=?',req.params.id);if(!giveaway)throw new AppError('Sorteio não encontrado.',404);
+  const entries=new Set(store.all('SELECT user_id FROM entries WHERE giveaway_id=?',req.params.id).map(r=>r.user_id));
+  res.json(store.all('SELECT * FROM giveaway_attempts WHERE giveaway_id=? ORDER BY updated DESC',req.params.id).map(r=>({...r,eligible:entries.has(r.user_id),detail:JSON.parse(r.detail)})));
+});
+app.post('/api/giveaways/:id/manual',async(req,res)=>{
+  const body=z.object({userId:id,requirementId:z.string().min(1).max(80),approved:z.boolean()}).parse(req.body);
+  const giveaway=store.one('SELECT * FROM giveaways WHERE id=?',req.params.id);if(!giveaway)throw new AppError('Sorteio não encontrado.',404);
+  const data=JSON.parse(giveaway.data),requirement=(data.requirements||[]).find(r=>r.id===body.requirementId&&r.type==='manual');if(!requirement)throw new AppError('Requisito manual não encontrado.',404);
+  if(body.approved)store.run('INSERT INTO giveaway_manual(giveaway_id,user_id,requirement_id,approved_by,approved_at) VALUES(?,?,?,?,?) ON CONFLICT(giveaway_id,user_id,requirement_id) DO UPDATE SET approved_by=excluded.approved_by,approved_at=excluded.approved_at',req.params.id,body.userId,body.requirementId,'administrador',store.now());
+  else store.run('DELETE FROM giveaway_manual WHERE giveaway_id=? AND user_id=? AND requirement_id=?',req.params.id,body.userId,body.requirementId);
+  const checked=await bot.evaluateGiveaway(req.params.id,body.userId,{enter:true,record:true});res.json(checked);
+});
 app.post('/api/events',async(req,res)=>res.json(await bot.createEvent(eventSchema.parse(req.body))));
 app.post('/api/backups',async(req,res)=>res.json({name:await bot.makeBackup()}));
 const backupPath=name=>{if(!/^studio-k-[0-9TZ-]+\.(json|sqlite)$/.test(name))throw new AppError('Arquivo inválido.');if(!readdirSync(join(store.dir,'backups')).includes(name))throw new AppError('Backup não encontrado.',404);return join(store.dir,'backups',name);};
