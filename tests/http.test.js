@@ -22,7 +22,7 @@ test('HTTP access, CSRF, persistence, sales and disconnected Discord behavior',a
   assert.equal((await request('/setup','POST',{password:'another-password'},{Origin:origin})).status,409);
   let state=await(await request('/state','GET',undefined,headers)).json();assert.equal(state.demo,false);assert.equal(state.products.length,0);assert.equal(state.settings.welcome.embed.fields.length,0);
   assert.equal((await request('/settings','PUT',state.settings,{Origin:origin,Cookie:cookie})).status,403);
-  state.settings.brand.name='Studio Teste';assert.equal((await request('/settings','PUT',state.settings,headers)).status,200);
+  state.settings.brand.name='Studio Teste';const settingsResponse=await request('/settings','PUT',state.settings,headers);assert.equal(settingsResponse.status,200);assert.equal((settingsResponse.headers.get('content-type')||'').includes('application/json'),true);assert.deepEqual(await settingsResponse.json(),{ok:true});
   const product=await request('/products','POST',{name:'Licença teste',priceCents:5000,type:'digital'},headers);assert.equal(product.status,200);const pid=(await product.json()).id;
   assert.equal((await request(`/products/${pid}/stock`,'POST',{items:['SECRET-HTTP-TEST']},headers)).status,200);
   state=await(await request('/state','GET',undefined,headers)).json();assert.equal(state.products[0].stock,1);assert.ok(!JSON.stringify(state).includes('SECRET-HTTP-TEST'));
