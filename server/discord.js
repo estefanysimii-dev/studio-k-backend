@@ -47,7 +47,6 @@ const mentionPolicy=(payload={},extraUsers=[],extraRoles=[])=>{
 };
 const safe={parse:[],users:[],roles:[],repliedUser:false};
 const money=n=>(n/100).toLocaleString('pt-BR',{style:'currency',currency:'BRL'});
-const safe={parse:[]};
 const channelSlug=value=>String(value||'ticket').normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/^-+|-+$/g,'').slice(0,80)||'ticket';
 export function createBot(store,env=process.env){
   const client=new Client({intents:[GatewayIntentBits.Guilds,GatewayIntentBits.GuildMembers,GatewayIntentBits.GuildMessages,GatewayIntentBits.MessageContent,GatewayIntentBits.GuildModeration],partials:[Partials.Message,Partials.Channel]});
