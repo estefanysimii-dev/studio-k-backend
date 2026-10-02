@@ -487,6 +487,81 @@ export function createBot(store,env=process.env){
     if(!message)message=await c.send({...payload,allowedMentions:mentionPolicy(payload)});
     const next={messageId:message.id,channelId:cfg.channelId,week:key,signature,checkedAt:Date.now()};store.set('sales-live-message',next);return next;
   }
+  async function upsertLiveMessage(storageKey,cfg,style,vars,signature,force=false){
+    if(!cfg?.enabled||!cfg.channelId||!client.isReady())return null;
+    const state=store.get(storageKey,{});
+    if(!force&&state.signature===signature&&Date.now()-Number(state.checkedAt||0)<60000)return state;
+    const payload=stylePayload(style,vars,env.DISCORD_GUILD_ID),c=await channel(cfg.channelId);
+    let message=null;
+    if(state.messageId&&state.channelId===cfg.channelId){
+      try{message=await c.messages.fetch(state.messageId);await message.edit({...payload,allowedMentions:mentionPolicy(payload)});}catch{}
+    }
+    if(!message)message=await c.send({...payload,allowedMentions:mentionPolicy(payload)});
+    const next={messageId:message.id,channelId:cfg.channelId,signature,checkedAt:Date.now()};store.set(storageKey,next);return next;
+  }
+  const updatedRelative=()=>`<t:${Math.floor(Date.now()/1000)}:R>`;
+  async function updateCommunityLive(force=false){
+    const settings=store.settings(),cfg=settings.communityLive;if(!cfg?.enabled||!cfg.channelId||!client.isReady())return null;
+    const guild=requireGuild(),{start,end,key}=currentWeek();
+    const newWeek=Number(store.one("SELECT COUNT(*) AS n FROM member_events WHERE event='join' AND created>=? AND created<?",start.toISOString(),end.toISOString())?.n||0);
+    const leftWeek=Number(store.one("SELECT COUNT(*) AS n FROM member_events WHERE event='leave' AND created>=? AND created<?",start.toISOString(),end.toISOString())?.n||0);
+    const verifiedWeek=Number(store.one("SELECT COUNT(*) AS n FROM verifications WHERE verified_at>=? AND verified_at<?",start.toISOString(),end.toISOString())?.n||0);
+    const vars={members:String(guild.memberCount||0),newWeek:String(newWeek),verifiedWeek:String(verifiedWeek),leftWeek:String(leftWeek),updated:updatedRelative()};
+    const signature=`${key}:${guild.memberCount}:${newWeek}:${verifiedWeek}:${leftWeek}:${cfg.channelId}`;
+    return upsertLiveMessage('community-live-message',cfg,settings.messageStyles.communityLive,vars,signature,force);
+  }
+  async function updateGiveawaysLive(force=false){
+    const settings=store.settings(),cfg=settings.giveawaysLive;if(!cfg?.enabled||!cfg.channelId||!client.isReady())return null;
+    const active=store.all("SELECT * FROM giveaways WHERE status='active' ORDER BY created DESC"),rows=[];
+    let eligible=0;
+    for(const g of active){
+      const data=JSON.parse(g.data),count=Number(store.one('SELECT COUNT(*) AS n FROM entries WHERE giveaway_id=?',g.id)?.n||0);eligible+=count;
+      rows.push(`• **${data.title}** — ${count} elegível(is) · termina <t:${Math.floor(Date.parse(data.endsAt)/1000)}:R>`);
+    }
+    const giveawayList=rows.slice(0,8).join('\n')+(rows.length>8?`\n… e mais ${rows.length-8} sorteio(s).`:'')||'Nenhum sorteio ativo no momento.';
+    const vars={activeGiveaways:String(active.length),eligible:String(eligible),giveawayList,updated:updatedRelative()};
+    const signature=`${active.map(g=>g.id+':'+g.data).join('|')}:${eligible}:${cfg.channelId}`;
+    return upsertLiveMessage('giveaways-live-message',cfg,settings.messageStyles.giveawaysLive,vars,signature,force);
+  }
+  async function updateOperationsLive(force=false){
+    const settings=store.settings(),cfg=settings.operationsLive;if(!cfg?.enabled||!cfg.channelId||!client.isReady())return null;
+    const openTickets=Number(store.one("SELECT COUNT(*) AS n FROM tickets WHERE status='open'")?.n||0);
+    const pendingOrders=Number(store.one("SELECT COUNT(*) AS n FROM orders WHERE status='pending'")?.n||0);
+    const vars={
+      botStatus:client.isReady()?'Online':'Offline',
+      storeStatus:cfg.storeOpen?'Aberta':'Fechada',
+      ticketsStatus:cfg.ticketsOpen?'Disponíveis':'Fechados',
+      openTickets:String(openTickets),
+      pendingOrders:String(pendingOrders),
+      updated:updatedRelative()
+    };
+    const signature=`${vars.botStatus}:${cfg.storeOpen}:${cfg.ticketsOpen}:${openTickets}:${pendingOrders}:${cfg.channelId}`;
+    return upsertLiveMessage('operations-live-message',cfg,settings.messageStyles.operationsLive,vars,signature,force);
+  }
+  const currentMonth=()=>{
+    const now=new Date(),start=new Date(Date.UTC(now.getUTCFullYear(),now.getUTCMonth(),1)),end=new Date(Date.UTC(now.getUTCFullYear(),now.getUTCMonth()+1,1));
+    return{start,end,key:start.toISOString().slice(0,7),label:new Intl.DateTimeFormat('pt-BR',{month:'long',year:'numeric',timeZone:'UTC'}).format(start)};
+  };
+  async function updateInviteRankingLive(force=false){
+    const settings=store.settings(),cfg=settings.inviteRankingLive;if(!cfg?.enabled||!cfg.channelId||!client.isReady())return null;
+    const {start,end,key,label}=currentMonth();
+    const ranking=store.all(`SELECT inviter_user_id,COUNT(DISTINCT joined_user_id) AS n
+      FROM invite_joins
+      WHERE joined_at>=? AND joined_at<? AND left_at IS NULL
+        AND EXISTS(SELECT 1 FROM verifications v WHERE v.user_id=invite_joins.joined_user_id)
+      GROUP BY inviter_user_id ORDER BY n DESC,inviter_user_id ASC LIMIT ?`,start.toISOString(),end.toISOString(),cfg.top);
+    const medals=['🥇','🥈','🥉'];
+    const text=ranking.length?ranking.map((r,i)=>`${medals[i]||`**${i+1}.**`} <@${r.inviter_user_id}> — **${r.n}** convite(s) válido(s)`).join('\n'):'Ainda não há convites válidos neste mês.';
+    const vars={ranking:text,month:label,updated:updatedRelative()};
+    const signature=`${key}:${ranking.map(r=>r.inviter_user_id+':'+r.n).join('|')}:${cfg.top}:${cfg.channelId}`;
+    return upsertLiveMessage('invite-ranking-live-message',cfg,settings.messageStyles.inviteRankingLive,vars,signature,force);
+  }
+  async function updateLivePanels(force=false){
+    const tasks=[updateSalesLive(force),updateCommunityLive(force),updateGiveawaysLive(force),updateOperationsLive(force),updateInviteRankingLive(force)];
+    const results=await Promise.allSettled(tasks);
+    results.forEach((r,i)=>{if(r.status==='rejected')store.log('erro',`Painel ao vivo ${i+1}: ${r.reason?.message||r.reason}`);});
+    return results;
+  }
   async function createGiveaway(data){
     data={...data,requirements:(data.requirements||[]).map((r,i)=>({...r,id:r.id||`req-${i+1}-${randomUUID().slice(0,8)}`}))};
     const c=await channel(data.channelId),id=randomUUID();
@@ -527,7 +602,7 @@ export function createBot(store,env=process.env){
     for(const o of store.all("SELECT id FROM orders WHERE status='pending' AND expires<=?",store.now()))store.cancelOrder(o.id);
     const s=store.settings();if(s.backups.enabled&&Date.now()-Date.parse(store.get('lastBackup','1970-01-01'))>=s.backups.intervalHours*3600000)try{await makeBackup();}catch(e){store.log('erro',`Backup: ${e.message}`);}
     if(!client.isReady())return;
-    try{await updateSalesLive();}catch(e){store.log('erro',`Painel semanal de vendas: ${e.message}`);}
+    await updateLivePanels();
     for(const o of store.all("SELECT * FROM orders WHERE status='paid' LIMIT 10"))await deliverOrder(o);
     for(const g of store.all("SELECT * FROM giveaways WHERE status IN ('active','drawn')")){if(g.status==='drawn'||Date.parse(JSON.parse(g.data).endsAt)<=Date.now())try{await finishGiveaway(g);}catch(e){store.log('erro',`Sorteio ${g.id.slice(0,8)}: ${e.message}`);}}
     if(s.tickets.autoCloseHours)for(const t of store.all("SELECT * FROM tickets WHERE status='open' AND updated<?",new Date(Date.now()-s.tickets.autoCloseHours*3600000).toISOString()))try{await closeTicket(t.id,'inatividade');}catch(e){store.log('erro',`Ticket ${t.id.slice(0,8)}: ${e.message}`);}
@@ -555,8 +630,9 @@ export function createBot(store,env=process.env){
       if(action==='notificacoes'){
         const exists=store.one('SELECT * FROM optins WHERE user_id=?',i.user.id);if(exists)store.run('DELETE FROM optins WHERE user_id=?',i.user.id);else store.run('INSERT INTO optins VALUES(?,?)',i.user.id,store.now());await i.editReply(exists?'Mensagens opcionais desativadas.':'Mensagens opcionais ativadas. Use este comando novamente para desativar.');return;
       }
-      if(action==='loja'){const products=store.products().filter(p=>p.active);await i.editReply(products.length?{content:'**Catálogo Studio K**\nSelecione um produto para comprar.',components:[row({type:3,custom_id:'store-buy',placeholder:'Escolha um produto',options:products.slice(0,25).map(p=>({label:p.name.slice(0,100),description:`${money(p.priceCents)} · ${p.type==='service'?'Serviço':`${p.stock} em estoque`}`,value:p.id}))})]}:'Ainda não há produtos disponíveis.');return;}
+      if(action==='loja'){if(store.settings().operationsLive?.storeOpen===false)throw new AppError('A loja está fechada no momento.');const products=store.products().filter(p=>p.active);await i.editReply(products.length?{content:'**Catálogo Studio K**\nSelecione um produto para comprar.',components:[row({type:3,custom_id:'store-buy',placeholder:'Escolha um produto',options:products.slice(0,25).map(p=>({label:p.name.slice(0,100),description:`${money(p.priceCents)} · ${p.type==='service'?'Serviço':`${p.stock} em estoque`}`,value:p.id}))})]}:'Ainda não há produtos disponíveis.');return;}
       if(action==='ticket-open'||action==='ticket'){
+        if(store.settings().operationsLive?.ticketsOpen===false)throw new AppError('Os tickets estão fechados no momento.');
         const settings=store.settings().tickets,open=Number(store.one("SELECT COUNT(*) AS n FROM tickets WHERE user_id=? AND status='open'",i.user.id)?.n||0);
         if(open>=2)throw new AppError('Você já possui 2 tickets abertos. Encerre um deles antes de abrir outro.',409);
         const categoryButtons=settings.categories.map((name,index)=>button(name.slice(0,80),`ticket-category:${index}`,2));
@@ -595,7 +671,7 @@ export function createBot(store,env=process.env){
         store.run('UPDATE tickets SET updated=? WHERE id=?',store.now(),id);await audit('ticket',`Ticket ${oldName} renomeado para ${newName}.`,i.user.id);await i.editReply(`Ticket renomeado para **${newName}**.`);return;
       }
       if(action==='verify'||action==='verificar'){const v=store.settings().verification;if(v.oauthEnabled){const url=`${String(env.PUBLIC_URL||'').replace(/\/$/,'')}/api/oauth/discord/start`;await i.editReply({content:'Para liberar o acesso, autorize sua conta pelo Discord.',components:[row(linkButton(v.button,url))]});return;}if(!v.roleId)throw new AppError('A verificação ainda não foi configurada.');if(Date.now()-i.user.createdTimestamp<v.minimumAccountDays*86400000)throw new AppError(`Sua conta precisa ter pelo menos ${v.minimumAccountDays} dias.`);await assignRole(i.user.id,v.roleId);await i.editReply('Verificação concluída. Bem-vindo(a)!');return;}
-      if(action.startsWith('buy:')||action==='store-buy'){if(!store.settings().sales.pixKey)throw new AppError('As vendas ainda não foram configuradas.');const order=store.createOrder(action==='store-buy'?i.values[0]:action.split(':')[1],i.user.id);await i.editReply({content:await orderText(order),components:[row(button('Enviar comprovante / falar com equipe','ticket',2))]});return;}
+      if(action.startsWith('buy:')||action==='store-buy'){if(store.settings().operationsLive?.storeOpen===false)throw new AppError('A loja está fechada no momento.');if(!store.settings().sales.pixKey)throw new AppError('As vendas ainda não foram configuradas.');const order=store.createOrder(action==='store-buy'?i.values[0]:action.split(':')[1],i.user.id);await i.editReply({content:await orderText(order),components:[row(button('Enviar comprovante / falar com equipe','ticket',2))]});return;}
       if(action==='pedido'){const orderId=i.options.getString('id');const order=orderId?store.one('SELECT * FROM orders WHERE id=? AND user_id=?',orderId,i.user.id):store.one('SELECT * FROM orders WHERE user_id=? ORDER BY created DESC LIMIT 1',i.user.id);if(!order)throw new AppError('Pedido não encontrado.');let text=order.status==='pending'?await orderText(order):`Pedido ${order.id}\nSituação: ${{paid:'Aprovado; entrega em processamento',delivered:'Entregue',cancelled:'Cancelado'}[order.status]}`;if(['paid','delivered'].includes(order.status)){const unit=store.one('SELECT secret FROM stock WHERE order_id=?',order.id);if(unit)text+=`\n\nSua entrega: ${store.decrypt(unit.secret)}`;}await i.editReply({content:text.slice(0,2000),allowedMentions:safe});return;}
       if(action.startsWith('giveaway:')){
         const id=action.split(':')[1],g=store.one('SELECT * FROM giveaways WHERE id=?',id);
@@ -623,6 +699,7 @@ export function createBot(store,env=process.env){
     try{
       if(key==='welcome')await attributeInvite(m);
       else store.run("UPDATE invite_joins SET left_at=? WHERE joined_user_id=? AND left_at IS NULL",store.now(),m.id);
+      store.run('INSERT INTO member_events(user_id,event,created) VALUES(?,?,?)',m.id,key==='welcome'?'join':'leave',store.now());
       const s=store.settings(),t=s[key];
       if(t.enabled&&t.channelId){
         const variables={user:`<@${m.id}>`,username:m.user.username,server:m.guild.name,count:String(m.guild.memberCount)};
@@ -632,6 +709,7 @@ export function createBot(store,env=process.env){
         await(await channel(t.channelId)).send(payload);
       }
       if(s.logs.members)await audit('membro',`${m.user.username} ${key==='welcome'?'entrou':'saiu'} do servidor.`,m.id);
+      void updateLivePanels(true);
     }catch(e){store.log('erro',e.message);}
   });
   client.on(Events.MessageCreate,m=>{if(m.guildId===env.DISCORD_GUILD_ID&&!m.author.bot)store.run("UPDATE tickets SET updated=? WHERE channel_id=? AND status='open'",store.now(),m.channelId);});
@@ -651,7 +729,7 @@ export function createBot(store,env=process.env){
     try{const guild=requireGuild();const commands=[{name:'ajuda',description:'Conheça o Studio K'},{name:'loja',description:'Veja produtos e serviços disponíveis'},{name:'pedido',description:'Consulte um pedido e recupere sua entrega',options:[{name:'id',description:'Código completo do pedido; deixe vazio para o mais recente',type:3,required:false}]},{name:'ticket',description:'Abra um atendimento privado'},{name:'verificar',description:'Aceite as regras e receba acesso'},{name:'notificacoes',description:'Ative ou desative mensagens privadas opcionais'}];await new REST({version:'10'}).setToken(env.DISCORD_TOKEN).put(Routes.applicationGuildCommands(env.DISCORD_CLIENT_ID||client.user.id,guild.id),{body:commands});const s=store.settings().brand;client.user.setPresence({status:s.status,activities:s.activity?[{name:s.activity,type:ActivityType[s.activityType]}]:[]});await refreshInviteCache(guild);for(const state of guild.voiceStates.cache.values())if(state.member&&!state.member.user.bot&&state.channelId)startVoiceForUser(state.id,store.now());store.log('conexão',`Conectado ao servidor ${guild.name}.`);error='';await tick();}catch(e){error=e.message;store.log('erro',e.message);}
   });
   const timer=setInterval(()=>void tick(),30000);timer.unref();
-  return {status,client,channel,member,assignRole,verifyOAuthUser,sendMessage,openTicket,closeTicket,publishPanel,publishConfiguredMessage,publishProduct,createGiveaway,evaluateGiveaway,updateSalesLive,createEvent,applyBrand,makeBackup,tick,
+  return {status,client,channel,member,assignRole,verifyOAuthUser,sendMessage,openTicket,closeTicket,publishPanel,publishConfiguredMessage,publishProduct,createGiveaway,evaluateGiveaway,updateSalesLive,updateLivePanels,createEvent,applyBrand,makeBackup,tick,
     async metadata(){
       const g=requireGuild();
       await Promise.all([g.channels.fetch(),g.roles.fetch(),g.emojis.fetch(),g.members.fetch()]);
