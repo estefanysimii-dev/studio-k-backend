@@ -1,17 +1,26 @@
 import { Client, GatewayIntentBits, Partials, Events, ChannelType, PermissionFlagsBits, ActivityType, REST, Routes, MessageFlags, GuildScheduledEventEntityType, GuildScheduledEventPrivacyLevel } from 'discord.js';
 import { randomUUID, createHash } from 'node:crypto';
 import { AppError } from './store.js';
-export function embedPayload(e,variables={}) {
-  const expand=s=>String(s||'').replace(/\{(user|username|server|count)\}/g,(m,k)=>variables[k]??m);
-  const result={color:parseInt(e.color.slice(1),16)};
-  for(const field of ['title','description','url'])if(e[field])result[field]=expand(e[field]);
-  if(e.author)result.author={name:expand(e.author),...(e.authorIcon?{icon_url:e.authorIcon}:{})};
-  if(e.footer)result.footer={text:expand(e.footer)};
-  if(e.image)result.image={url:e.image};if(e.thumbnail)result.thumbnail={url:e.thumbnail};
+export function expandText(value,variables={}) {
+  return String(value||'').replace(/\{([A-Za-z][A-Za-z0-9_]*)\}/g,(match,key)=>Object.prototype.hasOwnProperty.call(variables,key)?String(variables[key]??''):match);
+}
+export function embedPayload(e={},variables={}) {
+  const color=/^#[0-9a-f]{6}$/i.test(e.color||'')?e.color:'#995cff';
+  const result={color:parseInt(color.slice(1),16)};
+  for(const field of ['title','description','url'])if(e[field])result[field]=expandText(e[field],variables);
+  if(e.author)result.author={name:expandText(e.author,variables),...(e.authorIcon?{icon_url:e.authorIcon}:{})};
+  if(e.footer)result.footer={text:expandText(e.footer,variables)};
+  if(e.image)result.image={url:e.image};
+  if(e.thumbnail)result.thumbnail={url:e.thumbnail};
   if(e.timestamp)result.timestamp=new Date().toISOString();
-  if(e.fields?.length)result.fields=e.fields.map(f=>({...f,name:expand(f.name),value:expand(f.value)}));
+  if(e.fields?.length)result.fields=e.fields.map(f=>({name:expandText(f.name,variables),value:expandText(f.value,variables),inline:!!f.inline}));
   return result;
 }
+const hasEmbed=e=>!!(e.title||e.description||e.url||e.author||e.footer||e.image||e.thumbnail||e.timestamp||e.fields?.length);
+const stylePayload=(style,variables={})=>{
+  const embed=embedPayload(style?.embed||{},variables);
+  return {content:expandText(style?.content||'',variables)||undefined,embeds:hasEmbed(embed)?[embed]:[]};
+};
 const button=(label,custom_id,style=1)=>({type:2,label,custom_id,style});
 const row=(...components)=>({type:1,components});
 const money=n=>(n/100).toLocaleString('pt-BR',{style:'currency',currency:'BRL'});
@@ -25,7 +34,10 @@ export function createBot(store,env=process.env){
   const status=()=>({connected:client.isReady()&&client.guilds.cache.has(env.DISCORD_GUILD_ID),configured:!!env.DISCORD_TOKEN,name:client.user?.username||'Studio K',guild:client.guilds.cache.get(env.DISCORD_GUILD_ID)?.name||null,members:client.guilds.cache.get(env.DISCORD_GUILD_ID)?.memberCount||0,latency:client.ws.ping,error});
   async function audit(type,detail,actor='Discord'){
     store.log(type,detail,actor);const cid=store.settings().logs.channelId;
-    if(cid&&client.isReady())try{await(await channel(cid)).send({embeds:[{title:`Studio K · ${type}`,description:String(detail).slice(0,4000),color:0x995cff,timestamp:new Date().toISOString(),footer:{text:`Responsável: ${actor}`}}],allowedMentions:safe});}catch{store.log('erro','Não foi possível publicar no canal de logs.');}
+    if(cid&&client.isReady())try{
+      const style=store.settings().messageStyles.logs;
+      await(await channel(cid)).send({...stylePayload(style,{type,detail:String(detail).slice(0,4000),actor}),allowedMentions:safe});
+    }catch{store.log('erro','Não foi possível publicar no canal de logs.');}
   }
   async function assignRole(userId,roleId){
     if(!roleId)return;const guild=requireGuild(),role=await guild.roles.fetch(roleId),me=await guild.members.fetchMe();
@@ -52,7 +64,7 @@ export function createBot(store,env=process.env){
   async function openTicket(userId,category){
     const old=store.one("SELECT * FROM tickets WHERE user_id=? AND status='open'",userId);if(old?.channel_id)return old;
     if(old)throw new AppError('Seu ticket está sendo criado. Tente novamente em instantes.');
-    const guild=requireGuild(),s=store.settings().tickets;
+    const guild=requireGuild(),settings=store.settings(),s=settings.tickets;
     if(!s.staffRoleId)throw new AppError('Configure o cargo da equipe antes de abrir tickets.');
     const staffRole=await guild.roles.fetch(s.staffRoleId);if(!staffRole||staffRole.id===guild.id)throw new AppError('Configure um cargo válido e exclusivo para a equipe.');
     const id=randomUUID();store.run('INSERT INTO tickets(id,user_id,category,status,created,updated) VALUES(?,?,?,?,?,?)',id,userId,category,'open',store.now(),store.now());
@@ -60,7 +72,8 @@ export function createBot(store,env=process.env){
     try{
       c=await guild.channels.create({name:`ticket-${id.slice(0,8)}`,type:ChannelType.GuildText,parent:s.categoryId||undefined,permissionOverwrites:[{id:guild.id,deny:[PermissionFlagsBits.ViewChannel]},{id:userId,allow:[PermissionFlagsBits.ViewChannel,PermissionFlagsBits.SendMessages,PermissionFlagsBits.ReadMessageHistory,PermissionFlagsBits.AttachFiles]},{id:client.user.id,allow:[PermissionFlagsBits.ViewChannel,PermissionFlagsBits.SendMessages,PermissionFlagsBits.ReadMessageHistory,PermissionFlagsBits.ManageChannels]},{id:s.staffRoleId,allow:[PermissionFlagsBits.ViewChannel,PermissionFlagsBits.SendMessages,PermissionFlagsBits.ReadMessageHistory]}]});
       store.run('UPDATE tickets SET channel_id=? WHERE id=?',c.id,id);
-      await c.send({content:`<@${userId}>`,embeds:[{title:`${category} · Studio K`,description:'Descreva o que você precisa. Nossa equipe continuará o atendimento por aqui.',color:parseInt(s.color.slice(1),16)}],components:[row(button('Assumir atendimento',`claim:${id}`,2),button('Encerrar ticket',`close:${id}`,4))],allowedMentions:{users:[userId]}});
+      const payload=stylePayload(settings.messageStyles.ticketOpen,{user:`<@${userId}>`,category,server:guild.name});
+      await c.send({...payload,components:[row(button('Assumir atendimento',`claim:${id}`,2),button('Encerrar ticket',`close:${id}`,4))],allowedMentions:{users:[userId]}});
       await audit('ticket',`Ticket ${id.slice(0,8)} aberto: ${category}`,userId);return store.one('SELECT * FROM tickets WHERE id=?',id);
     }catch(e){
       if(!c)store.run('DELETE FROM tickets WHERE id=?',id);
@@ -73,19 +86,28 @@ export function createBot(store,env=process.env){
     const c=await channel(ticket.channel_id),messages=[];let before;
     for(let page=0;page<50;page++){const batch=await c.messages.fetch({limit:100,before});if(!batch.size)break;messages.push(...batch.values());before=batch.last().id;if(batch.size<100)break;}
     const transcript=messages.reverse().map(m=>`[${m.createdAt.toISOString()}] ${m.author?.tag||'desconhecido'} (${m.author?.id||''}): ${m.content||''}${m.attachments.size?'\n'+[...m.attachments.values()].map(a=>a.url).join('\n'):''}${m.embeds.length?'\n'+m.embeds.map(e=>[e.title,e.description].filter(Boolean).join('\n')).join('\n'):''}`).join('\n\n');
-    // Persist before removing access, so retrying a failed close never loses the transcript.
     store.run('UPDATE tickets SET transcript=? WHERE id=?',transcript,id);
     await c.permissionOverwrites.edit(ticket.user_id,{SendMessages:false});
-    await c.send({content:'Atendimento encerrado. O histórico foi salvo no painel.',components:[],allowedMentions:safe});
+    const style=store.settings().messageStyles.ticketClose;
+    await c.send({...stylePayload(style,{ticket:id.slice(0,8)}),components:[],allowedMentions:safe});
     store.run("UPDATE tickets SET status='closed',updated=? WHERE id=?",store.now(),id);await audit('ticket',`Ticket ${id.slice(0,8)} encerrado.`,actor);
   }
   async function publishPanel(kind,channelId){
     const s=store.settings(),c=await channel(channelId);let payload;
-    if(kind==='tickets')payload={embeds:[{title:s.tickets.title,description:s.tickets.description,color:parseInt(s.tickets.color.slice(1),16)}],components:[row({type:3,custom_id:'ticket-category',placeholder:s.tickets.button.slice(0,150),options:s.tickets.categories.map((name,i)=>({label:name,value:String(i)}))})]};
-    else payload={embeds:[{title:s.verification.title,description:s.verification.description,color:0x995cff}],components:[row(button(s.verification.button,'verify'))]};
-    const message=await c.send({...payload,allowedMentions:safe});await audit('painel',`Painel de ${kind} publicado.`, 'painel');return{id:message.id};
+    if(kind==='tickets'){
+      payload={...stylePayload(s.messageStyles.ticketPanel),components:[row({type:3,custom_id:'ticket-category',placeholder:s.tickets.button.slice(0,150),options:s.tickets.categories.map((name,i)=>({label:name,value:String(i)}))})]};
+    }else{
+      payload={...stylePayload(s.messageStyles.verificationPanel),components:[row(button(s.verification.button,'verify'))]};
+    }
+    const message=await c.send({...payload,allowedMentions:safe});await audit('painel',`Painel de ${kind} publicado.`,'painel');return{id:message.id};
   }
-  async function publishProduct(productId,channelId){const p=store.products().find(p=>p.id===productId);if(!p)throw new AppError('Produto não encontrado.',404);const m=await(await channel(channelId)).send({embeds:[{title:p.name,description:p.description||'Peça pelo botão abaixo.',color:0x995cff,fields:[{name:'Valor',value:money(p.priceCents),inline:true},{name:'Disponibilidade',value:p.type==='service'?'Sob demanda':`${p.stock} unidade(s)`,inline:true}],...(p.image?{image:{url:p.image}}:{})}],components:[row(button('Comprar com Pix',`buy:${p.id}`))],allowedMentions:safe});return{id:m.id};}
+  async function publishProduct(productId,channelId){
+    const p=store.products().find(p=>p.id===productId);if(!p)throw new AppError('Produto não encontrado.',404);
+    const availability=p.type==='service'?'Sob demanda':`${p.stock} unidade(s)`;
+    const payload=stylePayload(store.settings().messageStyles.product,{product:p.name,description:p.description||'Peça pelo botão abaixo.',price:money(p.priceCents),availability,category:p.category});
+    if(p.image&&payload.embeds[0]&&!payload.embeds[0].image)payload.embeds[0].image={url:p.image};
+    const m=await(await channel(channelId)).send({...payload,components:[row(button('Comprar com Pix',`buy:${p.id}`))],allowedMentions:safe});return{id:m.id};
+  }
   async function orderText(order){const s=store.settings().sales,p=JSON.parse(order.product);return`**Pedido ${order.id}**\n${p.name} · **${money(order.price)}**\n\nChave Pix: **${s.pixKey}**\nRecebedor: ${s.recipient}\n${s.instructions}\n\nValidade: <t:${Math.floor(Date.parse(order.expires)/1000)}:R>. A entrega depende da conferência manual do pagamento.\nConsulte novamente com /pedido.`;}
   async function deliverOrder(order){
     const p=JSON.parse(order.product);
@@ -95,8 +117,9 @@ export function createBot(store,env=process.env){
         let delivery;
         if(p.type==='digital'){const unit=store.one('SELECT secret FROM stock WHERE order_id=?',order.id);if(!unit)throw new Error('Estoque reservado não encontrado.');delivery=store.decrypt(unit.secret);}
         else{const ticket=await openTicket(order.user_id,`Serviço: ${p.name}`);delivery=`Seu atendimento: <#${ticket.channel_id}>`;}
-        const user=await member(order.user_id);
-        await user.send({content:`**Compra aprovada · ${p.name}**\nPedido ${order.id}\n\n${delivery}\n\n${p.delivery}`.slice(0,2000),allowedMentions:safe,nonce:createHash('sha256').update(order.id).digest('hex').slice(0,24),enforceNonce:true});
+        const user=await member(order.user_id),style=store.settings().messageStyles.orderDelivery;
+        const payload=stylePayload(style,{product:p.name,order:order.id,delivery,instructions:p.delivery||''});
+        await user.send({...payload,allowedMentions:safe,nonce:createHash('sha256').update(order.id).digest('hex').slice(0,24),enforceNonce:true});
         store.run('UPDATE orders SET delivery_done=1 WHERE id=?',order.id);
       }
       store.run("UPDATE orders SET status='delivered',error=NULL WHERE id=?",order.id);await audit('entrega',`Pedido ${order.id.slice(0,8)} entregue.`);
@@ -104,7 +127,9 @@ export function createBot(store,env=process.env){
   }
   async function createGiveaway(data){
     const c=await channel(data.channelId),id=randomUUID();store.run('INSERT INTO giveaways(id,data,status,created) VALUES(?,?,?,?)',id,JSON.stringify(data),'draft',store.now());
-    const message=await c.send({embeds:[{title:`🎁 ${data.title}`,description:`${data.description}\n\nEncerra <t:${Math.floor(Date.parse(data.endsAt)/1000)}:R>.\n${data.winners} vencedor(es).${data.requiredRoleId?`\nCargo necessário: <@&${data.requiredRoleId}>`:''}`,color:0x995cff}],components:[row(button('Participar do sorteio',`giveaway:${id}`))],allowedMentions:safe});
+    const roleLine=data.requiredRoleId?`\nCargo necessário: <@&${data.requiredRoleId}>`:'';
+    const payload=stylePayload(store.settings().messageStyles.giveaway,{title:data.title,description:data.description,ends:`<t:${Math.floor(Date.parse(data.endsAt)/1000)}:R>`,winners:data.winners,roleLine});
+    const message=await c.send({...payload,components:[row(button('Participar do sorteio',`giveaway:${id}`))],allowedMentions:safe});
     store.run("UPDATE giveaways SET status='active',message_id=? WHERE id=?",message.id,id);return{id};
   }
   async function finishGiveaway(g){
@@ -115,7 +140,9 @@ export function createBot(store,env=process.env){
       }
       winners=store.drawGiveaway(g.id,eligible);
     }
-    const c=await channel(data.channelId);await c.messages.edit(g.message_id,{embeds:[{title:`Sorteio encerrado · ${data.title}`,description:winners.length?`Vencedor(es): ${winners.map(id=>`<@${id}>`).join(', ')}`:'Não houve participantes elegíveis.',color:0x995cff}],components:[],allowedMentions:safe});
+    const result=winners.length?`Vencedor(es): ${winners.map(id=>`<@${id}>`).join(', ')}`:'Não houve participantes elegíveis.';
+    const payload=stylePayload(store.settings().messageStyles.giveawayResult,{title:data.title,result});
+    const c=await channel(data.channelId);await c.messages.edit(g.message_id,{...payload,components:[],allowedMentions:safe});
     store.run("UPDATE giveaways SET status='ended' WHERE id=?",g.id);
   }
   async function createEvent(data){const event=await requireGuild().scheduledEvents.create({name:data.name,description:data.description||undefined,scheduledStartTime:new Date(data.startsAt),scheduledEndTime:new Date(data.endsAt),privacyLevel:GuildScheduledEventPrivacyLevel.GuildOnly,entityType:GuildScheduledEventEntityType.External,entityMetadata:{location:data.location}});const id=randomUUID();store.run('INSERT INTO events VALUES(?,?,?,?)',id,JSON.stringify(data),event.id,store.now());return{id,discordId:event.id};}
