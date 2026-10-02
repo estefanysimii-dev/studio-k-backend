@@ -40,7 +40,7 @@ export function openStore(directory) {
     CREATE INDEX IF NOT EXISTS member_events_user ON member_events(user_id);
     CREATE TABLE IF NOT EXISTS message_activity(day TEXT NOT NULL,user_id TEXT NOT NULL,count INTEGER NOT NULL DEFAULT 0,PRIMARY KEY(day,user_id));
     CREATE INDEX IF NOT EXISTS message_activity_user ON message_activity(user_id,day);
-    CREATE TABLE IF NOT EXISTS logs(id INTEGER PRIMARY KEY AUTOINCREMENT,type TEXT NOT NULL,actor TEXT NOT NULL,detail TEXT NOT NULL,created TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS logs(id INTEGER PRIMARY KEY AUTOINCREMENT,type TEXT NOT NULL,actor TEXT NOT NULL,detail TEXT NOT NULL,created TEXT NOT NULL,meta TEXT NOT NULL DEFAULT '{}');
     CREATE TABLE IF NOT EXISTS templates(id TEXT PRIMARY KEY,name TEXT NOT NULL,data TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS requests(key TEXT PRIMARY KEY,result TEXT NOT NULL,created TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS feedback_requests(
@@ -59,6 +59,7 @@ export function openStore(directory) {
     CREATE INDEX IF NOT EXISTS feedback_user_status ON feedback_requests(user_id,status);
   `);
   if(!db.prepare('PRAGMA table_info(orders)').all().some(c=>c.name==='approved_at'))db.exec('ALTER TABLE orders ADD COLUMN approved_at TEXT');
+  if(!db.prepare('PRAGMA table_info(logs)').all().some(c=>c.name==='meta'))db.exec("ALTER TABLE logs ADD COLUMN meta TEXT NOT NULL DEFAULT '{}'");
   db.exec('DROP INDEX IF EXISTS open_ticket_per_user');
   db.exec('CREATE INDEX IF NOT EXISTS tickets_open_user ON tickets(user_id,status)');
   // Backfill referral_joins from previously tracked giveaway invite joins where possible.
@@ -80,7 +81,7 @@ export function openStore(directory) {
   const now=()=>new Date().toISOString();
   const get=(k,fallback=null)=>{const row=one('SELECT value FROM kv WHERE key=?',k);return row?JSON.parse(row.value):fallback;};
   const set=(k,v)=>run('INSERT INTO kv VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value',k,JSON.stringify(v));
-  const log=(type,detail,actor='sistema')=>run('INSERT INTO logs(type,actor,detail,created) VALUES(?,?,?,?)',type,actor,String(detail).slice(0,2000),now());
+  const log=(type,detail,actor='sistema',meta={})=>run('INSERT INTO logs(type,actor,detail,created,meta) VALUES(?,?,?,?,?)',type,actor,String(detail).slice(0,2000),now(),JSON.stringify(meta&&typeof meta==='object'?meta:{}).slice(0,12000));
   const transaction=fn=>{db.exec('BEGIN IMMEDIATE');try{const result=fn();db.exec('COMMIT');return result;}catch(e){db.exec('ROLLBACK');throw e;}};
   const encrypt=text=>{const iv=randomBytes(12),cipher=createCipheriv('aes-256-gcm',key,iv);const data=Buffer.concat([cipher.update(text,'utf8'),cipher.final()]);return Buffer.concat([iv,cipher.getAuthTag(),data]).toString('base64');};
   const decrypt=value=>{const data=Buffer.from(value,'base64'),cipher=createDecipheriv('aes-256-gcm',key,data.subarray(0,12));cipher.setAuthTag(data.subarray(12,28));return Buffer.concat([cipher.update(data.subarray(28)),cipher.final()]).toString('utf8');};
