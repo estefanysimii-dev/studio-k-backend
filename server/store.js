@@ -20,6 +20,13 @@ export function openStore(directory) {
     CREATE UNIQUE INDEX IF NOT EXISTS open_ticket_per_user ON tickets(user_id) WHERE status='open';
     CREATE TABLE IF NOT EXISTS giveaways(id TEXT PRIMARY KEY,data TEXT NOT NULL,status TEXT NOT NULL,message_id TEXT,winners TEXT,created TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS entries(giveaway_id TEXT NOT NULL REFERENCES giveaways(id),user_id TEXT NOT NULL,PRIMARY KEY(giveaway_id,user_id));
+    CREATE TABLE IF NOT EXISTS giveaway_attempts(giveaway_id TEXT NOT NULL REFERENCES giveaways(id),user_id TEXT NOT NULL,status TEXT NOT NULL,detail TEXT NOT NULL,updated TEXT NOT NULL,PRIMARY KEY(giveaway_id,user_id));
+    CREATE TABLE IF NOT EXISTS giveaway_manual(giveaway_id TEXT NOT NULL REFERENCES giveaways(id),user_id TEXT NOT NULL,requirement_id TEXT NOT NULL,approved_by TEXT NOT NULL,approved_at TEXT NOT NULL,PRIMARY KEY(giveaway_id,user_id,requirement_id));
+    CREATE TABLE IF NOT EXISTS youtube_accounts(user_id TEXT PRIMARY KEY,channel_id TEXT NOT NULL,channel_title TEXT NOT NULL,refresh_secret TEXT NOT NULL,connected_at TEXT NOT NULL,updated_at TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS giveaway_invites(giveaway_id TEXT NOT NULL REFERENCES giveaways(id),user_id TEXT NOT NULL,code TEXT NOT NULL UNIQUE,created TEXT NOT NULL,PRIMARY KEY(giveaway_id,user_id));
+    CREATE TABLE IF NOT EXISTS invite_joins(giveaway_id TEXT NOT NULL REFERENCES giveaways(id),joined_user_id TEXT NOT NULL,inviter_user_id TEXT NOT NULL,code TEXT NOT NULL,joined_at TEXT NOT NULL,left_at TEXT,PRIMARY KEY(giveaway_id,joined_user_id));
+    CREATE INDEX IF NOT EXISTS invite_joins_inviter ON invite_joins(giveaway_id,inviter_user_id);
+    CREATE TABLE IF NOT EXISTS voice_activity(user_id TEXT PRIMARY KEY,seconds INTEGER NOT NULL DEFAULT 0,joined_at TEXT);
     CREATE TABLE IF NOT EXISTS events(id TEXT PRIMARY KEY,data TEXT NOT NULL,discord_id TEXT,created TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS optins(user_id TEXT PRIMARY KEY,created TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS verifications(user_id TEXT PRIMARY KEY,username TEXT NOT NULL,verified_at TEXT NOT NULL,last_authorized_at TEXT NOT NULL);
