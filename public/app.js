@@ -399,6 +399,8 @@ async function persistSettingsForm(form,{refreshAfter=false}={}){
   }
   const liveKeys=new Set(['salesLive','communityLive','giveawaysLive','operationsLive','inviteRankingLive']);
   if(liveKeys.has(key)&&updated.enabled&&!updated.channelId)throw new Error('Escolha o canal onde este painel automático será publicado.');
+  if(key==='feedback'&&updated.enabled&&!updated.channelId)throw new Error('Escolha o canal que receberá os feedbacks.');
+  if(key==='voicePresence'&&updated.enabled&&!updated.channelId)throw new Error('Escolha o canal de voz onde o bot deverá permanecer conectado.');
   await api('/settings','PUT',all);
   state.settings=all;
   if(refreshAfter)await refresh();
