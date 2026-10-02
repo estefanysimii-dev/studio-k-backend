@@ -4,6 +4,8 @@ COPY package.json package-lock.json ./
 RUN npm ci --omit=dev && npm cache clean --force
 COPY server ./server
 COPY public ./public
+COPY tests ./tests
+RUN npm run check && npm test
 RUN mkdir -p /app/data
 ENV HOST=0.0.0.0 DATA_DIR=/app/data
 EXPOSE 8080
