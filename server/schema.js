@@ -56,7 +56,14 @@ export const settingsSchema = z.object({
   welcome: template.prefault({ content: 'Bem-vindo(a), {user}! Você está no {server}.', embed: { title: 'Seu lugar é aqui.', description: 'Confira as regras e conheça nossa loja.' } }),
   goodbye: template.prefault({ content: '{username} saiu do servidor.' }),
   tickets: z.object({ categoryId: optionalId, staffRoleId: optionalId, staffRoleIds: z.array(id).max(25).default([]), logChannelId: optionalId, title: z.string().min(1).max(256).default('Como podemos ajudar?'), description: z.string().max(2000).default('Abra um atendimento privado com nossa equipe.'), button: z.string().min(1).max(80).default('Abrir ticket'), categories: z.array(z.string().min(1).max(80)).min(1).max(10).default(['Suporte','Compras','Orçamento']), color: z.string().regex(/^#[0-9a-f]{6}$/i).default('#995cff'), autoCloseHours: z.number().int().min(0).max(720).default(0), callDm: z.boolean().default(true) }).prefault({}),
-  verification: z.object({ roleId: optionalId, redirectChannelId: optionalId, title: z.string().min(1).max(256).default('Verifique sua conta'), description: z.string().max(2000).default('Leia as regras. Ao confirmar, você receberá acesso à comunidade.'), button: z.string().min(1).max(80).default('Liberar meu acesso'), minimumAccountDays: z.number().int().min(0).max(365).default(7), oauthEnabled: z.boolean().default(false), sendDm: z.boolean().default(true) }).prefault({}),
+  verification: z.object({ roleId: optionalId, roleIds: z.array(id).max(25).default([]), redirectChannelId: optionalId, title: z.string().min(1).max(256).default('Verifique sua conta'), description: z.string().max(2000).default('Leia as regras. Ao confirmar, você receberá acesso à comunidade.'), button: z.string().min(1).max(80).default('Liberar meu acesso'), minimumAccountDays: z.number().int().min(0).max(365).default(7), oauthEnabled: z.boolean().default(false), sendDm: z.boolean().default(true) }).prefault({}),
+  roleGroups: z.object({
+    staff:z.array(id).max(50).default([]),
+    highStaff:z.array(id).max(50).default([]),
+    partners:z.array(id).max(50).default([]),
+    customers:z.array(id).max(50).default([]),
+    decorative:z.array(id).max(100).default([])
+  }).prefault({}),
   sales: z.object({ pixKey: z.string().max(200).default(''), recipient: z.string().max(100).default(''), instructions: z.string().max(1200).default('Envie o comprovante no ticket e aguarde a conferência da equipe.'), orderExpiryMinutes: z.number().int().min(10).max(10080).default(60), lowStockThreshold: z.number().int().min(0).max(10000).default(3) }).prefault({}),
   salesLive: z.object({ enabled:z.boolean().default(false), channelId:optionalId }).prefault({}),
   communityLive: z.object({ enabled:z.boolean().default(false), channelId:optionalId }).prefault({}),
