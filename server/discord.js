@@ -205,7 +205,7 @@ export function createBot(store,env=process.env){
     if(source==='template'){
       if(!['welcome','goodbye'].includes(key))throw new AppError('Modelo de mensagem inválido.',400);
       const t=settings[key],variables={
-        user:'<@123456789012345678>',
+        user:'@Cliente',
         username:'Cliente',
         server:requireGuild().name,
         count:String(requireGuild().memberCount)
@@ -227,12 +227,12 @@ export function createBot(store,env=process.env){
     if(key==='ticketPanel')return publishPanel('tickets',channelId);
     if(key==='verificationPanel')return publishPanel('verification',channelId);
     const variables={
-      user:'<@123456789012345678>',username:'Cliente',server:requireGuild().name,count:String(requireGuild().memberCount),
-      category:'Orçamento',ticket:'orcamento-1',staff:'<@123456789012345679>',channel:'<#'+channelId+'>',
+      user:'@Cliente',username:'Cliente',server:requireGuild().name,count:String(requireGuild().memberCount),
+      category:'Orçamento',ticket:'orcamento-1',staff:'@Atendente',channel:'#canal-exemplo',
       product:'Produto exemplo',description:'Descrição do produto',price:'R$ 49,90',availability:'10 unidades',
-      title:'Sorteio especial',ends:'em 2 horas',winners:'1',roleLine:'',result:'<@123456789012345678>',
-      type:'ticket',detail:'Atendimento atualizado.',actor:'<@123456789012345679>',order:'ABC123',
-      delivery:'CHAVE-EXEMPLO',instructions:'Siga as instruções enviadas.',role:'<@&123456789012345680>',
+      title:'Sorteio especial',ends:'em 2 horas',winners:'1',roleLine:'',result:'@Cliente',
+      type:'ticket',detail:'Atendimento atualizado.',actor:'@Atendente',order:'ABC123',
+      delivery:'CHAVE-EXEMPLO',instructions:'Siga as instruções enviadas.',role:'@Verificado',
       transcript:'https://studio-k-wmrj.netlify.app/transcript'
     };
     const payload=stylePayload(settings.messageStyles[key],variables,env.DISCORD_GUILD_ID);
