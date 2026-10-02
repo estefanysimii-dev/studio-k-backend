@@ -11,7 +11,22 @@ export const embedSchema = z.object({
   fields: z.array(z.object({ name: z.string().min(1).max(256), value: z.string().min(1).max(1024), inline: z.boolean().default(false) })).max(25).default([])
 }).refine(e => e.title.length + e.description.length + e.author.length + e.footer.length + e.fields.reduce((n,f) => n + f.name.length + f.value.length, 0) <= 6000, 'O embed ultrapassa 6.000 caracteres.');
 const template = z.object({ enabled: z.boolean().default(false), channelId: optionalId, content: z.string().max(1800).default(''), embed: embedSchema.prefault({}) });
+const messageStyle = (content='', embed={}) => z.object({
+  content: z.string().max(2000).default(content),
+  embed: embedSchema.prefault(embed)
+}).prefault({});
+const messageStylesSchema = z.object({
+  ticketPanel: messageStyle('', { title:'Como podemos ajudar?', description:'Abra um atendimento privado com nossa equipe.', color:'#995cff' }),
+  ticketOpen: messageStyle('{user}', { title:'{category} · Studio K', description:'Descreva o que você precisa. Nossa equipe continuará o atendimento por aqui.', color:'#995cff' }),
+  verificationPanel: messageStyle('', { title:'Verifique sua conta', description:'Leia as regras. Ao confirmar, você receberá acesso à comunidade.', color:'#995cff' }),
+  product: messageStyle('', { title:'{product}', description:'{description}', color:'#995cff', fields:[{name:'Valor',value:'{price}',inline:true},{name:'Disponibilidade',value:'{availability}',inline:true}] }),
+  giveaway: messageStyle('', { title:'🎁 {title}', description:'{description}\n\nEncerra {ends}.\n{winners} vencedor(es).{roleLine}', color:'#995cff' }),
+  giveawayResult: messageStyle('', { title:'Sorteio encerrado · {title}', description:'{result}', color:'#995cff' }),
+  logs: messageStyle('', { title:'Studio K · {type}', description:'{detail}', color:'#995cff', footer:'Responsável: {actor}', timestamp:true }),
+  orderDelivery: messageStyle('', { title:'Compra aprovada · {product}', description:'Pedido {order}\n\n{delivery}\n\n{instructions}', color:'#995cff' })
+}).prefault({});
 export const settingsSchema = z.object({
+  messageStyles: messageStylesSchema,
   brand: z.object({ name: z.string().min(2).max(32).default('Studio K'), status: z.enum(['online','idle','dnd','invisible']).default('online'), activity: z.string().max(128).default('Sua loja, sua comunidade.'), activityType: z.enum(['Playing','Watching','Listening','Competing']).default('Watching'), description: z.string().max(400).default(''), avatar: z.string().max(4000000).regex(/^(data:image\/(png|jpeg|webp);base64,[A-Za-z0-9+/=]+)?$/).default(''), banner: z.string().max(4000000).regex(/^(data:image\/(png|jpeg|webp);base64,[A-Za-z0-9+/=]+)?$/).default('') }).prefault({}),
   welcome: template.prefault({ content: 'Bem-vindo(a), {user}! Você está no {server}.', embed: { title: 'Seu lugar é aqui.', description: 'Confira as regras e conheça nossa loja.' } }),
   goodbye: template.prefault({ content: '{username} saiu do servidor.' }),
