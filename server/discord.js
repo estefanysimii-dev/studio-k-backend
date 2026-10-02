@@ -96,7 +96,9 @@ export function createBot(store,env=process.env){
   const languagePreference=userId=>store.one('SELECT language FROM user_preferences WHERE user_id=?',userId)||null;
   const preferredLanguage=userId=>normalizeLanguage(languagePreference(userId)?.language||'pt');
   const saveLanguage=(userId,language)=>{const value=normalizeLanguage(language);store.run('INSERT INTO user_preferences(user_id,language,updated_at) VALUES(?,?,?) ON CONFLICT(user_id) DO UPDATE SET language=excluded.language,updated_at=excluded.updated_at',userId,value,store.now());return value;};
-  const translationReady=()=>!!(store.settings().translator?.enabled&&env.GOOGLE_TRANSLATE_API_KEY);
+  const libreTranslateUrl=()=>String(env.LIBRETRANSLATE_URL||'http://libretranslate.railway.internal:5000').replace(/\/$/,'');
+  const libreLanguage=code=>normalizeLanguage(code)==='zh-CN'?'zh':normalizeLanguage(code);
+  const translationReady=()=>!!(store.settings().translator?.enabled&&libreTranslateUrl());
   const protectTranslationText=value=>{
     const tokens=[];
     const text=String(value||'').replace(/```[\s\S]*?```|`[^`\n]+`|<(?:@!?|@&|#)\d+>|<t:\d+(?::[tTdDfFR])?>|<a?:[A-Za-z0-9_]+:\d+>|https?:\/\/[^\s)]+|[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}|[A-Za-z0-9_-]{12,}/gi,match=>{
@@ -109,17 +111,18 @@ export function createBot(store,env=process.env){
   async function translateTexts(values,target){
     const language=normalizeLanguage(target),source=values.map(v=>String(v||''));
     if(language==='pt'||!source.some(Boolean))return source;
-    if(!env.GOOGLE_TRANSLATE_API_KEY)throw new AppError('O tradutor ainda não foi configurado no servidor.',503);
+    if(!translationReady())throw new AppError('O tradutor ainda não foi configurado no servidor.',503);
     const protectedValues=source.map(protectTranslationText),cacheKey='translate:'+createHash('sha256').update(language+'\n'+JSON.stringify(source)).digest('hex');
     const cached=store.get(cacheKey);
     if(cached?.values&&Date.now()-Number(cached.created||0)<7*86400000)return cached.values;
-    const response=await fetch(`https://translation.googleapis.com/language/translate/v2?key=${encodeURIComponent(env.GOOGLE_TRANSLATE_API_KEY)}`,{
+    const response=await fetch(`${libreTranslateUrl()}/translate`,{
       method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({q:protectedValues.map(v=>v.text),target:language,format:'text'})
+      body:JSON.stringify({q:protectedValues.map(v=>v.text),source:'auto',target:libreLanguage(language),format:'text'})
     });
     const data=await response.json().catch(()=>({}));
-    if(!response.ok||!Array.isArray(data?.data?.translations))throw new AppError('Não foi possível traduzir esta mensagem agora.',502);
-    const translated=data.data.translations.map((x,index)=>restoreTranslationText(decodeTranslation(x.translatedText),protectedValues[index].tokens));
+    const translatedRaw=Array.isArray(data?.translatedText)?data.translatedText:(typeof data?.translatedText==='string'?[data.translatedText]:[]);
+    if(!response.ok||translatedRaw.length!==protectedValues.length)throw new AppError(data?.error||'Não foi possível traduzir esta mensagem agora.',502);
+    const translated=translatedRaw.map((value,index)=>restoreTranslationText(decodeTranslation(value),protectedValues[index].tokens));
     store.set(cacheKey,{values:translated,created:Date.now()});
     return translated;
   }
@@ -139,7 +142,7 @@ export function createBot(store,env=process.env){
     return clone;
   }
   async function localizeFor(userId,data){
-    if(!store.settings().translator?.enabled||!env.GOOGLE_TRANSLATE_API_KEY)return data;
+    if(!translationReady())return data;
     const language=preferredLanguage(userId);if(language==='pt')return data;
     try{
       if(typeof data==='string')return (await translateTexts([data],language))[0];
@@ -958,7 +961,7 @@ export function createBot(store,env=process.env){
       }
       if(action==='Traduzir mensagem'){
         if(!store.settings().translator?.enabled)throw new AppError('A tradução personalizada está desativada.');
-        if(!env.GOOGLE_TRANSLATE_API_KEY)throw new AppError('O tradutor ainda não foi configurado pelo administrador.');
+        if(!translationReady())throw new AppError('O tradutor ainda não foi configurado pelo administrador.');
         const pref=languagePreference(i.user.id),target=i.targetMessage;
         if(!target)throw new AppError('Mensagem não encontrada.');
         if(!pref){
@@ -990,7 +993,7 @@ export function createBot(store,env=process.env){
       }
       if(action==='translate-message'){
         if(!store.settings().translator?.enabled)throw new AppError('A tradução personalizada está desativada.');
-        if(!env.GOOGLE_TRANSLATE_API_KEY)throw new AppError('O tradutor ainda não foi configurado pelo administrador.');
+        if(!translationReady())throw new AppError('O tradutor ainda não foi configurado pelo administrador.');
         const pref=languagePreference(i.user.id);
         if(!pref){
           await localizedEdit(i,{content:'Escolha seu idioma. O Studio K salvará essa preferência para as próximas traduções:',components:[row(languageSelect('translate-language:'+i.channelId+':'+i.message.id))]});
