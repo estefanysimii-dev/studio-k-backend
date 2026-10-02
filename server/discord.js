@@ -902,7 +902,7 @@ export function createBot(store,env=process.env){
     try{
       await i.deferReply({flags:MessageFlags.Ephemeral});
       const action=i.commandName||i.customId;
-      if(action==='ajuda'){await localizedEdit(i,'**Studio K**\n/loja · catálogo\n/pedido · consultar compra e entrega\n/ticket · atendimento\n/verificar · liberar acesso\n/notificacoes · autorizar ou desativar mensagens privadas');return;}
+      if(action==='ajuda'){await localizedEdit(i,'**Studio K**\n/loja · catálogo\n/pedido · consultar compra e entrega\n/ticket · atendimento\n/verificar · liberar acesso\n/idioma · alterar seu idioma\n/notificacoes · autorizar ou desativar mensagens privadas');return;}
       if(action==='notificacoes'){
         const exists=store.one('SELECT * FROM optins WHERE user_id=?',i.user.id);if(exists)store.run('DELETE FROM optins WHERE user_id=?',i.user.id);else store.run('INSERT INTO optins VALUES(?,?)',i.user.id,store.now());await localizedEdit(i,exists?'Mensagens opcionais desativadas.':'Mensagens opcionais ativadas. Use este comando novamente para desativar.');return;
       }
@@ -945,6 +945,16 @@ export function createBot(store,env=process.env){
         const requested=i.fields.getTextInputValue('ticket-name'),newName=channelSlug(requested);if(!newName)throw new AppError('Digite um nome válido.');
         const c=await channel(t.channel_id),oldName=c.name;await c.setName(newName,`Studio K: renomeado por ${i.user.id}`);
         store.run('UPDATE tickets SET updated=? WHERE id=?',store.now(),id);await audit('ticket',`Ticket ${oldName} renomeado para ${newName}.`,i.user.id);await localizedEdit(i,`Ticket renomeado para **${newName}**.`);return;
+      }
+      if(action==='idioma'){
+        const current=languagePreference(i.user.id)?.language||'';
+        await localizedEdit(i,{content:'Escolha o idioma que o Studio K deve usar para você:',components:[row(languageSelect('set-language',current))]});
+        return;
+      }
+      if(action==='set-language'){
+        const language=saveLanguage(i.user.id,normalizeLanguage(i.values?.[0]));
+        await localizedEdit(i,{content:'Idioma atualizado para **'+languageLabel(language)+'**.',components:[]});
+        return;
       }
       if(action==='Traduzir mensagem'){
         if(!store.settings().translator?.enabled)throw new AppError('A tradução personalizada está desativada.');
@@ -1123,7 +1133,7 @@ export function createBot(store,env=process.env){
   for(const [event,label] of [[Events.GuildRoleCreate,'criado'],[Events.GuildRoleDelete,'excluído'],[Events.GuildRoleUpdate,'alterado']])logEvent(event,'roles',`cargo ${label}`,(...a)=>{const r=a.at(-1);return`Cargo <@&${r.id}> (**${r.name}**) foi ${label}.`;});
   client.on(Events.Error,e=>{error=e.message;store.log('erro','Falha na conexão com o Discord.');});
   client.once(Events.ClientReady,async()=>{console.log(`Discord conectado como ${client.user?.tag||client.user?.username||'Studio K'}.`);
-    try{const guild=requireGuild();const commands=[{name:'ajuda',description:'Conheça o Studio K'},{name:'loja',description:'Veja produtos e serviços disponíveis'},{name:'pedido',description:'Consulte um pedido e recupere sua entrega',options:[{name:'id',description:'Código completo do pedido; deixe vazio para o mais recente',type:3,required:false}]},{name:'ticket',description:'Abra um atendimento privado'},{name:'verificar',description:'Aceite as regras e receba acesso'},{name:'notificacoes',description:'Ative ou desative mensagens privadas opcionais'},{name:'Traduzir mensagem',type:3}];await new REST({version:'10'}).setToken(env.DISCORD_TOKEN).put(Routes.applicationGuildCommands(env.DISCORD_CLIENT_ID||client.user.id,guild.id),{body:commands});const s=store.settings().brand;client.user.setPresence({status:s.status,activities:s.activity?[{name:s.activity,type:ActivityType[s.activityType]}]:[]});await refreshInviteCache(guild);for(const state of guild.voiceStates.cache.values())if(state.member&&!state.member.user.bot&&state.channelId)startVoiceForUser(state.id,store.now());try{await applyVoicePresence();}catch(e){store.log('aviso',`Presença em call: ${e.message}`);}store.log('conexão',`Conectado ao servidor ${guild.name}.`);error='';await tick();}catch(e){error=e.message;store.log('erro',e.message);}
+    try{const guild=requireGuild();const commands=[{name:'ajuda',description:'Conheça o Studio K'},{name:'loja',description:'Veja produtos e serviços disponíveis'},{name:'pedido',description:'Consulte um pedido e recupere sua entrega',options:[{name:'id',description:'Código completo do pedido; deixe vazio para o mais recente',type:3,required:false}]},{name:'ticket',description:'Abra um atendimento privado'},{name:'verificar',description:'Aceite as regras e receba acesso'},{name:'notificacoes',description:'Ative ou desative mensagens privadas opcionais'},{name:'idioma',description:'Escolha o idioma das mensagens privadas do Studio K'},{name:'Traduzir mensagem',type:3}];await new REST({version:'10'}).setToken(env.DISCORD_TOKEN).put(Routes.applicationGuildCommands(env.DISCORD_CLIENT_ID||client.user.id,guild.id),{body:commands});const s=store.settings().brand;client.user.setPresence({status:s.status,activities:s.activity?[{name:s.activity,type:ActivityType[s.activityType]}]:[]});await refreshInviteCache(guild);for(const state of guild.voiceStates.cache.values())if(state.member&&!state.member.user.bot&&state.channelId)startVoiceForUser(state.id,store.now());try{await applyVoicePresence();}catch(e){store.log('aviso',`Presença em call: ${e.message}`);}store.log('conexão',`Conectado ao servidor ${guild.name}.`);error='';await tick();}catch(e){error=e.message;store.log('erro',e.message);}
   });
   const timer=setInterval(()=>void tick(),30000);timer.unref();
   return {status,client,channel,member,assignRole,verifyOAuthUser,sendMessage,openTicket,closeTicket,publishPanel,publishConfiguredMessage,publishProduct,createGiveaway,evaluateGiveaway,updateSalesLive,updateLivePanels,createEvent,applyBrand,applyVoicePresence,makeBackup,tick,
