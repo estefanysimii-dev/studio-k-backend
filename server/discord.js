@@ -319,15 +319,17 @@ export function createBot(store,env=process.env){
     return `${slug}-${number}`.slice(0,100);
   }
   async function openTicket(userId,category){
-    const old=store.one("SELECT * FROM tickets WHERE user_id=? AND status='open'",userId);if(old?.channel_id)return old;
-    if(old)throw new AppError('Seu ticket está sendo criado. Tente novamente em instantes.');
     const guild=requireGuild(),settings=store.settings(),ticketSettings=settings.tickets;
     if(!ticketSettings.staffRoleId)throw new AppError('Configure o cargo da equipe antes de abrir tickets.');
     await guild.roles.fetch();
     const staffRole=await guild.roles.fetch(ticketSettings.staffRoleId);if(!staffRole||staffRole.id===guild.id)throw new AppError('Configure um cargo válido e exclusivo para a equipe.');
     const elevatedRoles=[...guild.roles.cache.values()].filter(r=>!r.managed&&r.id!==guild.id&&r.position>=staffRole.position);
-    const ticketName=await nextTicketName(category,guild);
-    const id=randomUUID();store.run('INSERT INTO tickets(id,user_id,category,status,created,updated) VALUES(?,?,?,?,?,?)',id,userId,category,'open',store.now(),store.now());
+    const ticketName=await nextTicketName(category,guild),id=randomUUID(),now=store.now();
+    store.transaction(()=>{
+      const open=Number(store.one("SELECT COUNT(*) AS n FROM tickets WHERE user_id=? AND status='open'",userId)?.n||0);
+      if(open>=2)throw new AppError('Você já possui 2 tickets abertos. Encerre um deles antes de abrir outro.',409);
+      store.run('INSERT INTO tickets(id,user_id,category,status,created,updated) VALUES(?,?,?,?,?,?)',id,userId,category,'open',now,now);
+    });
     let c;
     try{
       const staffPermissions=[PermissionFlagsBits.ViewChannel,PermissionFlagsBits.SendMessages,PermissionFlagsBits.ReadMessageHistory,PermissionFlagsBits.AttachFiles,PermissionFlagsBits.ManageMessages];
@@ -383,7 +385,7 @@ export function createBot(store,env=process.env){
   async function publishPanel(kind,channelId){
     const s=store.settings(),c=await channel(channelId),guild=requireGuild(),staticVars={server:guild.name,count:String(guild.memberCount)};let payload;
     if(kind==='tickets'){
-      payload=stylePayload(s.messageStyles.ticketPanel,staticVars,env.DISCORD_GUILD_ID);payload.components=[...(payload.components||[]),row({type:3,custom_id:'ticket-category',placeholder:s.tickets.button.slice(0,150),options:s.tickets.categories.map((name,i)=>({label:name,value:String(i)}))})];
+      payload=stylePayload(s.messageStyles.ticketPanel,staticVars,env.DISCORD_GUILD_ID);payload.components=[...(payload.components||[]),row(button(s.tickets.button,'ticket-open',1))];
     }else{
       const verifyComponent=s.verification.oauthEnabled
         ? linkButton(s.verification.button,`${String(env.PUBLIC_URL||'').replace(/\/$/,'')}/api/oauth/discord/start`)
@@ -552,7 +554,22 @@ export function createBot(store,env=process.env){
         const exists=store.one('SELECT * FROM optins WHERE user_id=?',i.user.id);if(exists)store.run('DELETE FROM optins WHERE user_id=?',i.user.id);else store.run('INSERT INTO optins VALUES(?,?)',i.user.id,store.now());await i.editReply(exists?'Mensagens opcionais desativadas.':'Mensagens opcionais ativadas. Use este comando novamente para desativar.');return;
       }
       if(action==='loja'){const products=store.products().filter(p=>p.active);await i.editReply(products.length?{content:'**Catálogo Studio K**\nSelecione um produto para comprar.',components:[row({type:3,custom_id:'store-buy',placeholder:'Escolha um produto',options:products.slice(0,25).map(p=>({label:p.name.slice(0,100),description:`${money(p.priceCents)} · ${p.type==='service'?'Serviço':`${p.stock} em estoque`}`,value:p.id}))})]}:'Ainda não há produtos disponíveis.');return;}
-      if(action==='ticket'||action==='ticket-category'){const category=action==='ticket-category'?store.settings().tickets.categories[Number(i.values[0])]:store.settings().tickets.categories[0];if(!category)throw new AppError('Categoria indisponível.');const t=await openTicket(i.user.id,category);await i.editReply({content:`Olá <@${i.user.id}>! Seu atendimento: <#${t.channel_id}>`,allowedMentions:{parse:[],users:[i.user.id]}});return;}
+      if(action==='ticket-open'||action==='ticket'){
+        const settings=store.settings().tickets,open=Number(store.one("SELECT COUNT(*) AS n FROM tickets WHERE user_id=? AND status='open'",i.user.id)?.n||0);
+        if(open>=2)throw new AppError('Você já possui 2 tickets abertos. Encerre um deles antes de abrir outro.',409);
+        const categoryButtons=settings.categories.map((name,index)=>button(name.slice(0,80),`ticket-category:${index}`,2));
+        const rows=[];for(let p=0;p<categoryButtons.length;p+=5)rows.push(row(...categoryButtons.slice(p,p+5)));
+        await i.editReply({content:`Você possui **${open}/2** tickets abertos. Escolha a categoria do novo atendimento:`,components:rows});
+        return;
+      }
+      if(action.startsWith('ticket-category:')||action==='ticket-category'){
+        const index=action==='ticket-category'?Number(i.values?.[0]||0):Number(action.split(':')[1]),category=store.settings().tickets.categories[index];
+        if(!category)throw new AppError('Categoria indisponível.');
+        const t=await openTicket(i.user.id,category);
+        const open=Number(store.one("SELECT COUNT(*) AS n FROM tickets WHERE user_id=? AND status='open'",i.user.id)?.n||0);
+        await i.editReply({content:`Olá <@${i.user.id}>! Seu atendimento: <#${t.channel_id}>\nVocê está com **${open}/2** tickets abertos.`,components:[],allowedMentions:{parse:[],users:[i.user.id]}});
+        return;
+      }
       if(action.startsWith('claim:')){if(!await isStaff(i))throw new AppError('Somente a equipe pode assumir tickets.',403);const id=action.split(':')[1],changed=store.run("UPDATE tickets SET claimed_by=?,updated=? WHERE id=? AND status='open' AND claimed_by IS NULL",i.user.id,store.now(),id);if(changed.changes){const t=store.one('SELECT * FROM tickets WHERE id=?',id),c=await channel(t.channel_id),style=store.settings().messageStyles.ticketClaim,customer=await memberVariables(t.user_id,c.guild),staffMember=await member(i.user.id);const variables={...customer,staff:`<@${i.user.id}>`,staffUsername:staffMember.displayName||staffMember.user.globalName||staffMember.user.username||i.user.id,ticket:c.name,category:t.category,channel:`<#${c.id}>`,server:c.guild.name};const claimPayload=stylePayload(style,variables,env.DISCORD_GUILD_ID);await c.send({...claimPayload,allowedMentions:mentionPolicy(claimPayload,[i.user.id,t.user_id])});await audit('ticket',`Ticket ${c.name} assumido.`,i.user.id);}await i.editReply(changed.changes?'Atendimento atribuído a você.':'Esse atendimento já está atribuído ou encerrado.');return;}
       if(action.startsWith('close:')){if(!await isStaff(i))throw new AppError('Somente a equipe pode finalizar tickets.',403);const t=store.one('SELECT * FROM tickets WHERE id=?',action.split(':')[1]);if(!t)throw new AppError('Ticket não encontrado.',404);await closeTicket(t.id,i.user.id);await i.editReply('Atendimento encerrado.');return;}
       if(action.startsWith('call:')){
