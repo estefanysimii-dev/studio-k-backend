@@ -35,6 +35,7 @@ export function openStore(directory) {
     CREATE TABLE IF NOT EXISTS templates(id TEXT PRIMARY KEY,name TEXT NOT NULL,data TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS requests(key TEXT PRIMARY KEY,result TEXT NOT NULL,created TEXT NOT NULL);
   `);
+  if(!db.prepare('PRAGMA table_info(orders)').all().some(c=>c.name==='approved_at'))db.exec('ALTER TABLE orders ADD COLUMN approved_at TEXT');
   const one=(sql,...args)=>db.prepare(sql).get(...args), all=(sql,...args)=>db.prepare(sql).all(...args), run=(sql,...args)=>db.prepare(sql).run(...args);
   const now=()=>new Date().toISOString();
   const get=(k,fallback=null)=>{const row=one('SELECT value FROM kv WHERE key=?',k);return row?JSON.parse(row.value):fallback;};
@@ -61,7 +62,7 @@ export function openStore(directory) {
     if(row.status==='paid'||row.status==='delivered')return row;
     if(row.status!=='pending')throw new AppError('Este pedido já foi encerrado.');
     if(Date.parse(row.expires)<=Date.now())throw new AppError('O pedido expirou. Crie outro após conferir o estoque.');
-    run("UPDATE orders SET status='paid',approved_by=? WHERE id=?",actor,orderId);log('pagamento',`Pix confirmado manualmente: ${orderId.slice(0,8)}`,actor);
+    run("UPDATE orders SET status='paid',approved_by=?,approved_at=? WHERE id=?",actor,now(),orderId);log('pagamento',`Pix confirmado manualmente: ${orderId.slice(0,8)}`,actor);
     return one('SELECT * FROM orders WHERE id=?',orderId);
   });}
   function cancelOrder(orderId,actor='sistema'){return transaction(()=>{
