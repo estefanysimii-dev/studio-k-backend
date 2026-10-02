@@ -31,11 +31,23 @@ export function openStore(directory) {
     CREATE TABLE IF NOT EXISTS events(id TEXT PRIMARY KEY,data TEXT NOT NULL,discord_id TEXT,created TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS optins(user_id TEXT PRIMARY KEY,created TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS verifications(user_id TEXT PRIMARY KEY,username TEXT NOT NULL,verified_at TEXT NOT NULL,last_authorized_at TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS member_events(id INTEGER PRIMARY KEY AUTOINCREMENT,user_id TEXT NOT NULL,event TEXT NOT NULL,created TEXT NOT NULL);
+    CREATE INDEX IF NOT EXISTS member_events_created ON member_events(created);
+    CREATE INDEX IF NOT EXISTS member_events_user ON member_events(user_id);
     CREATE TABLE IF NOT EXISTS logs(id INTEGER PRIMARY KEY AUTOINCREMENT,type TEXT NOT NULL,actor TEXT NOT NULL,detail TEXT NOT NULL,created TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS templates(id TEXT PRIMARY KEY,name TEXT NOT NULL,data TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS requests(key TEXT PRIMARY KEY,result TEXT NOT NULL,created TEXT NOT NULL);
   `);
   if(!db.prepare('PRAGMA table_info(orders)').all().some(c=>c.name==='approved_at'))db.exec('ALTER TABLE orders ADD COLUMN approved_at TEXT');
+  // Backfill member_events once from existing member audit logs when available.
+  if(db.prepare('SELECT COUNT(*) AS n FROM member_events').get().n===0){
+    const legacy=db.prepare("SELECT actor,detail,created FROM logs WHERE type='membro' ORDER BY id").all();
+    const ins=db.prepare('INSERT INTO member_events(user_id,event,created) VALUES(?,?,?)');
+    for(const row of legacy){
+      const event=row.detail.includes(' entrou do servidor.')?'join':row.detail.includes(' saiu do servidor.')?'leave':'';
+      if(event&&/^\d{17,20}$/.test(String(row.actor)))ins.run(row.actor,event,row.created);
+    }
+  }
   const one=(sql,...args)=>db.prepare(sql).get(...args), all=(sql,...args)=>db.prepare(sql).all(...args), run=(sql,...args)=>db.prepare(sql).run(...args);
   const now=()=>new Date().toISOString();
   const get=(k,fallback=null)=>{const row=one('SELECT value FROM kv WHERE key=?',k);return row?JSON.parse(row.value):fallback;};
