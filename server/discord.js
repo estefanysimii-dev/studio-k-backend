@@ -577,7 +577,6 @@ export function createBot(store,env=process.env){
       payload=styledPayload(s.messageStyles.ticketPanel,staticVars,env.DISCORD_GUILD_ID);payload.components=[...(payload.components||[]),row(button(s.tickets.button,'ticket-open',1))];
     }else{
       const controls=[button(s.verification.button,'verify',1)];
-      if(s.verification.oauthEnabled)controls.push(button('Usar navegador','verify-browser',2));
       payload=styledPayload(s.messageStyles.verificationPanel,staticVars,env.DISCORD_GUILD_ID);payload.components=[...(payload.components||[]),row(...controls)];
     }
     const message=await c.send({...payload,allowedMentions:mentionPolicy(payload)});await audit('painel',`Painel de ${kind} publicado.`,'painel');return{id:message.id};
@@ -982,7 +981,13 @@ export function createBot(store,env=process.env){
         return;
       }
       if(action==='verify-language'){
-        await completeNativeVerification(i,normalizeLanguage(i.values?.[0]));
+        const language=saveLanguage(i.user.id,normalizeLanguage(i.values?.[0]));
+        if(store.settings().verification.oauthEnabled){
+          const url=String(env.PUBLIC_URL||'').replace(/\/$/,'')+'/api/oauth/discord/start?lang='+encodeURIComponent(language);
+          await localizedEdit(i,{content:'Idioma salvo. Continue pela autorização oficial do Discord. A autorização também permite restaurar sua entrada em um novo servidor do Studio K caso seja necessário no futuro.',components:[row(linkButton('Autorizar e verificar',url))]});
+        }else{
+          await completeNativeVerification(i,language);
+        }
         return;
       }
       if(action==='verify-browser-language'){
