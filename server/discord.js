@@ -91,14 +91,15 @@ export function youtubeChannelRef(value=''){
 export function createBot(store,env=process.env){
   const client=new Client({intents:[GatewayIntentBits.Guilds,GatewayIntentBits.GuildMembers,GatewayIntentBits.GuildMessages,GatewayIntentBits.MessageContent,GatewayIntentBits.GuildModeration,GatewayIntentBits.GuildVoiceStates],partials:[Partials.Message,Partials.Channel]});
   let error='',busy=false,backupBusy=false,inviteCache=new Map();
-  const languageSelect=customId=>({type:3,custom_id:customId,placeholder:'Escolha seu idioma',min_values:1,max_values:1,options:SUPPORTED_LANGUAGES.map(l=>({label:l.label,value:l.code,emoji:{name:l.emoji}}))});
+  const languageSelect=(customId,current='')=>({type:3,custom_id:customId,placeholder:'Escolha seu idioma',min_values:1,max_values:1,options:SUPPORTED_LANGUAGES.map(l=>({label:l.label,value:l.code,emoji:{name:l.emoji},...(l.code===current?{default:true}:{})}))});
   const languageLabel=code=>SUPPORTED_LANGUAGES.find(l=>l.code===normalizeLanguage(code))?.label||'Português (Brasil)';
-  const preferredLanguage=userId=>normalizeLanguage(store.one('SELECT language FROM user_preferences WHERE user_id=?',userId)?.language||'pt');
+  const languagePreference=userId=>store.one('SELECT language FROM user_preferences WHERE user_id=?',userId)||null;
+  const preferredLanguage=userId=>normalizeLanguage(languagePreference(userId)?.language||'pt');
   const saveLanguage=(userId,language)=>{const value=normalizeLanguage(language);store.run('INSERT INTO user_preferences(user_id,language,updated_at) VALUES(?,?,?) ON CONFLICT(user_id) DO UPDATE SET language=excluded.language,updated_at=excluded.updated_at',userId,value,store.now());return value;};
   const translationReady=()=>!!(store.settings().translator?.enabled&&env.GOOGLE_TRANSLATE_API_KEY);
   const protectTranslationText=value=>{
     const tokens=[];
-    const text=String(value||'').replace(/```[\s\S]*?```|`[^`\n]+`|<(?:@!?|@&|#)\d+>|<t:\d+(?::[tTdDfFR])?>|<a?:[A-Za-z0-9_]+:\d+>|https?:\/\/[^\s)]+/g,match=>{
+    const text=String(value||'').replace(/```[\s\S]*?```|`[^`\n]+`|<(?:@!?|@&|#)\d+>|<t:\d+(?::[tTdDfFR])?>|<a?:[A-Za-z0-9_]+:\d+>|https?:\/\/[^\s)]+|[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}|[A-Za-z0-9_-]{12,}/gi,match=>{
       const key=`__SKTOKEN_${tokens.length}__`;tokens.push(match);return key;
     });
     return{text,tokens};
@@ -159,13 +160,13 @@ export function createBot(store,env=process.env){
     return {...payload,components};
   };
   const styledPayload=(style,variables={},guildId=env.DISCORD_GUILD_ID||'')=>withTranslator(stylePayload(style,variables,guildId));
-  async function translatedMessageReply(i,message,language){
+  async function translatedMessageEdit(i,message,language){
     const target=normalizeLanguage(language),raw={content:message.content||undefined,embeds:(message.embeds||[]).map(e=>e.toJSON?e.toJSON():e)};
     const translated=await translatePayload(raw,target);
     translated.components=[];translated.allowedMentions=safe;
     const header=`🌐 **${languageLabel(target)}**`;
     translated.content=translated.content?`${header}\n${translated.content}`:header;
-    await i.reply({...translated,flags:MessageFlags.Ephemeral});
+    await i.editReply(translated);
   }
 
   const requireGuild=()=>{if(!client.isReady())throw new AppError('Conecte o bot ao Discord antes desta ação.',503);const guild=client.guilds.cache.get(env.DISCORD_GUILD_ID);if(!guild)throw new AppError('O bot não está no servidor configurado.',503);return guild;};
