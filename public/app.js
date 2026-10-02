@@ -9,7 +9,31 @@ let state,csrf,route=location.hash.slice(1)||'overview',editorTab='message',welc
 let editor={target:'channel',targetId:'',content:'',webhookName:'',webhookAvatar:'',buttons:[],embed:{title:'Novidades no Studio K ✦',description:'Seu próximo projeto começa aqui.\n\nConheça nossos produtos e converse com a equipe.',color:'#995cff',url:'',author:'Studio K',authorIcon:'',footer:'Feito para a sua comunidade.',image:'',thumbnail:'',timestamp:false,fields:[]}};
 let toastTimer;
 function toast(text,error=false){$('#toast').textContent=text;$('#toast').className=`show${error?' error':''}`;clearTimeout(toastTimer);toastTimer=setTimeout(()=>$('#toast').className='',error?9000:4500);}
-async function api(path,method='GET',body,extraHeaders={}){const response=await fetch(`/api${path}`,{method,headers:{'Content-Type':'application/json',...(csrf?{'X-CSRF-Token':csrf}:{}),...extraHeaders},...(body===undefined?{}:{body:JSON.stringify(body)})});const data=await response.json();if(!response.ok){if(response.status===401&&path!=='/login')void boot();throw new Error(data.error||'Não foi possível concluir.');}return data;}
+async function api(path,method='GET',body,extraHeaders={}){
+  const response=await fetch(`/api${path}`,{
+    method,
+    headers:{'Content-Type':'application/json','Accept':'application/json',...(csrf?{'X-CSRF-Token':csrf}:{}),...extraHeaders},
+    ...(body===undefined?{}:{body:JSON.stringify(body)})
+  });
+  const text=await response.text(),contentType=response.headers.get('content-type')||'';
+  let data={};
+  if(text){
+    try{data=JSON.parse(text);}
+    catch{
+      const looksHtml=/<\s*!doctype|<\s*html/i.test(text);
+      if(!response.ok||looksHtml){
+        if(response.status===401&&path!=='/login')void boot();
+        throw new Error(looksHtml?'O servidor retornou uma página em vez de dados. Atualize o painel e tente novamente.':'A resposta do servidor não pôde ser interpretada.');
+      }
+      data={ok:true};
+    }
+  }
+  if(!response.ok){
+    if(response.status===401&&path!=='/login')void boot();
+    throw new Error(data?.error||`Não foi possível concluir (HTTP ${response.status}).`);
+  }
+  return data;
+}
 function field(label,name,value='',options={}){const {type='text',help='',placeholder='',required=false,wide=false,min,max,step}=options;return`<div class="field${wide?' wide':''}"><label for="f-${esc(name)}">${esc(label)}</label>${type==='textarea'?`<textarea id="f-${esc(name)}" name="${esc(name)}" placeholder="${esc(placeholder)}" ${required?'required':''}>${esc(value)}</textarea>`:`<input id="f-${esc(name)}" name="${esc(name)}" type="${type}" value="${esc(value)}" placeholder="${esc(placeholder)}" ${required?'required':''} ${min!==undefined?`min="${min}"`:''} ${max!==undefined?`max="${max}"`:''} ${step!==undefined?`step="${step}"`:''}>`}${help?`<small>${esc(help)}</small>`:''}</div>`;}
 function select(label,name,value,options,help=''){return`<div class="field"><label for="f-${esc(name)}">${esc(label)}</label><select id="f-${esc(name)}" name="${esc(name)}">${options.map(([v,n])=>`<option value="${esc(v)}" ${String(v)===String(value)?'selected':''}>${esc(n)}</option>`).join('')}</select>${help?`<small>${esc(help)}</small>`:''}</div>`;}
 function idField(label,name,value,kind='channels'){const items=metadata[kind];return items.length?select(label,name,value,[['','Selecione…'],...items.map(i=>[i.id,kind==='channels'?`# ${i.name}`:i.name])]):field(label,name,value,{placeholder:kind==='roles'?'ID do cargo':'ID do canal',help:'Com o bot conectado, você poderá escolher por nome.'});}
