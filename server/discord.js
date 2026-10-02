@@ -54,6 +54,10 @@ export function createBot(store,env=process.env){
   const requireGuild=()=>{if(!client.isReady())throw new AppError('Conecte o bot ao Discord antes desta ação.',503);const guild=client.guilds.cache.get(env.DISCORD_GUILD_ID);if(!guild)throw new AppError('O bot não está no servidor configurado.',503);return guild;};
   const channel=async channelId=>{const c=await requireGuild().channels.fetch(channelId);if(!c?.isTextBased()||!('send' in c))throw new AppError('Escolha um canal de texto do servidor.');return c;};
   const member=async userId=>requireGuild().members.fetch(userId);
+  const memberVariables=async(userId,guild=requireGuild())=>{
+    const m=await member(userId);
+    return {user:`<@${userId}>`,username:m.displayName||m.user.globalName||m.user.username||userId,server:guild.name};
+  };
   const status=()=>({connected:client.isReady()&&client.guilds.cache.has(env.DISCORD_GUILD_ID),configured:!!env.DISCORD_TOKEN,name:client.user?.username||'Studio K',guild:client.guilds.cache.get(env.DISCORD_GUILD_ID)?.name||null,members:client.guilds.cache.get(env.DISCORD_GUILD_ID)?.memberCount||0,latency:client.ws.ping,error});
   async function audit(type,detail,actor='Discord'){
     store.log(type,detail,actor);const cid=store.settings().logs.channelId;
@@ -80,7 +84,7 @@ export function createBot(store,env=process.env){
     if(v.sendDm){
       try{
         const style=settings.messageStyles.verificationDm;
-        const payload=stylePayload(style,{user:username,username,server:guild.name,role:`<@&${v.roleId}>`},env.DISCORD_GUILD_ID);await m.send({...payload,allowedMentions:mentionPolicy(payload)});
+        const payload=stylePayload(style,{user:`<@${user.id}>`,username,server:guild.name,role:`<@&${v.roleId}>`},env.DISCORD_GUILD_ID);await m.send({...payload,allowedMentions:mentionPolicy(payload)});
         dmSent=true;
       }catch(e){store.log('aviso',`Verificação concluída para ${user.id}, mas a DM não pôde ser entregue: ${String(e.message).slice(0,300)}`);}
     }
@@ -148,9 +152,10 @@ export function createBot(store,env=process.env){
         ...elevatedRoles.map(r=>({id:r.id,allow:staffPermissions}))
       ]});
       store.run('UPDATE tickets SET channel_id=? WHERE id=?',c.id,id);
-      const customerPayload=stylePayload(settings.messageStyles.ticketOpen,{user:`<@${userId}>`,category,server:guild.name,ticket:ticketName});
+      const customerVars={...(await memberVariables(userId,guild)),category,ticket:ticketName,channel:`<#${c.id}>`};
+      const customerPayload=stylePayload(settings.messageStyles.ticketOpen,customerVars,env.DISCORD_GUILD_ID);
       await c.send({...customerPayload,allowedMentions:mentionPolicy(customerPayload,[userId])});
-      const staffPayload=stylePayload(settings.messageStyles.ticketStaffPanel,{user:`<@${userId}>`,category,server:guild.name,ticket:ticketName});
+      const staffPayload=stylePayload(settings.messageStyles.ticketStaffPanel,customerVars,env.DISCORD_GUILD_ID);
       await c.send({...staffPayload,components:[...(staffPayload.components||[]),row(
         button('Assumir atendimento',`claim:${id}`,1),
         button('Renomear',`rename:${id}`,2),
@@ -178,7 +183,8 @@ export function createBot(store,env=process.env){
     let dmSent=false;
     try{
       const user=await member(ticket.user_id),style=store.settings().messageStyles.ticketClose;
-      const closePayload=stylePayload(style,{ticket:ticketName,transcript:transcriptUrl,category:ticket.category},env.DISCORD_GUILD_ID);await user.send({...closePayload,components:[...(closePayload.components||[]),row(linkButton('Abrir transcript',transcriptUrl))],allowedMentions:mentionPolicy(closePayload)});
+      const closeVars={user:`<@${ticket.user_id}>`,username:user.displayName||user.user.globalName||user.user.username||ticket.user_id,server:c.guild.name,ticket:ticketName,transcript:transcriptUrl,category:ticket.category};
+      const closePayload=stylePayload(style,closeVars,env.DISCORD_GUILD_ID);await user.send({...closePayload,components:[...(closePayload.components||[]),row(linkButton('Abrir transcript',transcriptUrl))],allowedMentions:mentionPolicy(closePayload,[ticket.user_id])});
       dmSent=true;
     }catch(e){
       store.log('aviso',`Ticket ${ticketName} encerrado, mas a DM com o transcript não pôde ser entregue: ${String(e.message).slice(0,300)}`,actor);
@@ -189,14 +195,14 @@ export function createBot(store,env=process.env){
     return {dmSent,transcriptUrl};
   }
   async function publishPanel(kind,channelId){
-    const s=store.settings(),c=await channel(channelId);let payload;
+    const s=store.settings(),c=await channel(channelId),guild=requireGuild(),staticVars={server:guild.name,count:String(guild.memberCount)};let payload;
     if(kind==='tickets'){
-      payload=stylePayload(s.messageStyles.ticketPanel,{},env.DISCORD_GUILD_ID);payload.components=[...(payload.components||[]),row({type:3,custom_id:'ticket-category',placeholder:s.tickets.button.slice(0,150),options:s.tickets.categories.map((name,i)=>({label:name,value:String(i)}))})];
+      payload=stylePayload(s.messageStyles.ticketPanel,staticVars,env.DISCORD_GUILD_ID);payload.components=[...(payload.components||[]),row({type:3,custom_id:'ticket-category',placeholder:s.tickets.button.slice(0,150),options:s.tickets.categories.map((name,i)=>({label:name,value:String(i)}))})];
     }else{
       const verifyComponent=s.verification.oauthEnabled
         ? linkButton(s.verification.button,`${String(env.PUBLIC_URL||'').replace(/\/$/,'')}/api/oauth/discord/start`)
         : button(s.verification.button,'verify');
-      payload=stylePayload(s.messageStyles.verificationPanel,{},env.DISCORD_GUILD_ID);payload.components=[...(payload.components||[]),row(verifyComponent)];
+      payload=stylePayload(s.messageStyles.verificationPanel,staticVars,env.DISCORD_GUILD_ID);payload.components=[...(payload.components||[]),row(verifyComponent)];
     }
     const message=await c.send({...payload,allowedMentions:mentionPolicy(payload)});await audit('painel',`Painel de ${kind} publicado.`,'painel');return{id:message.id};
   }
@@ -320,14 +326,14 @@ export function createBot(store,env=process.env){
         const exists=store.one('SELECT * FROM optins WHERE user_id=?',i.user.id);if(exists)store.run('DELETE FROM optins WHERE user_id=?',i.user.id);else store.run('INSERT INTO optins VALUES(?,?)',i.user.id,store.now());await i.editReply(exists?'Mensagens opcionais desativadas.':'Mensagens opcionais ativadas. Use este comando novamente para desativar.');return;
       }
       if(action==='loja'){const products=store.products().filter(p=>p.active);await i.editReply(products.length?{content:'**Catálogo Studio K**\nSelecione um produto para comprar.',components:[row({type:3,custom_id:'store-buy',placeholder:'Escolha um produto',options:products.slice(0,25).map(p=>({label:p.name.slice(0,100),description:`${money(p.priceCents)} · ${p.type==='service'?'Serviço':`${p.stock} em estoque`}`,value:p.id}))})]}:'Ainda não há produtos disponíveis.');return;}
-      if(action==='ticket'||action==='ticket-category'){const category=action==='ticket-category'?store.settings().tickets.categories[Number(i.values[0])]:store.settings().tickets.categories[0];if(!category)throw new AppError('Categoria indisponível.');const t=await openTicket(i.user.id,category);await i.editReply(`Seu atendimento: <#${t.channel_id}>`);return;}
-      if(action.startsWith('claim:')){if(!await isStaff(i))throw new AppError('Somente a equipe pode assumir tickets.',403);const id=action.split(':')[1],changed=store.run("UPDATE tickets SET claimed_by=?,updated=? WHERE id=? AND status='open' AND claimed_by IS NULL",i.user.id,store.now(),id);if(changed.changes){const t=store.one('SELECT * FROM tickets WHERE id=?',id),c=await channel(t.channel_id),style=store.settings().messageStyles.ticketClaim;const claimPayload=stylePayload(style,{staff:`<@${i.user.id}>`,user:`<@${t.user_id}>`,ticket:c.name,category:t.category},env.DISCORD_GUILD_ID);await c.send({...claimPayload,allowedMentions:mentionPolicy(claimPayload,[i.user.id,t.user_id])});await audit('ticket',`Ticket ${c.name} assumido.`,i.user.id);}await i.editReply(changed.changes?'Atendimento atribuído a você.':'Esse atendimento já está atribuído ou encerrado.');return;}
+      if(action==='ticket'||action==='ticket-category'){const category=action==='ticket-category'?store.settings().tickets.categories[Number(i.values[0])]:store.settings().tickets.categories[0];if(!category)throw new AppError('Categoria indisponível.');const t=await openTicket(i.user.id,category);await i.editReply({content:`Olá <@${i.user.id}>! Seu atendimento: <#${t.channel_id}>`,allowedMentions:{parse:[],users:[i.user.id]}});return;}
+      if(action.startsWith('claim:')){if(!await isStaff(i))throw new AppError('Somente a equipe pode assumir tickets.',403);const id=action.split(':')[1],changed=store.run("UPDATE tickets SET claimed_by=?,updated=? WHERE id=? AND status='open' AND claimed_by IS NULL",i.user.id,store.now(),id);if(changed.changes){const t=store.one('SELECT * FROM tickets WHERE id=?',id),c=await channel(t.channel_id),style=store.settings().messageStyles.ticketClaim,customer=await memberVariables(t.user_id,c.guild),staffMember=await member(i.user.id);const variables={...customer,staff:`<@${i.user.id}>`,staffUsername:staffMember.displayName||staffMember.user.globalName||staffMember.user.username||i.user.id,ticket:c.name,category:t.category,channel:`<#${c.id}>`,server:c.guild.name};const claimPayload=stylePayload(style,variables,env.DISCORD_GUILD_ID);await c.send({...claimPayload,allowedMentions:mentionPolicy(claimPayload,[i.user.id,t.user_id])});await audit('ticket',`Ticket ${c.name} assumido.`,i.user.id);}await i.editReply(changed.changes?'Atendimento atribuído a você.':'Esse atendimento já está atribuído ou encerrado.');return;}
       if(action.startsWith('close:')){if(!await isStaff(i))throw new AppError('Somente a equipe pode finalizar tickets.',403);const t=store.one('SELECT * FROM tickets WHERE id=?',action.split(':')[1]);if(!t)throw new AppError('Ticket não encontrado.',404);await closeTicket(t.id,i.user.id);await i.editReply('Atendimento encerrado.');return;}
       if(action.startsWith('call:')){
         if(!await isStaff(i))throw new AppError('Somente a equipe pode chamar o cliente.',403);
         const id=action.split(':')[1],t=store.one("SELECT * FROM tickets WHERE id=? AND status='open'",id);if(!t)throw new AppError('Ticket aberto não encontrado.',404);
-        const c=await channel(t.channel_id),settings=store.settings(),style=settings.messageStyles.ticketCall;
-        const variables={user:`<@${t.user_id}>`,ticket:c.name,category:t.category,channel:`<#${c.id}>`,server:c.guild.name};
+        const c=await channel(t.channel_id),settings=store.settings(),style=settings.messageStyles.ticketCall,customer=await memberVariables(t.user_id,c.guild);
+        const variables={...customer,ticket:c.name,category:t.category,channel:`<#${c.id}>`,server:c.guild.name};
         const callPayload=stylePayload(style,variables,env.DISCORD_GUILD_ID);await c.send({...callPayload,allowedMentions:mentionPolicy(callPayload,[t.user_id])});
         let dmSent=false;
         if(settings.tickets.callDm){
