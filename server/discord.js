@@ -834,16 +834,16 @@ export function createBot(store,env=process.env){
     if(s.tickets.autoCloseHours)for(const t of store.all("SELECT * FROM tickets WHERE status='open' AND updated<?",new Date(Date.now()-s.tickets.autoCloseHours*3600000).toISOString()))try{await closeTicket(t.id,'inatividade');}catch(e){store.log('erro',`Ticket ${t.id.slice(0,8)}: ${e.message}`);}
   }catch(e){store.log('erro',e.message);}finally{busy=false;}}
   client.on(Events.InteractionCreate,async i=>{
-    const feedbackInteraction=(i.isButton()||i.isModalSubmit())&&String(i.customId||'').startsWith('feedback');
-    if((i.guildId!==env.DISCORD_GUILD_ID&&!feedbackInteraction)||(!i.isChatInputCommand()&&!i.isButton()&&!i.isStringSelectMenu()&&!i.isModalSubmit()))return;
+    const customId=String(i.customId||''),privateInteraction=(i.isButton()||i.isStringSelectMenu()||i.isModalSubmit())&&(customId.startsWith('feedback')||customId.startsWith('translate'));
+    if((i.guildId!==env.DISCORD_GUILD_ID&&!privateInteraction)||(!i.isChatInputCommand()&&!i.isButton()&&!i.isStringSelectMenu()&&!i.isModalSubmit()))return;
     if(i.isButton()&&i.customId.startsWith('feedback:')){
       try{
         const id=i.customId.split(':')[1],request=store.one('SELECT * FROM feedback_requests WHERE id=?',id);
         if(!request||request.user_id!==i.user.id)throw new AppError('Este pedido de feedback não pertence a você.',403);
-        if(request.status==='submitted'){await i.reply({content:'Você já enviou seu feedback. Obrigada! 💜'});return;}
+        if(request.status==='submitted'){await localizedReply(i,{content:'Você já enviou seu feedback. Obrigada! 💜'});return;}
         const stars=[1,2,3,4,5].map(n=>button(`${n} ⭐`,`feedback-rate:${id}:${n}`,2));
-        await i.reply({content:'Como você avalia sua experiência? Escolha de **1 a 5 estrelas**:',components:[row(...stars)]});
-      }catch(e){await i.reply({content:e instanceof AppError?e.message:'Não foi possível abrir o feedback.'}).catch(()=>{});}
+        await localizedReply(i,{content:'Como você avalia sua experiência? Escolha de **1 a 5 estrelas**:',components:[row(...stars)]});
+      }catch(e){await localizedReply(i,{content:e instanceof AppError?e.message:'Não foi possível abrir o feedback.'}).catch(()=>{});}
       return;
     }
     if(i.isButton()&&i.customId.startsWith('feedback-rate:')){
@@ -856,7 +856,7 @@ export function createBot(store,env=process.env){
         const input=new TextInputBuilder().setCustomId('feedback-comment').setLabel('Conte como foi sua experiência').setStyle(TextInputStyle.Paragraph).setRequired(true).setMinLength(3).setMaxLength(1500).setPlaceholder('Escreva seu feedback sobre o atendimento ou compra.');
         modal.addComponents(new ActionRowBuilder().addComponents(input));
         await i.showModal(modal);
-      }catch(e){await i.reply({content:e instanceof AppError?e.message:'Não foi possível abrir o formulário.'}).catch(()=>{});}
+      }catch(e){await localizedReply(i,{content:e instanceof AppError?e.message:'Não foi possível abrir o formulário.'}).catch(()=>{});}
       return;
     }
     if(i.isModalSubmit()&&i.customId.startsWith('feedback-submit:')){
@@ -878,10 +878,10 @@ export function createBot(store,env=process.env){
           store.run("UPDATE feedback_requests SET status='pending' WHERE id=? AND status='publishing'",id);
           throw e;
         }
-        await i.editReply(`Obrigada pelo feedback! 💜 Sua avaliação **${feedbackStars(rating)} ${rating}/5** foi enviada.`);
+        await localizedEdit(i,`Obrigada pelo feedback! 💜 Sua avaliação **${feedbackStars(rating)} ${rating}/5** foi enviada.`);
       }catch(e){
         const msg=e instanceof AppError?e.message:'Não foi possível enviar seu feedback.';
-        if(deferred)await i.editReply(msg).catch(()=>{});else await i.reply({content:msg}).catch(()=>{});
+        if(deferred)await localizedEdit(i,msg).catch(()=>{});else await localizedReply(i,{content:msg}).catch(()=>{});
       }
       return;
     }
@@ -895,25 +895,25 @@ export function createBot(store,env=process.env){
         modal.addComponents(new ActionRowBuilder().addComponents(input));
         await i.showModal(modal);
       }catch(e){
-        await i.reply({content:e instanceof AppError?e.message:'Não foi possível abrir o editor de nome.',flags:MessageFlags.Ephemeral}).catch(()=>{});
+        await localizedReply(i,{content:e instanceof AppError?e.message:'Não foi possível abrir o editor de nome.',flags:MessageFlags.Ephemeral}).catch(()=>{});
       }
       return;
     }
     try{
       await i.deferReply({flags:MessageFlags.Ephemeral});
       const action=i.commandName||i.customId;
-      if(action==='ajuda'){await i.editReply('**Studio K**\n/loja · catálogo\n/pedido · consultar compra e entrega\n/ticket · atendimento\n/verificar · liberar acesso\n/notificacoes · autorizar ou desativar mensagens privadas');return;}
+      if(action==='ajuda'){await localizedEdit(i,'**Studio K**\n/loja · catálogo\n/pedido · consultar compra e entrega\n/ticket · atendimento\n/verificar · liberar acesso\n/notificacoes · autorizar ou desativar mensagens privadas');return;}
       if(action==='notificacoes'){
-        const exists=store.one('SELECT * FROM optins WHERE user_id=?',i.user.id);if(exists)store.run('DELETE FROM optins WHERE user_id=?',i.user.id);else store.run('INSERT INTO optins VALUES(?,?)',i.user.id,store.now());await i.editReply(exists?'Mensagens opcionais desativadas.':'Mensagens opcionais ativadas. Use este comando novamente para desativar.');return;
+        const exists=store.one('SELECT * FROM optins WHERE user_id=?',i.user.id);if(exists)store.run('DELETE FROM optins WHERE user_id=?',i.user.id);else store.run('INSERT INTO optins VALUES(?,?)',i.user.id,store.now());await localizedEdit(i,exists?'Mensagens opcionais desativadas.':'Mensagens opcionais ativadas. Use este comando novamente para desativar.');return;
       }
-      if(action==='loja'){if(store.settings().operationsLive?.storeOpen===false)throw new AppError('A loja está fechada no momento.');const products=store.products().filter(p=>p.active);await i.editReply(products.length?{content:'**Catálogo Studio K**\nSelecione um produto para comprar.',components:[row({type:3,custom_id:'store-buy',placeholder:'Escolha um produto',options:products.slice(0,25).map(p=>({label:p.name.slice(0,100),description:`${money(p.priceCents)} · ${p.type==='service'?'Serviço':`${p.stock} em estoque`}`,value:p.id}))})]}:'Ainda não há produtos disponíveis.');return;}
+      if(action==='loja'){if(store.settings().operationsLive?.storeOpen===false)throw new AppError('A loja está fechada no momento.');const products=store.products().filter(p=>p.active);await localizedEdit(i,products.length?{content:'**Catálogo Studio K**\nSelecione um produto para comprar.',components:[row({type:3,custom_id:'store-buy',placeholder:'Escolha um produto',options:products.slice(0,25).map(p=>({label:p.name.slice(0,100),description:`${money(p.priceCents)} · ${p.type==='service'?'Serviço':`${p.stock} em estoque`}`,value:p.id}))})]}:'Ainda não há produtos disponíveis.');return;}
       if(action==='ticket-open'||action==='ticket'){
         if(store.settings().operationsLive?.ticketsOpen===false)throw new AppError('Os tickets estão fechados no momento.');
         const settings=store.settings().tickets,open=Number(store.one("SELECT COUNT(*) AS n FROM tickets WHERE user_id=? AND status='open'",i.user.id)?.n||0);
         if(open>=2)throw new AppError('Você já possui 2 tickets abertos. Encerre um deles antes de abrir outro.',409);
         const categoryButtons=settings.categories.map((name,index)=>button(name.slice(0,80),`ticket-category:${index}`,2));
         const rows=[];for(let p=0;p<categoryButtons.length;p+=5)rows.push(row(...categoryButtons.slice(p,p+5)));
-        await i.editReply({content:`Você possui **${open}/2** tickets abertos. Escolha a categoria do novo atendimento:`,components:rows});
+        await localizedEdit(i,{content:`Você possui **${open}/2** tickets abertos. Escolha a categoria do novo atendimento:`,components:rows});
         return;
       }
       if(action.startsWith('ticket-category:')||action==='ticket-category'){
@@ -921,11 +921,11 @@ export function createBot(store,env=process.env){
         if(!category)throw new AppError('Categoria indisponível.');
         const t=await openTicket(i.user.id,category);
         const open=Number(store.one("SELECT COUNT(*) AS n FROM tickets WHERE user_id=? AND status='open'",i.user.id)?.n||0);
-        await i.editReply({content:`Olá <@${i.user.id}>! Seu atendimento: <#${t.channel_id}>\nVocê está com **${open}/2** tickets abertos.`,components:[],allowedMentions:{parse:[],users:[i.user.id]}});
+        await localizedEdit(i,{content:`Olá <@${i.user.id}>! Seu atendimento: <#${t.channel_id}>\nVocê está com **${open}/2** tickets abertos.`,components:[],allowedMentions:{parse:[],users:[i.user.id]}});
         return;
       }
-      if(action.startsWith('claim:')){if(!await isStaff(i))throw new AppError('Somente a equipe pode assumir tickets.',403);const id=action.split(':')[1],changed=store.run("UPDATE tickets SET claimed_by=?,updated=? WHERE id=? AND status='open' AND claimed_by IS NULL",i.user.id,store.now(),id);if(changed.changes){const t=store.one('SELECT * FROM tickets WHERE id=?',id),c=await channel(t.channel_id),style=store.settings().messageStyles.ticketClaim,customer=await memberVariables(t.user_id,c.guild),staffMember=await member(i.user.id);const variables={...customer,staff:`<@${i.user.id}>`,staffUsername:staffMember.displayName||staffMember.user.globalName||staffMember.user.username||i.user.id,ticket:c.name,category:t.category,channel:`<#${c.id}>`,server:c.guild.name};const claimPayload=styledPayload(style,variables,env.DISCORD_GUILD_ID);await c.send({...claimPayload,allowedMentions:mentionPolicy(claimPayload,[i.user.id,t.user_id])});await audit('ticket',`Ticket ${c.name} assumido.`,i.user.id);}await i.editReply(changed.changes?'Atendimento atribuído a você.':'Esse atendimento já está atribuído ou encerrado.');return;}
-      if(action.startsWith('close:')){if(!await isStaff(i))throw new AppError('Somente a equipe pode finalizar tickets.',403);const t=store.one('SELECT * FROM tickets WHERE id=?',action.split(':')[1]);if(!t)throw new AppError('Ticket não encontrado.',404);await closeTicket(t.id,i.user.id);await i.editReply('Atendimento encerrado.');return;}
+      if(action.startsWith('claim:')){if(!await isStaff(i))throw new AppError('Somente a equipe pode assumir tickets.',403);const id=action.split(':')[1],changed=store.run("UPDATE tickets SET claimed_by=?,updated=? WHERE id=? AND status='open' AND claimed_by IS NULL",i.user.id,store.now(),id);if(changed.changes){const t=store.one('SELECT * FROM tickets WHERE id=?',id),c=await channel(t.channel_id),style=store.settings().messageStyles.ticketClaim,customer=await memberVariables(t.user_id,c.guild),staffMember=await member(i.user.id);const variables={...customer,staff:`<@${i.user.id}>`,staffUsername:staffMember.displayName||staffMember.user.globalName||staffMember.user.username||i.user.id,ticket:c.name,category:t.category,channel:`<#${c.id}>`,server:c.guild.name};const claimPayload=styledPayload(style,variables,env.DISCORD_GUILD_ID);await c.send({...claimPayload,allowedMentions:mentionPolicy(claimPayload,[i.user.id,t.user_id])});await audit('ticket',`Ticket ${c.name} assumido.`,i.user.id);}await localizedEdit(i,changed.changes?'Atendimento atribuído a você.':'Esse atendimento já está atribuído ou encerrado.');return;}
+      if(action.startsWith('close:')){if(!await isStaff(i))throw new AppError('Somente a equipe pode finalizar tickets.',403);const t=store.one('SELECT * FROM tickets WHERE id=?',action.split(':')[1]);if(!t)throw new AppError('Ticket não encontrado.',404);await closeTicket(t.id,i.user.id);await localizedEdit(i,'Atendimento encerrado.');return;}
       if(action.startsWith('call:')){
         if(!await isStaff(i))throw new AppError('Somente a equipe pode chamar o cliente.',403);
         const id=action.split(':')[1],t=store.one("SELECT * FROM tickets WHERE id=? AND status='open'",id);if(!t)throw new AppError('Ticket aberto não encontrado.',404);
@@ -937,23 +937,23 @@ export function createBot(store,env=process.env){
           try{const dmPayload=styledPayload(settings.messageStyles.ticketCallDm,variables,env.DISCORD_GUILD_ID),localizedDm=await localizeFor(t.user_id,dmPayload);await(await member(t.user_id)).send({...localizedDm,allowedMentions:mentionPolicy(localizedDm)});dmSent=true;}
           catch(e){store.log('aviso',`Cliente chamado em ${c.name}, mas a DM falhou: ${String(e.message).slice(0,300)}`);}
         }
-        store.run('UPDATE tickets SET updated=? WHERE id=?',store.now(),id);await audit('ticket',`Cliente chamado no ticket ${c.name}${dmSent?' e por DM':''}.`,i.user.id);await i.editReply(dmSent?'Cliente chamado no ticket e no privado.':'Cliente chamado no ticket. A DM não pôde ser entregue.');return;
+        store.run('UPDATE tickets SET updated=? WHERE id=?',store.now(),id);await audit('ticket',`Cliente chamado no ticket ${c.name}${dmSent?' e por DM':''}.`,i.user.id);await localizedEdit(i,dmSent?'Cliente chamado no ticket e no privado.':'Cliente chamado no ticket. A DM não pôde ser entregue.');return;
       }
       if(action.startsWith('rename-submit:')){
         if(!await isStaff(i))throw new AppError('Somente a equipe pode renomear tickets.',403);
         const id=action.split(':')[1],t=store.one("SELECT * FROM tickets WHERE id=? AND status='open'",id);if(!t)throw new AppError('Ticket aberto não encontrado.',404);
         const requested=i.fields.getTextInputValue('ticket-name'),newName=channelSlug(requested);if(!newName)throw new AppError('Digite um nome válido.');
         const c=await channel(t.channel_id),oldName=c.name;await c.setName(newName,`Studio K: renomeado por ${i.user.id}`);
-        store.run('UPDATE tickets SET updated=? WHERE id=?',store.now(),id);await audit('ticket',`Ticket ${oldName} renomeado para ${newName}.`,i.user.id);await i.editReply(`Ticket renomeado para **${newName}**.`);return;
+        store.run('UPDATE tickets SET updated=? WHERE id=?',store.now(),id);await audit('ticket',`Ticket ${oldName} renomeado para ${newName}.`,i.user.id);await localizedEdit(i,`Ticket renomeado para **${newName}**.`);return;
       }
       if(action==='verify'||action==='verificar'){
         const current=languagePreference(i.user.id)?.language||'';
-        await i.editReply({content:'Escolha o idioma que o Studio K deve usar nas suas mensagens privadas:',components:[row(languageSelect('verify-language',current))]});
+        await localizedEdit(i,{content:'Escolha o idioma que o Studio K deve usar nas suas mensagens privadas:',components:[row(languageSelect('verify-language',current))]});
         return;
       }
       if(action==='verify-browser'){
         const current=languagePreference(i.user.id)?.language||'';
-        await i.editReply({content:'Escolha seu idioma antes de continuar pelo navegador:',components:[row(languageSelect('verify-browser-language',current))]});
+        await localizedEdit(i,{content:'Escolha seu idioma antes de continuar pelo navegador:',components:[row(languageSelect('verify-browser-language',current))]});
         return;
       }
       if(action==='verify-language'){
@@ -971,7 +971,7 @@ export function createBot(store,env=process.env){
         if(!env.GOOGLE_TRANSLATE_API_KEY)throw new AppError('O tradutor ainda não foi configurado pelo administrador.');
         const pref=languagePreference(i.user.id);
         if(!pref){
-          await i.editReply({content:'Escolha seu idioma. O Studio K salvará essa preferência para as próximas traduções:',components:[row(languageSelect('translate-language:'+i.channelId+':'+i.message.id))]});
+          await localizedEdit(i,{content:'Escolha seu idioma. O Studio K salvará essa preferência para as próximas traduções:',components:[row(languageSelect('translate-language:'+i.channelId+':'+i.message.id))]});
           return;
         }
         await translatedMessageEdit(i,i.message,normalizeLanguage(pref.language));
@@ -984,8 +984,8 @@ export function createBot(store,env=process.env){
         await translatedMessageEdit(i,original,language);
         return;
       }
-      if(action.startsWith('buy:')||action==='store-buy'){if(store.settings().operationsLive?.storeOpen===false)throw new AppError('A loja está fechada no momento.');if(!store.settings().sales.pixKey)throw new AppError('As vendas ainda não foram configuradas.');const order=store.createOrder(action==='store-buy'?i.values[0]:action.split(':')[1],i.user.id);void updateOperationsLive(true);await i.editReply({content:await orderText(order),components:[row(button('Enviar comprovante / falar com equipe','ticket',2))]});return;}
-      if(action==='pedido'){const orderId=i.options.getString('id');const order=orderId?store.one('SELECT * FROM orders WHERE id=? AND user_id=?',orderId,i.user.id):store.one('SELECT * FROM orders WHERE user_id=? ORDER BY created DESC LIMIT 1',i.user.id);if(!order)throw new AppError('Pedido não encontrado.');let text=order.status==='pending'?await orderText(order):`Pedido ${order.id}\nSituação: ${{paid:'Aprovado; entrega em processamento',delivered:'Entregue',cancelled:'Cancelado'}[order.status]}`;if(['paid','delivered'].includes(order.status)){const unit=store.one('SELECT secret FROM stock WHERE order_id=?',order.id);if(unit)text+=`\n\nSua entrega: ${store.decrypt(unit.secret)}`;}await i.editReply({content:text.slice(0,2000),allowedMentions:safe});return;}
+      if(action.startsWith('buy:')||action==='store-buy'){if(store.settings().operationsLive?.storeOpen===false)throw new AppError('A loja está fechada no momento.');if(!store.settings().sales.pixKey)throw new AppError('As vendas ainda não foram configuradas.');const order=store.createOrder(action==='store-buy'?i.values[0]:action.split(':')[1],i.user.id);void updateOperationsLive(true);await localizedEdit(i,{content:await orderText(order),components:[row(button('Enviar comprovante / falar com equipe','ticket',2))]});return;}
+      if(action==='pedido'){const orderId=i.options.getString('id');const order=orderId?store.one('SELECT * FROM orders WHERE id=? AND user_id=?',orderId,i.user.id):store.one('SELECT * FROM orders WHERE user_id=? ORDER BY created DESC LIMIT 1',i.user.id);if(!order)throw new AppError('Pedido não encontrado.');let text=order.status==='pending'?await orderText(order):`Pedido ${order.id}\nSituação: ${{paid:'Aprovado; entrega em processamento',delivered:'Entregue',cancelled:'Cancelado'}[order.status]}`;if(['paid','delivered'].includes(order.status)){const unit=store.one('SELECT secret FROM stock WHERE order_id=?',order.id);if(unit)text+=`\n\nSua entrega: ${store.decrypt(unit.secret)}`;}await localizedEdit(i,{content:text.slice(0,2000),allowedMentions:safe});return;}
       if(action.startsWith('giveaway:')){
         const id=action.split(':')[1],g=store.one('SELECT * FROM giveaways WHERE id=?',id);
         if(!g||g.status!=='active'||Date.parse(JSON.parse(g.data).endsAt)<=Date.now())throw new AppError('Sorteio encerrado.');
@@ -1001,11 +1001,11 @@ export function createBot(store,env=process.env){
         }
         components.push(button('Verificar novamente',`giveaway:${id}`,2));
         const head=checked.ok?'🎉 **Participação confirmada! Você está concorrendo.**':'**Complete os requisitos abaixo para participar:**';
-        await i.editReply({content:`${head}\n\n${lines.join('\n')}`.slice(0,1900),components:components.length?[row(...components.slice(0,5))]:[]});
+        await localizedEdit(i,{content:`${head}\n\n${lines.join('\n')}`.slice(0,1900),components:components.length?[row(...components.slice(0,5))]:[]});
         return;
       }
-      await i.editReply('Ação indisponível.');
-    }catch(e){store.log('erro',e.message,'interação');if(i.deferred||i.replied)await i.editReply({content:e instanceof AppError?e.message:'Não foi possível concluir. Confira as permissões do bot ou procure a equipe.',components:[]}).catch(()=>{});}
+      await localizedEdit(i,'Ação indisponível.');
+    }catch(e){store.log('erro',e.message,'interação');if(i.deferred||i.replied)await localizedEdit(i,{content:e instanceof AppError?e.message:'Não foi possível concluir. Confira as permissões do bot ou procure a equipe.',components:[]}).catch(()=>{});}
   });
   for(const [event,key] of [[Events.GuildMemberAdd,'welcome'],[Events.GuildMemberRemove,'goodbye']])client.on(event,async m=>{
     if(m.guild.id!==env.DISCORD_GUILD_ID)return;
