@@ -521,12 +521,19 @@ ${normalized.previewAfter}
     }
     await audit('mensagem',`Mensagem enviada para ${data.targetId}.`,'painel');return{id:result.id};
   }
-  const isStaff=async i=>{
+  const hasStaffPermission=async(i,key='ticketManage')=>{
     if(i.memberPermissions?.has(PermissionFlagsBits.ManageGuild)||i.memberPermissions?.has(PermissionFlagsBits.Administrator))return true;
-    const ids=staffRoleIds(store.settings());if(!ids.length)return false;
+    const settings=store.settings(),configured=[...(settings.permissions?.[key]||[])];
+    if(['ticketManage','ticketClose','ticketTransfer'].includes(key))configured.push(...staffRoleIds(settings));
+    const ids=[...new Set(configured.filter(Boolean))];if(!ids.length)return false;
     const guild=requireGuild(),m=i.member?.roles?.cache?i.member:await guild.members.fetch(i.user.id);
     return ids.some(id=>m.roles.cache.has(id));
   };
+  const isStaff=i=>hasStaffPermission(i,'ticketManage');
+  async function memberProfile(userId){
+    const guild=requireGuild(),m=await guild.members.fetch(userId);
+    return{id:m.id,name:m.displayName||m.user.globalName||m.user.username||m.id,username:m.user.username||'',joinedAt:m.joinedAt?.toISOString?.()||null,createdAt:m.user.createdAt?.toISOString?.()||null,roles:[...m.roles.cache.values()].filter(r=>r.id!==guild.id).map(r=>({id:r.id,name:r.name})),avatar:m.displayAvatarURL({size:128})};
+  }
   async function nextTicketName(category,guild){
     const slug=channelSlug(category),prefix=`${slug}-`;await guild.channels.fetch();
     let maxExisting=0;
@@ -560,10 +567,29 @@ ${normalized.previewAfter}
     if(e.action==='claim')return `${actor} assumiu o atendimento de ${target}`;
     if(e.action==='call')return `${actor} chamou ${target}${e.dmSent?' e enviou DM':''}`;
     if(e.action==='rename')return `${actor} renomeou **${e.from}** → **${e.to}**`;
-    if(e.action==='close')return `${actor} encerrou o ticket de ${target}`;
+    if(e.action==='close')return `${actor} encerrou o ticket de ${target}${e.reason?` · motivo: ${e.reason}`:''}`;
+    if(e.action==='transfer')return `${actor} transferiu o atendimento para <@${e.to}>`;
+    if(e.action==='state')return `${actor} alterou o status para **${e.state}**`;
+    if(e.action==='priority')return `${actor} alterou a prioridade para **${e.priority}**`;
+    if(e.action==='note')return `${actor} adicionou nota interna: ${String(e.note||'').slice(0,180)}`;
+    if(e.action==='tags')return `${actor} atualizou as tags: ${(e.tags||[]).join(', ')||'nenhuma'}`;
+    if(e.action==='reopen')return `${actor} reabriu o atendimento a partir do ticket anterior`;
     return e.label||e.action||'Ação registrada';
   };
-  async function openTicket(userId,category){
+  const ticketControlRows=(id,state='waiting_staff',claimed=false)=>{
+    const top=[];
+    if(!claimed)top.push(button('Assumir',`claim:${id}`,1));
+    if(state!=='waiting_customer')top.push(button('Aguardar cliente',`status-direct:${id}:waiting_customer`,2));
+    if(state!=='in_progress')top.push(button('Em atendimento',`status-direct:${id}:in_progress`,2));
+    top.push(button('Prioridade',`priority:${id}`,2),button('Transferir',`transfer:${id}`,2));
+    const bottom=[button('Nota interna',`note:${id}`,2),button('Renomear',`rename:${id}`,2),button('Chamar cliente',`call:${id}`,2),button('Tags',`tags:${id}`,2),button('Finalizar',`close:${id}`,4)];
+    return [row(...top.slice(0,5)),row(...bottom.slice(0,5))];
+  };
+  async function refreshTicketControls(id){
+    const t=store.one('SELECT * FROM tickets WHERE id=?',id),messageId=store.get(`ticket-controls:${id}`);if(!t||t.status!=='open'||!messageId)return;
+    try{const ch=await channel(t.channel_id),msg=await ch.messages.fetch(messageId);await msg.edit({components:ticketControlRows(id,t.state,!!t.claimed_by)});}catch{}
+  }
+  async function openTicket(userId,category,options={}){
     const guild=requireGuild(),settings=store.settings(),ticketSettings=settings.tickets,configuredStaffIds=staffRoleIds(settings);
     if(!configuredStaffIds.length)throw new AppError('Configure ao menos um cargo de Staff ou Alta Staff em Configurações antes de abrir tickets.');
     await guild.roles.fetch();
@@ -573,11 +599,13 @@ ${normalized.previewAfter}
       if(role&&!role.managed&&role.id!==guild.id)staffRoles.push(role);
     }
     if(!staffRoles.length)throw new AppError('Nenhum dos cargos de Staff configurados existe mais no servidor.');
-    const ticketName=await nextTicketName(category,guild),id=randomUUID(),now=store.now();
-    store.transaction(()=>{
+    const ticketName=await nextTicketName(category,guild),id=randomUUID(),now=store.now(),maxOpen=ticketSettings.maxOpen||TICKET_OPEN_LIMIT;
+    const queuePosition=store.transaction(()=>{
       const open=Number(store.one("SELECT COUNT(*) AS n FROM tickets WHERE user_id=? AND status='open'",userId)?.n||0);
-      if(!canOpenTicket(open))throw new AppError('Você já possui 2 tickets abertos. Encerre um deles antes de abrir outro.',409);
-      store.run('INSERT INTO tickets(id,user_id,category,status,created,updated) VALUES(?,?,?,?,?,?)',id,userId,category,'open',now,now);
+      if(open>=maxOpen)throw new AppError(`Você já possui ${maxOpen} ticket(s) aberto(s). Encerre um antes de abrir outro.`,409);
+      const position=Number(store.one("SELECT COUNT(*) AS n FROM tickets WHERE status='open' AND state IN ('waiting_staff','escalated')")?.n||0)+1;
+      store.run('INSERT INTO tickets(id,user_id,category,status,state,priority,created,updated,reopened_from,tags) VALUES(?,?,?,?,?,?,?,?,?,?)',id,userId,category,'open','waiting_staff',options.priority||ticketSettings.defaultPriority||'normal',now,now,options.reopenedFrom||null,JSON.stringify(options.tags||[]));
+      return position;
     });
     let c;
     try{
@@ -593,27 +621,23 @@ ${normalized.previewAfter}
       const customerPayload=styledPayload(settings.messageStyles.ticketOpen,customerVars,env.DISCORD_GUILD_ID);
       await c.send({...customerPayload,allowedMentions:mentionPolicy(customerPayload,[userId])});
       const staffPayload=styledPayload(settings.messageStyles.ticketStaffPanel,customerVars,env.DISCORD_GUILD_ID);
-      await c.send({...staffPayload,components:[...(staffPayload.components||[]),row(
-        button('Assumir atendimento',`claim:${id}`,1),
-        button('Renomear',`rename:${id}`,2),
-        button('Chamar cliente',`call:${id}`,2),
-        button('Finalizar',`close:${id}`,4)
-      )],allowedMentions:mentionPolicy(staffPayload)});
-      ticketAuditWrite(id,{events:[{action:'open',actor:userId,target:userId,at:now}],ticketName,category,openedBy:userId,openedAt:now,channelId:c.id});void updateOperationsLive(true);return store.one('SELECT * FROM tickets WHERE id=?',id);
+      const controlMessage=await c.send({...staffPayload,components:[...(staffPayload.components||[]),...ticketControlRows(id,'waiting_staff',false)],allowedMentions:mentionPolicy(staffPayload)});
+      store.set(`ticket-controls:${id}`,controlMessage.id);
+      ticketAuditWrite(id,{events:[{action:options.reopenedFrom?'reopen':'open',actor:userId,target:userId,at:now}],ticketName,category,openedBy:userId,openedAt:now,channelId:c.id,reopenedFrom:options.reopenedFrom||''});void updateOperationsLive(true);return {...store.one('SELECT * FROM tickets WHERE id=?',id),queuePosition};
     }catch(e){
       if(!c)store.run('DELETE FROM tickets WHERE id=?',id);
       else store.log('erro',`Ticket ${id.slice(0,8)} criado, mas mensagem inicial falhou.`);
       throw e;
     }
   }
-  async function closeTicket(id,actor){
+  async function closeTicket(id,actor,reason=''){
     const ticket=store.one('SELECT * FROM tickets WHERE id=?',id);if(!ticket)throw new AppError('Ticket não encontrado.',404);if(ticket.status==='closed')return;
     const c=await channel(ticket.channel_id),messages=[];let before;
     for(let page=0;page<50;page++){const batch=await c.messages.fetch({limit:100,before});if(!batch.size)break;messages.push(...batch.values());before=batch.last().id;if(batch.size<100)break;}
     const ticketName=c.name;
     const transcript=messages.reverse().map(m=>`[${m.createdAt.toISOString()}] ${m.author?.tag||'desconhecido'} (${m.author?.id||''}): ${m.content||''}${m.attachments.size?'\n'+[...m.attachments.values()].map(a=>a.url).join('\n'):''}${m.embeds.length?'\n'+m.embeds.map(e=>[e.title,e.description].filter(Boolean).join('\n')).join('\n'):''}`).join('\n\n');
     const shareToken=randomBytes(32).toString('base64url'),now=store.now();
-    store.run("UPDATE tickets SET transcript=?,status='closed',updated=? WHERE id=?",transcript,now,id);
+    store.run("UPDATE tickets SET transcript=?,status='closed',state='closed',closed_reason=?,updated=? WHERE id=?",transcript,String(reason||'').slice(0,500)||null,now,id);
     store.set(`transcript-share:${id}`,{hash:createHash('sha256').update(shareToken).digest('hex'),created:now});
     const publicBase=(env.PUBLIC_URL||'').replace(/\/$/,'');
     const transcriptUrl=`${publicBase}/api/public/tickets/${id}/transcript/${shareToken}`;
@@ -621,17 +645,22 @@ ${normalized.previewAfter}
     try{
       const user=await member(ticket.user_id),settings=store.settings(),style=settings.messageStyles.ticketClose;
       const closeVars={user:`<@${ticket.user_id}>`,username:user.displayName||user.user.globalName||user.user.username||ticket.user_id,server:c.guild.name,ticket:ticketName,transcript:transcriptUrl,category:ticket.category};
-      const closePayload=styledPayload(style,closeVars,env.DISCORD_GUILD_ID),feedback=createFeedbackRequest('ticket',id,ticket.user_id,{ticket:ticketName,category:ticket.category});
-      const finalRow=feedback?row(linkButton('Abrir transcript',transcriptUrl),button('Dar feedback',`feedback:${feedback.id}`,2)):row(linkButton('Abrir transcript',transcriptUrl));
+      const closePayload=styledPayload(style,closeVars,env.DISCORD_GUILD_ID),feedback=createFeedbackRequest('ticket',id,ticket.user_id,{ticket:ticketName,category:ticket.category,staffId:ticket.claimed_by||actor||''});
+      const reopenButton=store.settings().tickets.allowReopen?button('Reabrir atendimento',`reopen:${id}`,2):null;
+      const finalButtons=[linkButton('Abrir transcript',transcriptUrl),...(feedback?[button('Dar feedback',`feedback:${feedback.id}`,2)]:[]),...(reopenButton?[reopenButton]:[])];
+      const finalRow=row(...finalButtons);
       const closeMessage={...closePayload,components:[...(closePayload.components||[]).slice(0,4),finalRow],allowedMentions:mentionPolicy(closePayload,[ticket.user_id])},localizedClose=await localizeFor(ticket.user_id,closeMessage);
       await user.send({...localizedClose,allowedMentions:mentionPolicy(localizedClose,[ticket.user_id])});
       dmSent=true;
     }catch(e){
       store.log('aviso',`Ticket ${ticketName} encerrado, mas a DM com o transcript não pôde ser entregue: ${String(e.message).slice(0,300)}`,actor);
     }
-    ticketAuditAppend(id,{action:'close',actor,target:ticket.user_id,dmSent});
+    ticketAuditAppend(id,{action:'close',actor,target:ticket.user_id,dmSent,reason:String(reason||'').slice(0,500)});if(/^\d{17,20}$/.test(String(actor||'')))store.recordStaffAction(actor,'close',id,ticket.user_id,{reason:String(reason||'').slice(0,500)});
     const ticketAudit=ticketAuditFinish(id),events=Array.isArray(ticketAudit.events)?ticketAudit.events:[],openedAt=ticketAudit.openedAt||ticket.created,closedAt=now;
-    const durationMs=Math.max(0,Date.parse(closedAt)-Date.parse(openedAt)),durationMinutes=Math.floor(durationMs/60000),timeline=events.map(ticketEventLine);
+    const durationMs=Math.max(0,Date.parse(closedAt)-Date.parse(openedAt)),durationMinutes=Math.floor(durationMs/60000);
+    const persistedNotes=store.all('SELECT actor,note,created FROM ticket_notes WHERE ticket_id=? ORDER BY created',id).map(n=>({action:'note',actor:n.actor,target:ticket.user_id,note:n.note,at:n.created}));
+    const seenNotes=new Set(events.filter(e=>e.action==='note').map(e=>String(e.note||'')+'|'+String(e.actor||'')));
+    const timeline=[...events,...persistedNotes.filter(n=>!seenNotes.has(String(n.note||'')+'|'+String(n.actor||'')))].sort((a,b)=>Date.parse(a.at||openedAt)-Date.parse(b.at||openedAt)).map(ticketEventLine);
     const summary=[
       `**Cliente:** <@${ticket.user_id}>`,
       `**Categoria:** ${ticket.category}`,
@@ -640,10 +669,12 @@ ${normalized.previewAfter}
       `**Finalizado:** <t:${Math.floor(Date.parse(closedAt)/1000)}:F>`,
       `**Duração:** ${durationMinutes} min`,
       `**Responsável final:** ${/^\d{17,20}$/.test(String(actor))?`<@${actor}>`:'Sistema'}`,
+      ...(reason?[`**Motivo do encerramento:** ${String(reason).slice(0,500)}`]:[]),
       `**Transcript:** ${transcriptUrl}`
     ].join('\n');
     const timelineText=timeline.length?timeline.map((line,index)=>`${index+1}. ${line}`).join('\n'):'Nenhuma ação intermediária registrada.';
     await audit('ticket finalizado',summary,actor,{targetId:ticket.user_id,channelId:ticket.channel_id,ticketId:id,ticketName,category:ticket.category,action:'close',transcriptUrl,dmSent,openedAt,closedAt,durationMinutes,timeline:timelineText});
+    store.run('DELETE FROM kv WHERE key=?',`ticket-controls:${id}`);
     try{await c.delete(`Studio K: ticket encerrado por ${actor}`);}
     catch(e){store.log('erro',`Ticket ${ticketName} foi encerrado, mas o canal não pôde ser removido: ${String(e.message).slice(0,300)}`,actor);throw new AppError('O atendimento foi encerrado e o transcript salvo, mas não foi possível apagar o canal. Confira a permissão Gerenciar Canais do bot.',500);}
     void updateOperationsLive(true);
@@ -653,6 +684,12 @@ ${normalized.previewAfter}
     const s=store.settings(),c=await channel(channelId),guild=requireGuild(),staticVars={server:guild.name,count:String(guild.memberCount)};let payload;
     if(kind==='tickets'){
       payload=styledPayload(s.messageStyles.ticketPanel,staticVars,env.DISCORD_GUILD_ID);payload.components=[...(payload.components||[]),row(button(s.tickets.button,'ticket-open',1))];
+    }else if(kind==='commandCenter'){
+      payload=styledPayload(s.messageStyles.commandCenter,staticVars,env.DISCORD_GUILD_ID);
+      payload.components=[...(payload.components||[]),
+        row(button('🛒 Loja','central-store',1),button('🎫 Atendimento','central-ticket',2),button('📦 Meus pedidos','central-orders',2),button('👤 Minha conta','central-profile',2)),
+        row(button('🌎 Idioma','central-language',2),button('🎁 Sorteios','central-giveaways',2),button('❓ Ajuda','central-help',2))
+      ];
     }else{
       const controls=[button(s.verification.button,'verify',1)];
       payload=styledPayload(s.messageStyles.verificationPanel,staticVars,env.DISCORD_GUILD_ID);payload.components=[...(payload.components||[]),row(...controls)];
@@ -681,10 +718,10 @@ ${normalized.previewAfter}
       return {id:message.id};
     }
     if(source!=='messageStyle')throw new AppError('Origem de mensagem inválida.',400);
-    const allowed=['ticketPanel','ticketOpen','ticketStaffPanel','ticketClaim','ticketCall','ticketCallDm','ticketClose','verificationPanel','verificationDm','product','giveaway','giveawayResult','logs','orderDelivery'];
+    const allowed=['ticketPanel','ticketOpen','ticketStaffPanel','ticketClaim','ticketCall','ticketCallDm','ticketClose','verificationPanel','verificationDm','commandCenter','product','giveaway','giveawayResult','logs','orderDelivery'];
     if(!allowed.includes(key))throw new AppError('Modelo de embed inválido.',400);
     if(key==='ticketPanel')return publishPanel('tickets',channelId);
-    if(key==='verificationPanel')return publishPanel('verification',channelId);
+    if(key==='verificationPanel')return publishPanel('verification',channelId);if(key==='commandCenter')return publishPanel('commandCenter',channelId);
     const variables={
       user:'@Cliente',username:'Cliente',server:requireGuild().name,count:String(requireGuild().memberCount),
       category:'Orçamento',ticket:'orcamento-1',staff:'@Atendente',channel:'#canal-exemplo',
@@ -706,7 +743,22 @@ ${normalized.previewAfter}
     if(p.image&&payload.embeds[0]&&!payload.embeds[0].image)payload.embeds[0].image={url:p.image};
     const m=await(await channel(channelId)).send({...payload,components:[...(payload.components||[]),row(button('Comprar com Pix',`buy:${p.id}`))],allowedMentions:mentionPolicy(payload)});return{id:m.id};
   }
-  async function orderText(order){const s=store.settings().sales,p=JSON.parse(order.product);return`**Pedido ${order.id}**\n${p.name} · **${money(order.price)}**\n\nChave Pix: **${s.pixKey}**\nRecebedor: ${s.recipient}\n${s.instructions}\n\nValidade: <t:${Math.floor(Date.parse(order.expires)/1000)}:R>. A entrega depende da conferência manual do pagamento.\nConsulte novamente com /pedido.`;}
+  async function orderText(order){
+    const s=store.settings().sales,p=JSON.parse(order.product),discount=Number(order.discount||0);
+    return[
+      `**Pedido ${order.id}**`,
+      `Produto: **${p.name}**`,
+      `Valor: **${money(order.price)}**${discount?` (desconto de ${money(discount)})`:''}`,
+      order.coupon_code?`Cupom: **${order.coupon_code}**`:'',
+      '',
+      `Chave Pix: **${s.pixKey}**`,
+      `Recebedor: ${s.recipient}`,
+      s.instructions,
+      '',
+      `Validade: <t:${Math.floor(Date.parse(order.expires)/1000)}:R>`,
+      'Status: **Aguardando pagamento**'
+    ].filter(Boolean).join('\n');
+  }
   async function deliverOrder(order){
     const p=JSON.parse(order.product);
     try{
@@ -724,7 +776,7 @@ ${normalized.previewAfter}
         await user.send({...localizedDelivery,allowedMentions:mentionPolicy(localizedDelivery),nonce:deliveryMessage.nonce,enforceNonce:true});
         store.run('UPDATE orders SET delivery_done=1 WHERE id=?',order.id);
       }
-      store.run("UPDATE orders SET status='delivered',error=NULL WHERE id=?",order.id);await audit('entrega',`Pedido ${order.id.slice(0,8)} entregue.`);
+      store.run("UPDATE orders SET status='delivered',delivery_done=1,delivered_at=?,error=NULL WHERE id=?",store.now(),order.id);await audit('entrega',`Pedido ${order.id.slice(0,8)} entregue.`);
     }catch(e){store.run('UPDATE orders SET error=? WHERE id=?',String(e.message).slice(0,500),order.id);}
   }
   const currentWeek=()=>{
@@ -903,6 +955,36 @@ ${normalized.previewAfter}
   async function applyBrand(){const s=store.settings().brand;requireGuild();const body={username:s.name};if(s.avatar)body.avatar=s.avatar;if(s.banner)body.banner=s.banner;await client.user.edit(body);await client.application.edit({description:s.description});client.user.setPresence({status:s.status,activities:s.activity?[{name:s.activity,type:ActivityType[s.activityType]}]:[]});await audit('identidade','Identidade do bot atualizada.','painel');}
   async function snapshot(){const guild=requireGuild();await Promise.all([guild.channels.fetch(),guild.roles.fetch(),guild.members.fetch()]);return{id:guild.id,name:guild.name,description:guild.description,roles:[...guild.roles.cache.values()].map(r=>({id:r.id,name:r.name,color:r.color,permissions:r.permissions.bitfield.toString(),position:r.position,managed:r.managed})),channels:[...guild.channels.cache.values()].filter(Boolean).map(c=>({id:c.id,name:c.name,type:c.type,parentId:c.parentId,position:c.rawPosition,topic:c.topic,overwrites:c.permissionOverwrites?[...c.permissionOverwrites.cache.values()].map(p=>({id:p.id,type:p.type,allow:p.allow.bitfield.toString(),deny:p.deny.bitfield.toString()})):[]})),members:[...guild.members.cache.values()].filter(m=>!m.user?.bot).map(m=>({id:m.id,username:m.user?.username||m.id,displayName:m.displayName||m.user?.globalName||m.user?.username||m.id,joinedAt:m.joinedAt?.toISOString?.()||null,roles:[...m.roles.cache.values()].filter(r=>r.id!==guild.id).map(r=>r.id)}))};}
   async function makeBackup(){if(backupBusy)throw new AppError('Já há um backup em andamento.',409);backupBusy=true;try{return await store.makeBackup(client.isReady()?await snapshot():null);}finally{backupBusy=false;}}
+  const orderStatusLabel=status=>({pending:'Aguardando pagamento',paid:'Pagamento aprovado / processando entrega',delivered:'Entregue',cancelled:'Cancelado'}[status]||status);
+  async function userProfileText(userId){
+    const guild=requireGuild(),m=await guild.members.fetch(userId);
+    const t=store.one("SELECT COUNT(*) AS total,SUM(CASE WHEN status='open' THEN 1 ELSE 0 END) AS open FROM tickets WHERE user_id=?",userId);
+    const o=store.one("SELECT COUNT(*) AS total,SUM(CASE WHEN status IN ('paid','delivered') THEN 1 ELSE 0 END) AS completed FROM orders WHERE user_id=?",userId);
+    const v=store.one('SELECT verified_at FROM verifications WHERE user_id=?',userId);
+    const latest=store.one('SELECT category,status,state,updated FROM tickets WHERE user_id=? ORDER BY created DESC LIMIT 1',userId);
+    return[
+      `**${m.displayName||m.user.username}** · <@${userId}>`,
+      `Entrou no servidor: ${m.joinedTimestamp?`<t:${Math.floor(m.joinedTimestamp/1000)}:D>`:'não disponível'}`,
+      `Conta criada: <t:${Math.floor(m.user.createdTimestamp/1000)}:D>`,
+      `Verificação: ${v?.verified_at?`<t:${Math.floor(Date.parse(v.verified_at)/1000)}:D>`:'não registrada'}`,
+      `Tickets: **${Number(t?.open||0)} aberto(s)** · ${Number(t?.total||0)} total`,
+      `Pedidos: **${Number(o?.completed||0)} concluído(s)** · ${Number(o?.total||0)} total`,
+      latest?`Último atendimento: **${latest.category}** · ${latest.status==='open'?latest.state:'finalizado'}`:'Último atendimento: nenhum'
+    ].join('\n');
+  }
+  const faqMatches=query=>{
+    const items=store.settings().faq?.items||[],q=String(query||'').trim().toLowerCase();
+    if(!q)return items.slice(0,25);
+    return items.filter(x=>[x.question,x.answer,x.keywords].join(' ').toLowerCase().includes(q)).slice(0,10);
+  };
+  async function publishOperationalAlert(kind,severity,title,detail,dedupeKey){
+    if(dedupeKey&&store.get('alert-dedupe:'+dedupeKey))return;
+    const id=randomUUID(),created=store.now();store.run('INSERT INTO alerts(id,kind,severity,title,detail,status,created) VALUES(?,?,?,?,?,"open",?)',id,kind,severity,title,String(detail).slice(0,1500),created);
+    if(dedupeKey)store.set('alert-dedupe:'+dedupeKey,{at:created});
+    const cfg=store.settings().alerts;if(cfg?.enabled&&cfg.channelId&&client.isReady())try{
+      const cc=await channel(cfg.channelId);await cc.send({embeds:[{title:`⚠️ ${title}`,description:String(detail).slice(0,3900),color:severity==='critical'?0xff4d67:severity==='warning'?0xffbd4a:0x995cff,timestamp:new Date().toISOString()}],allowedMentions:safe});
+    }catch(e){store.log('aviso',`Alerta operacional não pôde ser publicado: ${e.message}`);}
+  }
   async function tick(){if(busy)return;busy=true;try{
     for(const o of store.all("SELECT id FROM orders WHERE status='pending' AND expires<=?",store.now()))store.cancelOrder(o.id);
     const s=store.settings();if(s.backups.enabled&&Date.now()-Date.parse(store.get('lastBackup','1970-01-01'))>=s.backups.intervalHours*3600000)try{await makeBackup();}catch(e){store.log('erro',`Backup: ${e.message}`);}
@@ -911,10 +993,33 @@ ${normalized.previewAfter}
     await updateLivePanels();
     for(const o of store.all("SELECT * FROM orders WHERE status='paid' LIMIT 10"))await deliverOrder(o);
     for(const g of store.all("SELECT * FROM giveaways WHERE status IN ('active','drawn')")){if(g.status==='drawn'||Date.parse(JSON.parse(g.data).endsAt)<=Date.now())try{await finishGiveaway(g);}catch(e){store.log('erro',`Sorteio ${g.id.slice(0,8)}: ${e.message}`);}}
+    if(s.tickets.escalationMinutes>0){
+      const cutoff=new Date(Date.now()-s.tickets.escalationMinutes*60000).toISOString();
+      for(const t of store.all("SELECT * FROM tickets WHERE status='open' AND claimed_by IS NULL AND state='waiting_staff' AND created<=?",cutoff)){
+        store.run("UPDATE tickets SET state='escalated',priority=CASE WHEN priority='urgent' THEN priority ELSE 'high' END,updated=? WHERE id=?",store.now(),t.id);
+        ticketAuditAppend(t.id,{action:'state',actor:'sistema',target:t.user_id,state:'escalated'});
+        await publishOperationalAlert('ticket_sla','warning','Ticket escalado',`Ticket ${t.id.slice(0,8)} de <@${t.user_id}> está sem responsável há mais de ${s.tickets.escalationMinutes} min.`,`ticket-escalated:${t.id}`);
+        try{const tc=await channel(t.channel_id),roles=(s.roleGroups?.highStaff||[]).map(id=>`<@&${id}>`).join(' ');await tc.send({content:`${roles?roles+' ':''}⚠️ Este atendimento foi escalado por tempo de espera.`,allowedMentions:{parse:[],roles:s.roleGroups?.highStaff||[]}});}catch{}
+      }
+    }
+    if(s.alerts?.staleTickets!==false&&s.tickets.staleReminderMinutes>0){
+      const cutoff=new Date(Date.now()-s.tickets.staleReminderMinutes*60000).toISOString();
+      for(const t of store.all("SELECT * FROM tickets WHERE status='open' AND state='waiting_customer' AND updated<=?",cutoff)){
+        const key=`ticket-stale:${t.id}:${String(t.updated).slice(0,13)}`;if(store.get(key))continue;store.set(key,{at:store.now()});
+        try{const tc=await channel(t.channel_id);await tc.send({content:`<@${t.user_id}> lembrete: seu atendimento está aguardando sua resposta.`,allowedMentions:{parse:[],users:[t.user_id]}});}catch{}
+      }
+    }
+    if(s.alerts?.lowStock){
+      for(const p of store.products().filter(p=>p.type==='digital'&&p.stock<=s.sales.lowStockThreshold))await publishOperationalAlert('low_stock',p.stock===0?'critical':'warning','Estoque baixo',`**${p.name}** possui ${p.stock} unidade(s) disponível(is).`,`stock:${p.id}:${p.stock}`);
+    }
+    if(s.alerts?.deletedMessagesThreshold){
+      const since=new Date(Date.now()-10*60000).toISOString(),deleted=store.one("SELECT COUNT(*) AS n FROM logs WHERE type='mensagem excluída' AND created>=?",since)?.n||0;
+      if(deleted>=s.alerts.deletedMessagesThreshold)await publishOperationalAlert('message_deletes','warning','Muitas mensagens apagadas',`${deleted} mensagens foram apagadas nos últimos 10 minutos.`,`deleted:${new Date().toISOString().slice(0,15)}`);
+    }
     if(s.tickets.autoCloseHours)for(const t of store.all("SELECT * FROM tickets WHERE status='open' AND updated<?",new Date(Date.now()-s.tickets.autoCloseHours*3600000).toISOString()))try{await closeTicket(t.id,'inatividade');}catch(e){store.log('erro',`Ticket ${t.id.slice(0,8)}: ${e.message}`);}
   }catch(e){store.log('erro',e.message);}finally{busy=false;}}
   client.on(Events.InteractionCreate,async i=>{
-    const customId=String(i.customId||''),privateInteraction=(i.isButton()||i.isStringSelectMenu()||i.isModalSubmit())&&(customId.startsWith('feedback')||customId.startsWith('translate'));
+    const customId=String(i.customId||''),privateInteraction=(i.isButton()||i.isStringSelectMenu()||i.isModalSubmit())&&(customId.startsWith('feedback')||customId.startsWith('translate')||customId.startsWith('reopen'));
     if((i.guildId!==env.DISCORD_GUILD_ID&&!privateInteraction)||(!i.isChatInputCommand()&&!i.isMessageContextMenuCommand()&&!i.isButton()&&!i.isStringSelectMenu()&&!i.isModalSubmit()))return;
     if(i.isButton()&&i.customId.startsWith('feedback:')){
       try{
@@ -933,8 +1038,11 @@ ${normalized.previewAfter}
         if(request.status==='submitted')throw new AppError('Você já enviou seu feedback.');
         if(!Number.isInteger(rating)||rating<1||rating>5)throw new AppError('Nota inválida.');
         const modal=new ModalBuilder().setCustomId(`feedback-submit:${id}:${rating}`).setTitle(`Feedback · ${rating} estrela${rating===1?'':'s'}`);
-        const input=new TextInputBuilder().setCustomId('feedback-comment').setLabel('Conte como foi sua experiência').setStyle(TextInputStyle.Paragraph).setRequired(true).setMinLength(3).setMaxLength(1500).setPlaceholder('Escreva seu feedback sobre o atendimento ou compra.');
-        modal.addComponents(new ActionRowBuilder().addComponents(input));
+        const service=new TextInputBuilder().setCustomId('feedback-service').setLabel('Atendimento (1 a 5)').setStyle(TextInputStyle.Short).setRequired(true).setMaxLength(1).setPlaceholder('5');
+        const speed=new TextInputBuilder().setCustomId('feedback-speed').setLabel('Rapidez (1 a 5)').setStyle(TextInputStyle.Short).setRequired(true).setMaxLength(1).setPlaceholder('5');
+        const resolution=new TextInputBuilder().setCustomId('feedback-resolution').setLabel('Resolução (1 a 5)').setStyle(TextInputStyle.Short).setRequired(true).setMaxLength(1).setPlaceholder('5');
+        const input=new TextInputBuilder().setCustomId('feedback-comment').setLabel('Conte como foi sua experiência').setStyle(TextInputStyle.Paragraph).setRequired(true).setMinLength(3).setMaxLength(1200).setPlaceholder('Escreva seu feedback sobre o atendimento ou compra.');
+        modal.addComponents(new ActionRowBuilder().addComponents(service),new ActionRowBuilder().addComponents(speed),new ActionRowBuilder().addComponents(resolution),new ActionRowBuilder().addComponents(input));
         await i.showModal(modal);
       }catch(e){await localizedReply(i,{content:e instanceof AppError?e.message:'Não foi possível abrir o formulário.'}).catch(()=>{});}
       return;
@@ -949,11 +1057,15 @@ ${normalized.previewAfter}
         if(request.status==='submitted')throw new AppError('Você já enviou seu feedback.');
         if(!Number.isInteger(rating)||rating<1||rating>5)throw new AppError('Nota inválida.');
         const comment=String(i.fields.getTextInputValue('feedback-comment')||'').trim();if(comment.length<3)throw new AppError('Escreva um comentário sobre sua experiência.');
-        const claim=store.run("UPDATE feedback_requests SET status='publishing' WHERE id=? AND user_id=? AND status='pending'",id,i.user.id);
+        const service=Number(i.fields.getTextInputValue('feedback-service')),speed=Number(i.fields.getTextInputValue('feedback-speed')),resolution=Number(i.fields.getTextInputValue('feedback-resolution'));
+        if([service,speed,resolution].some(v=>!Number.isInteger(v)||v<1||v>5))throw new AppError('As notas de atendimento, rapidez e resolução devem ser de 1 a 5.');
+        const requestMeta=(()=>{try{return JSON.parse(request.meta||'{}')}catch{return {}}})();requestMeta.service=service;requestMeta.speed=speed;requestMeta.resolution=resolution;
+        const detailedComment=`Atendimento: ${service}/5 · Rapidez: ${speed}/5 · Resolução: ${resolution}/5\n\n${comment}`;
+        const claim=store.run("UPDATE feedback_requests SET status='publishing',meta=? WHERE id=? AND user_id=? AND status='pending'",JSON.stringify(requestMeta),id,i.user.id);
         if(!claim.changes)throw new AppError('Este feedback já foi processado.');
         try{
-          await publishFeedback(request,rating,comment,i.user);
-          store.run("UPDATE feedback_requests SET status='submitted',rating=?,comment=?,submitted_at=? WHERE id=?",rating,comment,store.now(),id);
+          await publishFeedback({...request,meta:JSON.stringify(requestMeta)},rating,detailedComment,i.user);
+          store.run("UPDATE feedback_requests SET status='submitted',rating=?,comment=?,meta=?,submitted_at=? WHERE id=?",rating,comment,JSON.stringify(requestMeta),store.now(),id);
         }catch(e){
           store.run("UPDATE feedback_requests SET status='pending' WHERE id=? AND status='publishing'",id);
           throw e;
@@ -964,6 +1076,24 @@ ${normalized.previewAfter}
         if(deferred)await localizedEdit(i,msg).catch(()=>{});else await localizedReply(i,{content:msg}).catch(()=>{});
       }
       return;
+    }
+    if(i.isButton()&&i.customId.startsWith('note:')){
+      try{if(!await isStaff(i))throw new AppError('Somente a equipe pode adicionar notas.',403);const id=i.customId.split(':')[1];if(!store.one("SELECT id FROM tickets WHERE id=? AND status='open'",id))throw new AppError('Ticket aberto não encontrado.',404);const modal=new ModalBuilder().setCustomId(`note-submit:${id}`).setTitle('Nota interna');const input=new TextInputBuilder().setCustomId('note-text').setLabel('Nota visível apenas para a equipe').setStyle(TextInputStyle.Paragraph).setRequired(true).setMaxLength(1000);modal.addComponents(new ActionRowBuilder().addComponents(input));await i.showModal(modal);}catch(e){await localizedReply(i,{content:e.message,flags:MessageFlags.Ephemeral}).catch(()=>{});}return;
+    }
+    if(i.isModalSubmit()&&i.customId.startsWith('note-submit:')){
+      try{if(!await isStaff(i))throw new AppError('Somente a equipe pode adicionar notas.',403);const id=i.customId.split(':')[1],t=store.one("SELECT * FROM tickets WHERE id=? AND status='open'",id);if(!t)throw new AppError('Ticket aberto não encontrado.',404);const note=String(i.fields.getTextInputValue('note-text')||'').trim();store.run('INSERT INTO ticket_notes(id,ticket_id,actor,note,private,created) VALUES(?,?,?,?,1,?)',randomUUID(),id,i.user.id,note,store.now());ticketAuditAppend(id,{action:'note',actor:i.user.id,target:t.user_id,note});store.recordStaffAction(i.user.id,'note',id,t.user_id);await localizedReply(i,{content:'Nota interna adicionada.',flags:MessageFlags.Ephemeral});}catch(e){await localizedReply(i,{content:e.message,flags:MessageFlags.Ephemeral}).catch(()=>{});}return;
+    }
+    if(i.isButton()&&i.customId.startsWith('tags:')){
+      try{if(!await isStaff(i))throw new AppError('Somente a equipe pode editar tags.',403);const id=i.customId.split(':')[1],t=store.one("SELECT * FROM tickets WHERE id=? AND status='open'",id);if(!t)throw new AppError('Ticket aberto não encontrado.',404);const modal=new ModalBuilder().setCustomId(`tags-submit:${id}`).setTitle('Tags do ticket');let tags=[];try{tags=JSON.parse(t.tags||'[]')}catch{}const input=new TextInputBuilder().setCustomId('tags-text').setLabel('Tags separadas por vírgula').setStyle(TextInputStyle.Short).setRequired(false).setMaxLength(300).setValue(tags.join(', ').slice(0,300));modal.addComponents(new ActionRowBuilder().addComponents(input));await i.showModal(modal);}catch(e){await localizedReply(i,{content:e.message,flags:MessageFlags.Ephemeral}).catch(()=>{});}return;
+    }
+    if(i.isModalSubmit()&&i.customId.startsWith('tags-submit:')){
+      try{if(!await isStaff(i))throw new AppError('Somente a equipe pode editar tags.',403);const id=i.customId.split(':')[1],t=store.one("SELECT * FROM tickets WHERE id=? AND status='open'",id);if(!t)throw new AppError('Ticket aberto não encontrado.',404);const tags=[...new Set(String(i.fields.getTextInputValue('tags-text')||'').split(',').map(x=>x.trim()).filter(Boolean))].slice(0,10);store.run('UPDATE tickets SET tags=?,updated=? WHERE id=?',JSON.stringify(tags),store.now(),id);ticketAuditAppend(id,{action:'tags',actor:i.user.id,target:t.user_id,tags});await localizedReply(i,{content:`Tags atualizadas: ${tags.join(', ')||'nenhuma'}.`,flags:MessageFlags.Ephemeral});}catch(e){await localizedReply(i,{content:e.message,flags:MessageFlags.Ephemeral}).catch(()=>{});}return;
+    }
+    if(i.isButton()&&i.customId.startsWith('close:')){
+      try{if(!await hasStaffPermission(i,'ticketClose'))throw new AppError('Você não possui permissão para finalizar tickets.',403);const id=i.customId.split(':')[1];if(!store.one("SELECT id FROM tickets WHERE id=? AND status='open'",id))throw new AppError('Ticket aberto não encontrado.',404);const modal=new ModalBuilder().setCustomId(`close-submit:${id}`).setTitle('Finalizar atendimento');const input=new TextInputBuilder().setCustomId('close-reason').setLabel('Motivo do encerramento').setStyle(TextInputStyle.Paragraph).setRequired(true).setMinLength(2).setMaxLength(500);modal.addComponents(new ActionRowBuilder().addComponents(input));await i.showModal(modal);}catch(e){await localizedReply(i,{content:e.message,flags:MessageFlags.Ephemeral}).catch(()=>{});}return;
+    }
+    if(i.isModalSubmit()&&i.customId.startsWith('close-submit:')){
+      try{if(!await hasStaffPermission(i,'ticketClose'))throw new AppError('Você não possui permissão para finalizar tickets.',403);const id=i.customId.split(':')[1],reason=String(i.fields.getTextInputValue('close-reason')||'').trim();await i.deferReply({flags:MessageFlags.Ephemeral});await closeTicket(id,i.user.id,reason);await localizedEdit(i,'Atendimento encerrado e registrado.');}catch(e){if(i.deferred)await localizedEdit(i,e.message).catch(()=>{});else await localizedReply(i,{content:e.message,flags:MessageFlags.Ephemeral}).catch(()=>{});}return;
     }
     if(i.isButton()&&i.customId.startsWith('rename:')){
       try{
@@ -982,30 +1112,42 @@ ${normalized.previewAfter}
     try{
       await i.deferReply({flags:MessageFlags.Ephemeral});
       const action=i.commandName||i.customId;
-      if(action==='ajuda'){await localizedEdit(i,'**Studio K**\n/loja · catálogo\n/pedido · consultar compra e entrega\n/ticket · atendimento\n/verificar · liberar acesso\n/idioma · alterar seu idioma\n/notificacoes · autorizar ou desativar mensagens privadas');return;}
+      if(action==='ajuda'||action==='central-help'){
+        const query=i.isChatInputCommand()?i.options.getString('busca'):'';const matches=faqMatches(query);
+        if(query){await localizedEdit(i,matches.length?matches.map(x=>`**${x.question}**\n${x.answer}`).join('\n\n').slice(0,1900):'Não encontrei uma resposta para essa busca. Você pode abrir um ticket para falar com a equipe.');return;}
+        const items=matches.slice(0,25);await localizedEdit(i,{content:'**Ajuda Studio K**\nEscolha uma dúvida comum ou abra um atendimento.',components:[...(items.length?[row({type:3,custom_id:'help-faq',placeholder:'Escolha uma dúvida',options:items.map((x,n)=>({label:x.question.slice(0,100),value:String(n)}))})]:[]),row(button('Abrir atendimento','central-ticket',2))]});return;
+      }
+      if(action==='help-faq'){const item=(store.settings().faq?.items||[])[Number(i.values?.[0])];await localizedEdit(i,item?`**${item.question}**\n${item.answer}`:'Essa resposta não está mais disponível.');return;}
       if(action==='notificacoes'){
-        const exists=store.one('SELECT * FROM optins WHERE user_id=?',i.user.id);if(exists)store.run('DELETE FROM optins WHERE user_id=?',i.user.id);else store.run('INSERT INTO optins VALUES(?,?)',i.user.id,store.now());await localizedEdit(i,exists?'Mensagens opcionais desativadas.':'Mensagens opcionais ativadas. Use este comando novamente para desativar.');return;
+        const current=store.one('SELECT * FROM user_notifications WHERE user_id=?',i.user.id)||{promotions:0,giveaways:1,orders:1,tickets:1};
+        const selected=[['promotions','Promoções',current.promotions],['giveaways','Sorteios',current.giveaways],['orders','Pedidos',current.orders],['tickets','Tickets',current.tickets]];
+        await localizedEdit(i,{content:'Escolha quais notificações opcionais você quer receber:',components:[row({type:3,custom_id:'notification-select',placeholder:'Preferências de notificação',min_values:0,max_values:4,options:selected.map(([value,label,on])=>({label,value,default:!!on}))})]});return;
+      }
+      if(action==='notification-select'){
+        const values=new Set(i.values||[]),now=store.now();store.run('INSERT INTO user_notifications(user_id,promotions,giveaways,orders,tickets,updated) VALUES(?,?,?,?,?,?) ON CONFLICT(user_id) DO UPDATE SET promotions=excluded.promotions,giveaways=excluded.giveaways,orders=excluded.orders,tickets=excluded.tickets,updated=excluded.updated',i.user.id,values.has('promotions')?1:0,values.has('giveaways')?1:0,values.has('orders')?1:0,values.has('tickets')?1:0,now);
+        if(values.size)store.run('INSERT INTO optins(user_id,created) VALUES(?,?) ON CONFLICT(user_id) DO NOTHING',i.user.id,now);else store.run('DELETE FROM optins WHERE user_id=?',i.user.id);
+        await localizedEdit(i,'Preferências de notificação atualizadas.');return;
       }
       if(action==='loja'){if(store.settings().operationsLive?.storeOpen===false)throw new AppError('A loja está fechada no momento.');const products=store.products().filter(p=>p.active);await localizedEdit(i,products.length?{content:'**Catálogo Studio K**\nSelecione um produto para comprar.',components:[row({type:3,custom_id:'store-buy',placeholder:'Escolha um produto',options:products.slice(0,25).map(p=>({label:p.name.slice(0,100),description:`${money(p.priceCents)} · ${p.type==='service'?'Serviço':`${p.stock} em estoque`}`,value:p.id}))})]}:'Ainda não há produtos disponíveis.');return;}
       if(action==='ticket-open'||action==='ticket'){
         if(store.settings().operationsLive?.ticketsOpen===false)throw new AppError('Os tickets estão fechados no momento.');
-        const settings=store.settings().tickets,open=Number(store.one("SELECT COUNT(*) AS n FROM tickets WHERE user_id=? AND status='open'",i.user.id)?.n||0);
-        if(open>=2)throw new AppError('Você já possui 2 tickets abertos. Encerre um deles antes de abrir outro.',409);
+        const settings=store.settings().tickets,open=Number(store.one("SELECT COUNT(*) AS n FROM tickets WHERE user_id=? AND status='open'",i.user.id)?.n||0),maxOpen=settings.maxOpen||TICKET_OPEN_LIMIT;
+        if(open>=maxOpen)throw new AppError(`Você já possui ${maxOpen} ticket(s) aberto(s). Encerre um antes de abrir outro.`,409);
         const categoryButtons=settings.categories.map((name,index)=>button(name.slice(0,80),`ticket-category:${index}`,2));
         const rows=[];for(let p=0;p<categoryButtons.length;p+=5)rows.push(row(...categoryButtons.slice(p,p+5)));
-        await localizedEdit(i,{content:`Você possui **${open}/2** tickets abertos. Escolha a categoria do novo atendimento:`,components:rows});
+        await localizedEdit(i,{content:`Você possui **${open}/${maxOpen}** ticket(s) aberto(s). Escolha a categoria do novo atendimento:`,components:rows});
         return;
       }
       if(action.startsWith('ticket-category:')||action==='ticket-category'){
         const index=action==='ticket-category'?Number(i.values?.[0]||0):Number(action.split(':')[1]),category=store.settings().tickets.categories[index];
         if(!category)throw new AppError('Categoria indisponível.');
         const t=await openTicket(i.user.id,category);
-        const open=Number(store.one("SELECT COUNT(*) AS n FROM tickets WHERE user_id=? AND status='open'",i.user.id)?.n||0);
-        await localizedEdit(i,{content:`Olá <@${i.user.id}>! Seu atendimento: <#${t.channel_id}>\nVocê está com **${open}/2** tickets abertos.`,components:[],allowedMentions:{parse:[],users:[i.user.id]}});
+        const open=Number(store.one("SELECT COUNT(*) AS n FROM tickets WHERE user_id=? AND status='open'",i.user.id)?.n||0),maxOpen=store.settings().tickets.maxOpen||TICKET_OPEN_LIMIT;
+        const queue=store.settings().tickets.queueEnabled?`\nPosição aproximada na fila: **${t.queuePosition}**.`:'';
+        await localizedEdit(i,{content:`Olá <@${i.user.id}>! Seu atendimento: <#${t.channel_id}>\nVocê está com **${open}/${maxOpen}** ticket(s) aberto(s).${queue}`,components:[],allowedMentions:{parse:[],users:[i.user.id]}});
         return;
       }
-      if(action.startsWith('claim:')){if(!await isStaff(i))throw new AppError('Somente a equipe pode assumir tickets.',403);const id=action.split(':')[1],changed=store.run("UPDATE tickets SET claimed_by=?,updated=? WHERE id=? AND status='open' AND claimed_by IS NULL",i.user.id,store.now(),id);if(changed.changes){const t=store.one('SELECT * FROM tickets WHERE id=?',id),c=await channel(t.channel_id),style=store.settings().messageStyles.ticketClaim,customer=await memberVariables(t.user_id,c.guild),staffMember=await member(i.user.id);const variables={...customer,staff:`<@${i.user.id}>`,staffUsername:staffMember.displayName||staffMember.user.globalName||staffMember.user.username||i.user.id,ticket:c.name,category:t.category,channel:`<#${c.id}>`,server:c.guild.name};const claimPayload=styledPayload(style,variables,env.DISCORD_GUILD_ID);await c.send({...claimPayload,allowedMentions:mentionPolicy(claimPayload,[i.user.id,t.user_id])});ticketAuditAppend(t.id,{action:'claim',actor:i.user.id,target:t.user_id});}await localizedEdit(i,changed.changes?'Atendimento atribuído a você.':'Esse atendimento já está atribuído ou encerrado.');return;}
-      if(action.startsWith('close:')){if(!await isStaff(i))throw new AppError('Somente a equipe pode finalizar tickets.',403);const t=store.one('SELECT * FROM tickets WHERE id=?',action.split(':')[1]);if(!t)throw new AppError('Ticket não encontrado.',404);await closeTicket(t.id,i.user.id);await localizedEdit(i,'Atendimento encerrado.');return;}
+      if(action.startsWith('claim:')){if(!await isStaff(i))throw new AppError('Somente a equipe pode assumir tickets.',403);const id=action.split(':')[1],changed=store.run("UPDATE tickets SET claimed_by=?,state='in_progress',updated=? WHERE id=? AND status='open' AND claimed_by IS NULL",i.user.id,store.now(),id);if(changed.changes){const t=store.one('SELECT * FROM tickets WHERE id=?',id),c=await channel(t.channel_id),style=store.settings().messageStyles.ticketClaim,customer=await memberVariables(t.user_id,c.guild),staffMember=await member(i.user.id);const variables={...customer,staff:`<@${i.user.id}>`,staffUsername:staffMember.displayName||staffMember.user.globalName||staffMember.user.username||i.user.id,ticket:c.name,category:t.category,channel:`<#${c.id}>`,server:c.guild.name};const claimPayload=styledPayload(style,variables,env.DISCORD_GUILD_ID);await c.send({...claimPayload,allowedMentions:mentionPolicy(claimPayload,[i.user.id,t.user_id])});ticketAuditAppend(t.id,{action:'claim',actor:i.user.id,target:t.user_id});store.recordStaffAction(i.user.id,'claim',t.id,t.user_id);await refreshTicketControls(t.id);}await localizedEdit(i,changed.changes?'Atendimento atribuído a você.':'Esse atendimento já está atribuído ou encerrado.');return;}
       if(action.startsWith('call:')){
         if(!await isStaff(i))throw new AppError('Somente a equipe pode chamar o cliente.',403);
         const id=action.split(':')[1],t=store.one("SELECT * FROM tickets WHERE id=? AND status='open'",id);if(!t)throw new AppError('Ticket aberto não encontrado.',404);
@@ -1017,14 +1159,84 @@ ${normalized.previewAfter}
           try{const dmPayload=styledPayload(settings.messageStyles.ticketCallDm,variables,env.DISCORD_GUILD_ID),localizedDm=await localizeFor(t.user_id,dmPayload);await(await member(t.user_id)).send({...localizedDm,allowedMentions:mentionPolicy(localizedDm)});dmSent=true;}
           catch(e){store.log('aviso',`Cliente chamado em ${c.name}, mas a DM falhou: ${String(e.message).slice(0,300)}`);}
         }
-        store.run('UPDATE tickets SET updated=? WHERE id=?',store.now(),id);ticketAuditAppend(t.id,{action:'call',actor:i.user.id,target:t.user_id,dmSent});await localizedEdit(i,dmSent?'Cliente chamado no ticket e no privado.':'Cliente chamado no ticket. A DM não pôde ser entregue.');return;
+        store.run("UPDATE tickets SET state='waiting_customer',updated=? WHERE id=?",store.now(),id);ticketAuditAppend(t.id,{action:'call',actor:i.user.id,target:t.user_id,dmSent});store.recordStaffAction(i.user.id,'call',t.id,t.user_id,{dmSent});await refreshTicketControls(t.id);await localizedEdit(i,dmSent?'Cliente chamado no ticket e no privado.':'Cliente chamado no ticket. A DM não pôde ser entregue.');return;
       }
       if(action.startsWith('rename-submit:')){
         if(!await isStaff(i))throw new AppError('Somente a equipe pode renomear tickets.',403);
         const id=action.split(':')[1],t=store.one("SELECT * FROM tickets WHERE id=? AND status='open'",id);if(!t)throw new AppError('Ticket aberto não encontrado.',404);
         const requested=i.fields.getTextInputValue('ticket-name'),newName=channelSlug(requested);if(!newName)throw new AppError('Digite um nome válido.');
         const c=await channel(t.channel_id),oldName=c.name;await c.setName(newName,`Studio K: renomeado por ${i.user.id}`);
-        store.run('UPDATE tickets SET updated=? WHERE id=?',store.now(),id);ticketAuditAppend(t.id,{action:'rename',actor:i.user.id,target:t.user_id,from:oldName,to:newName});await localizedEdit(i,`Ticket renomeado para **${newName}**.`);return;
+        store.run('UPDATE tickets SET updated=? WHERE id=?',store.now(),id);ticketAuditAppend(t.id,{action:'rename',actor:i.user.id,target:t.user_id,from:oldName,to:newName});store.recordStaffAction(i.user.id,'rename',t.id,t.user_id,{from:oldName,to:newName});await localizedEdit(i,`Ticket renomeado para **${newName}**.`);return;
+      }
+      if(action.startsWith('status-direct:')){
+        if(!await isStaff(i))throw new AppError('Somente a equipe pode alterar o status.',403);
+        const parts=action.split(':'),id=parts[1],state=parts[2],allowed=new Set(['waiting_staff','in_progress','waiting_customer','escalated']);if(!allowed.has(state))throw new AppError('Status inválido.');
+        const t=store.one("SELECT * FROM tickets WHERE id=? AND status='open'",id);if(!t)throw new AppError('Ticket aberto não encontrado.',404);
+        store.run('UPDATE tickets SET state=?,updated=? WHERE id=?',state,store.now(),id);ticketAuditAppend(id,{action:'state',actor:i.user.id,target:t.user_id,state});store.recordStaffAction(i.user.id,'state',id,t.user_id,{state});await refreshTicketControls(id);
+        await localizedEdit(i,`Status atualizado para **${state}**.`);return;
+      }
+      if(action.startsWith('status:')){
+        if(!await isStaff(i))throw new AppError('Somente a equipe pode alterar o status.',403);
+        const id=action.split(':')[1],t=store.one("SELECT * FROM tickets WHERE id=? AND status='open'",id);if(!t)throw new AppError('Ticket aberto não encontrado.',404);
+        await localizedEdit(i,{content:'Escolha o novo status do atendimento:',components:[row({type:3,custom_id:`status-select:${id}`,placeholder:'Status do ticket',options:[['waiting_staff','Aguardando staff'],['in_progress','Em atendimento'],['waiting_customer','Aguardando cliente'],['escalated','Escalado']].map(([value,label])=>({label,value,default:t.state===value}))})]});return;
+      }
+      if(action.startsWith('status-select:')){
+        if(!await isStaff(i))throw new AppError('Somente a equipe pode alterar o status.',403);
+        const id=action.split(':')[1],state=String(i.values?.[0]||''),allowed=new Set(['waiting_staff','in_progress','waiting_customer','escalated']);if(!allowed.has(state))throw new AppError('Status inválido.');
+        const t=store.one("SELECT * FROM tickets WHERE id=? AND status='open'",id);if(!t)throw new AppError('Ticket aberto não encontrado.',404);
+        store.run('UPDATE tickets SET state=?,updated=? WHERE id=?',state,store.now(),id);ticketAuditAppend(id,{action:'state',actor:i.user.id,target:t.user_id,state});store.recordStaffAction(i.user.id,'state',id,t.user_id,{state});await refreshTicketControls(id);
+        await localizedEdit(i,`Status atualizado para **${state}**.`);return;
+      }
+      if(action.startsWith('priority:')){
+        if(!await isStaff(i))throw new AppError('Somente a equipe pode alterar a prioridade.',403);
+        const id=action.split(':')[1],t=store.one("SELECT * FROM tickets WHERE id=? AND status='open'",id);if(!t)throw new AppError('Ticket aberto não encontrado.',404);
+        await localizedEdit(i,{content:'Escolha a prioridade:',components:[row({type:3,custom_id:`priority-select:${id}`,placeholder:'Prioridade',options:[['low','Baixa'],['normal','Normal'],['high','Alta'],['urgent','Urgente']].map(([value,label])=>({label,value,default:t.priority===value}))})]});return;
+      }
+      if(action.startsWith('priority-select:')){
+        if(!await isStaff(i))throw new AppError('Somente a equipe pode alterar a prioridade.',403);
+        const id=action.split(':')[1],priority=String(i.values?.[0]||''),allowed=new Set(['low','normal','high','urgent']);if(!allowed.has(priority))throw new AppError('Prioridade inválida.');
+        const t=store.one("SELECT * FROM tickets WHERE id=? AND status='open'",id);if(!t)throw new AppError('Ticket aberto não encontrado.',404);
+        store.run('UPDATE tickets SET priority=?,updated=? WHERE id=?',priority,store.now(),id);ticketAuditAppend(id,{action:'priority',actor:i.user.id,target:t.user_id,priority});store.recordStaffAction(i.user.id,'priority',id,t.user_id,{priority});
+        await localizedEdit(i,`Prioridade atualizada para **${priority}**.`);return;
+      }
+      if(action.startsWith('transfer:')){
+        if(!await hasStaffPermission(i,'ticketTransfer'))throw new AppError('Você não possui permissão para transferir tickets.',403);
+        const id=action.split(':')[1],t=store.one("SELECT * FROM tickets WHERE id=? AND status='open'",id);if(!t)throw new AppError('Ticket aberto não encontrado.',404);
+        await localizedEdit(i,{content:'Escolha o membro da equipe que receberá o atendimento:',components:[row({type:5,custom_id:`transfer-select:${id}`,placeholder:'Selecionar staff',min_values:1,max_values:1})]});return;
+      }
+      if(action.startsWith('transfer-select:')){
+        if(!await hasStaffPermission(i,'ticketTransfer'))throw new AppError('Você não possui permissão para transferir tickets.',403);
+        const id=action.split(':')[1],to=String(i.values?.[0]||''),t=store.one("SELECT * FROM tickets WHERE id=? AND status='open'",id);if(!t)throw new AppError('Ticket aberto não encontrado.',404);
+        const guild=requireGuild(),m=await guild.members.fetch(to),settings=store.settings(),allowedRoles=[...new Set([...staffRoleIds(settings),...(settings.permissions?.ticketManage||[])])];
+        if(!allowedRoles.some(r=>m.roles.cache.has(r))&&!m.permissions.has(PermissionFlagsBits.ManageGuild)&&!m.permissions.has(PermissionFlagsBits.Administrator))throw new AppError('Escolha um membro que pertença à equipe.');
+        store.run("UPDATE tickets SET claimed_by=?,state='in_progress',updated=? WHERE id=?",to,store.now(),id);ticketAuditAppend(id,{action:'transfer',actor:i.user.id,target:t.user_id,to});store.recordStaffAction(i.user.id,'transfer',id,t.user_id,{to});await refreshTicketControls(id);
+        try{const tc=await channel(t.channel_id);await tc.send({content:`Atendimento transferido para <@${to}> por <@${i.user.id}>.`,allowedMentions:{parse:[],users:[to,i.user.id]}});}catch{}
+        await localizedEdit(i,`Atendimento transferido para <@${to}>.`);return;
+      }
+      if(action.startsWith('reopen:')){
+        const oldId=action.split(':')[1],old=store.one("SELECT * FROM tickets WHERE id=? AND status='closed' AND user_id=?",oldId,i.user.id);if(!old)throw new AppError('Esse atendimento não pode ser reaberto.',404);
+        if(!store.settings().tickets.allowReopen)throw new AppError('A reabertura de tickets está desativada.');
+        const t=await openTicket(i.user.id,old.category,{reopenedFrom:old.id,priority:old.priority||'normal'});ticketAuditAppend(t.id,{action:'reopen',actor:i.user.id,target:i.user.id});await localizedEdit(i,{content:`Novo atendimento criado: <#${t.channel_id}>. Ele está relacionado ao ticket anterior ${old.id.slice(0,8)}.`,components:[]});return;
+      }
+      if(action==='central'||action==='central-profile'||action==='perfil'){
+        await localizedEdit(i,{content:await userProfileText(i.user.id),components:[row(button('📦 Meus pedidos','central-orders',2),button('🎫 Abrir atendimento','central-ticket',2),button('🌎 Idioma','central-language',2))]});return;
+      }
+      if(action==='central-store'){const products=store.products().filter(p=>p.active);await localizedEdit(i,products.length?{content:'**Loja Studio K**\nEscolha um produto:',components:[row({type:3,custom_id:'store-buy',placeholder:'Produto',options:products.slice(0,25).map(p=>({label:p.name.slice(0,100),description:`${money(p.priceCents)} · ${p.type==='service'?'Serviço':`${p.stock} em estoque`}`,value:p.id}))})]}:'Não há produtos disponíveis.');return;}
+      if(action==='central-ticket'){const settings=store.settings().tickets,open=Number(store.one("SELECT COUNT(*) AS n FROM tickets WHERE user_id=? AND status='open'",i.user.id)?.n||0),maxOpen=settings.maxOpen||TICKET_OPEN_LIMIT;if(open>=maxOpen)throw new AppError(`Você já possui ${maxOpen} ticket(s) aberto(s).`);const buttons=settings.categories.map((name,index)=>button(name.slice(0,80),`ticket-category:${index}`,2)),rows=[];for(let p=0;p<buttons.length;p+=5)rows.push(row(...buttons.slice(p,p+5)));await localizedEdit(i,{content:'Escolha a categoria do atendimento:',components:rows});return;}
+      if(action==='central-orders'){
+        const rows=store.all('SELECT * FROM orders WHERE user_id=? ORDER BY created DESC LIMIT 5',i.user.id);if(!rows.length){await localizedEdit(i,'Você ainda não possui pedidos.');return;}
+        const lines=rows.map(o=>{const p=JSON.parse(o.product);return`**${o.id.slice(0,8)}** · ${p.name} · ${orderStatusLabel(o.status)} · ${money(o.price)}`;});
+        await localizedEdit(i,{content:'**Seus pedidos recentes**\n'+lines.join('\n'),components:[row(button('Abrir suporte','central-ticket',2))]});return;
+      }
+      if(action==='central-language'){const current=languagePreference(i.user.id)?.language||'';await localizedEdit(i,{content:'Escolha seu idioma:',components:[row(languageSelect('set-language',current))]});return;}
+      if(action==='central-giveaways'){
+        const gs=store.all("SELECT * FROM giveaways WHERE status='active' ORDER BY created DESC LIMIT 10");if(!gs.length){await localizedEdit(i,'Não há sorteios ativos no momento.');return;}
+        const lines=gs.map(g=>{const d=JSON.parse(g.data);return`🎁 **${d.title}** · termina <t:${Math.floor(Date.parse(d.endsAt)/1000)}:R>`;});await localizedEdit(i,lines.join('\n'));return;
+      }
+      if(action==='cupom'){
+        const code=String(i.options.getString('codigo')||'').trim().toUpperCase();if(!code)throw new AppError('Informe o código do cupom.');
+        const cp=store.one('SELECT * FROM coupons WHERE code=? AND active=1',code);if(!cp)throw new AppError('Cupom inválido ou inativo.');if(cp.expires&&Date.parse(cp.expires)<=Date.now())throw new AppError('Este cupom expirou.');if(cp.role_id){const m=i.member?.roles?.cache?i.member:await requireGuild().members.fetch(i.user.id);if(!m.roles.cache.has(cp.role_id))throw new AppError('Este cupom exige um cargo específico no servidor.');}
+        store.set(`coupon-user:${i.user.id}`,{code,expires:Date.now()+60*60000});await localizedEdit(i,`Cupom **${code}** aplicado. Ele será usado na sua próxima compra dentro de 1 hora.`);return;
       }
       if(action==='idioma'){
         const current=languagePreference(i.user.id)?.language||'';
@@ -1092,8 +1304,13 @@ ${normalized.previewAfter}
         await translatedMessageEdit(i,original,language);
         return;
       }
-      if(action.startsWith('buy:')||action==='store-buy'){if(store.settings().operationsLive?.storeOpen===false)throw new AppError('A loja está fechada no momento.');if(!store.settings().sales.pixKey)throw new AppError('As vendas ainda não foram configuradas.');const order=store.createOrder(action==='store-buy'?i.values[0]:action.split(':')[1],i.user.id);void updateOperationsLive(true);await localizedEdit(i,{content:await orderText(order),components:[row(button('Enviar comprovante / falar com equipe','ticket',2))]});return;}
-      if(action==='pedido'){const orderId=i.options.getString('id');const order=orderId?store.one('SELECT * FROM orders WHERE id=? AND user_id=?',orderId,i.user.id):store.one('SELECT * FROM orders WHERE user_id=? ORDER BY created DESC LIMIT 1',i.user.id);if(!order)throw new AppError('Pedido não encontrado.');let text=order.status==='pending'?await orderText(order):`Pedido ${order.id}\nSituação: ${{paid:'Aprovado; entrega em processamento',delivered:'Entregue',cancelled:'Cancelado'}[order.status]}`;if(['paid','delivered'].includes(order.status)){const unit=store.one('SELECT secret FROM stock WHERE order_id=?',order.id);if(unit)text+=`\n\nSua entrega: ${store.decrypt(unit.secret)}`;}await localizedEdit(i,{content:text.slice(0,2000),allowedMentions:safe});return;}
+      if(action.startsWith('buy:')||action==='store-buy'){if(store.settings().operationsLive?.storeOpen===false)throw new AppError('A loja está fechada no momento.');if(!store.settings().sales.pixKey)throw new AppError('As vendas ainda não foram configuradas.');const pendingCoupon=store.get(`coupon-user:${i.user.id}`),couponCode=pendingCoupon&&Number(pendingCoupon.expires)>Date.now()?pendingCoupon.code:'';
+        if(couponCode){
+          const cp=store.one('SELECT role_id FROM coupons WHERE code=?',couponCode);
+          if(cp?.role_id){const m=i.member?.roles?.cache?i.member:await requireGuild().members.fetch(i.user.id);if(!m.roles.cache.has(cp.role_id))throw new AppError('Este cupom exige um cargo específico no servidor.');}
+        }
+        const order=store.createOrder(action==='store-buy'?i.values[0]:action.split(':')[1],i.user.id,couponCode);if(couponCode)store.run('DELETE FROM kv WHERE key=?',`coupon-user:${i.user.id}`);void updateOperationsLive(true);await localizedEdit(i,{content:await orderText(order),components:[row(button('Enviar comprovante / falar com equipe','ticket',2))]});return;}
+      if(action==='pedido'){const orderId=i.options.getString('id');const order=orderId?store.one('SELECT * FROM orders WHERE id=? AND user_id=?',orderId,i.user.id):store.one('SELECT * FROM orders WHERE user_id=? ORDER BY created DESC LIMIT 1',i.user.id);if(!order)throw new AppError('Pedido não encontrado.');let text=order.status==='pending'?await orderText(order):`**Pedido ${order.id}**\nSituação: **${orderStatusLabel(order.status)}**\nValor: **${money(order.price)}**${order.coupon_code?`\nCupom: **${order.coupon_code}** · desconto ${money(order.discount||0)}`:''}`;if(['paid','delivered'].includes(order.status)){const unit=store.one('SELECT secret FROM stock WHERE order_id=?',order.id);if(unit)text+=`\n\nSua entrega: ${store.decrypt(unit.secret)}`;}await localizedEdit(i,{content:text.slice(0,1900),components:[row(button('Abrir suporte','central-ticket',2),button('Minha conta','central-profile',2))],allowedMentions:safe});return;}
       if(action.startsWith('giveaway:')){
         const id=action.split(':')[1],g=store.one('SELECT * FROM giveaways WHERE id=?',id);
         if(!g||g.status!=='active'||Date.parse(JSON.parse(g.data).endsAt)<=Date.now())throw new AppError('Sorteio encerrado.');
@@ -1233,10 +1450,10 @@ ${normalized.previewAfter}
   });
   client.on(Events.Error,e=>{error=e.message;store.log('erro','Falha na conexão com o Discord.');});
   client.once(Events.ClientReady,async()=>{console.log(`Discord conectado como ${client.user?.tag||client.user?.username||'Studio K'}.`);
-    try{const guild=requireGuild();const commands=[{name:'ajuda',description:'Conheça o Studio K'},{name:'loja',description:'Veja produtos e serviços disponíveis'},{name:'pedido',description:'Consulte um pedido e recupere sua entrega',options:[{name:'id',description:'Código completo do pedido; deixe vazio para o mais recente',type:3,required:false}]},{name:'ticket',description:'Abra um atendimento privado'},{name:'verificar',description:'Aceite as regras e receba acesso'},{name:'notificacoes',description:'Ative ou desative mensagens privadas opcionais'},{name:'idioma',description:'Escolha o idioma das mensagens privadas do Studio K'},{name:'Traduzir mensagem',type:3}];await new REST({version:'10'}).setToken(env.DISCORD_TOKEN).put(Routes.applicationGuildCommands(env.DISCORD_CLIENT_ID||client.user.id,guild.id),{body:commands});const s=store.settings().brand;client.user.setPresence({status:s.status,activities:s.activity?[{name:s.activity,type:ActivityType[s.activityType]}]:[]});await refreshInviteCache(guild);for(const state of guild.voiceStates.cache.values())if(state.member&&!state.member.user.bot&&state.channelId)startVoiceForUser(state.id,store.now());try{await applyVoicePresence();}catch(e){store.log('aviso',`Presença em call: ${e.message}`);}store.log('conexão',`Conectado ao servidor ${guild.name}.`);error='';await tick();}catch(e){error=e.message;store.log('erro',e.message);}
+    try{const guild=requireGuild();const commands=[{name:'central',description:'Abra a Central Studio K'},{name:'perfil',description:'Veja sua conta, tickets e pedidos'},{name:'ajuda',description:'Pesquise ajuda e perguntas frequentes',options:[{name:'busca',description:'Assunto ou palavra-chave',type:3,required:false}]},{name:'loja',description:'Veja produtos e serviços disponíveis'},{name:'cupom',description:'Aplique um cupom na próxima compra',options:[{name:'codigo',description:'Código do cupom',type:3,required:true}]},{name:'pedido',description:'Consulte um pedido e recupere sua entrega',options:[{name:'id',description:'Código completo do pedido; deixe vazio para o mais recente',type:3,required:false}]},{name:'ticket',description:'Abra um atendimento privado'},{name:'verificar',description:'Aceite as regras e receba acesso'},{name:'notificacoes',description:'Escolha quais notificações deseja receber'},{name:'idioma',description:'Escolha o idioma das mensagens privadas do Studio K'},{name:'Traduzir mensagem',type:3}];await new REST({version:'10'}).setToken(env.DISCORD_TOKEN).put(Routes.applicationGuildCommands(env.DISCORD_CLIENT_ID||client.user.id,guild.id),{body:commands});const s=store.settings().brand;client.user.setPresence({status:s.status,activities:s.activity?[{name:s.activity,type:ActivityType[s.activityType]}]:[]});await refreshInviteCache(guild);for(const state of guild.voiceStates.cache.values())if(state.member&&!state.member.user.bot&&state.channelId)startVoiceForUser(state.id,store.now());try{await applyVoicePresence();}catch(e){store.log('aviso',`Presença em call: ${e.message}`);}store.log('conexão',`Conectado ao servidor ${guild.name}.`);error='';await tick();}catch(e){error=e.message;store.log('erro',e.message);}
   });
   const timer=setInterval(()=>void tick(),30000);timer.unref();
-  return {status,client,channel,member,assignRole,verifyOAuthUser,sendMessage,openTicket,closeTicket,publishPanel,publishConfiguredMessage,publishProduct,createGiveaway,evaluateGiveaway,updateSalesLive,updateLivePanels,createEvent,applyBrand,applyVoicePresence,makeBackup,tick,
+  return {status,client,channel,member,memberProfile,assignRole,verifyOAuthUser,sendMessage,openTicket,closeTicket,publishPanel,publishConfiguredMessage,publishProduct,createGiveaway,evaluateGiveaway,updateSalesLive,updateLivePanels,createEvent,applyBrand,applyVoicePresence,makeBackup,tick,
     async metadata(){
       const g=requireGuild();
       await Promise.all([g.channels.fetch(),g.roles.fetch(),g.emojis.fetch(),g.members.fetch()]);
