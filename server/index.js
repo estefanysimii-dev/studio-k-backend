@@ -43,20 +43,22 @@ function sameOrigin(req,res,next){
 app.get('/healthz',(req,res)=>res.json({ok:true}));
 app.get('/api/auth', (req,res)=>{const s=session(req);res.json({authenticated:!!s,csrf:s?.csrf||null,setup:!store.get('password'),setupKeyRequired,demo});});
 app.get('/api/oauth/discord/start',(req,res)=>{
-  const v=store.settings().verification;
+  const v=store.settings().verification,roles=[...(v.roleIds||[]),...(v.roleId?[v.roleId]:[])].filter(Boolean);
   if(!v.oauthEnabled)throw new AppError('A verificação OAuth ainda não está ativada.',400);
-  if(!v.roleId)throw new AppError('Configure o cargo da verificação antes de publicar o painel.',400);
+  if(!roles.length)throw new AppError('Configure ao menos um cargo da verificação antes de publicar o painel.',400);
   if(!process.env.DISCORD_CLIENT_ID||!process.env.DISCORD_CLIENT_SECRET)throw new AppError('OAuth do Discord ainda não está configurado no servidor.',503);
-  const state=randomBytes(32).toString('base64url');
+  const lang=String(req.query.lang||'pt').slice(0,10),state=randomBytes(32).toString('base64url');
   res.cookie('studio_oauth_state',state,oauthCookieOptions);
+  res.cookie('studio_oauth_lang',lang,oauthCookieOptions);
   const params=new URLSearchParams({response_type:'code',client_id:process.env.DISCORD_CLIENT_ID,scope:'identify',state,redirect_uri:oauthRedirect,prompt:'consent'});
   res.redirect(`https://discord.com/oauth2/authorize?${params}`);
 });
 app.get('/api/oauth/discord/callback',async(req,res)=>{
   let accessToken='';
   try{
-    const expected=cookieValue(req,'studio_oauth_state'),given=String(req.query.state||''),code=String(req.query.code||'');
+    const expected=cookieValue(req,'studio_oauth_state'),given=String(req.query.state||''),code=String(req.query.code||''),language=String(cookieValue(req,'studio_oauth_lang')||'pt');
     res.clearCookie('studio_oauth_state',{path:'/api/oauth/discord'});
+    res.clearCookie('studio_oauth_lang',{path:'/api/oauth/discord'});
     if(req.query.error)throw new AppError('A autorização foi cancelada ou recusada.',400);
     if(!expected||!given||!timingSafeEqual(Buffer.from(hash(expected)),Buffer.from(hash(given))))throw new AppError('A verificação expirou ou não corresponde a esta solicitação.',403);
     if(!code)throw new AppError('O Discord não retornou o código de autorização.',400);
@@ -75,7 +77,7 @@ app.get('/api/oauth/discord/callback',async(req,res)=>{
     const user=await userResponse.json().catch(()=>({}));
     if(!userResponse.ok||!user.id)throw new AppError('Não foi possível identificar sua conta do Discord.',502);
 
-    const result=await bot.verifyOAuthUser(user);
+    const result=await bot.verifyOAuthUser(user,language);
     const settings=store.settings(),targetChannelId=settings.verification.redirectChannelId||settings.welcome.channelId||'';
     const targetUrl=targetChannelId?`https://discord.com/channels/${encodeURIComponent(process.env.DISCORD_GUILD_ID||'')}/${encodeURIComponent(targetChannelId)}`:'';
     res.setHeader('X-Robots-Tag','noindex, nofollow, noarchive');
