@@ -421,7 +421,7 @@ async function persistSettingsForm(form,{refreshAfter=false}={}){
     }
     let value=input.type==='checkbox'?input.checked:input.type==='number'?(input.value===''?0:Number(input.value)):input.value;
     if(input.name==='categories')value=input.value.split('\n').map(v=>v.trim()).filter(Boolean);
-    if(input.name==='staffRoleIds')value=input.value.split('\n').map(v=>v.trim()).filter(Boolean);
+    if(['staffRoleIds','roleIds','staff','highStaff','partners','customers','decorative'].includes(input.name))value=input.value.split('\n').map(v=>v.trim()).filter(Boolean);
     setPath(updated,input.name,value);
   }
   const multi=[...form.querySelectorAll('[data-multivalue]')];
