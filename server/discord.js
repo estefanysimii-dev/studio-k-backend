@@ -947,21 +947,41 @@ export function createBot(store,env=process.env){
         store.run('UPDATE tickets SET updated=? WHERE id=?',store.now(),id);await audit('ticket',`Ticket ${oldName} renomeado para ${newName}.`,i.user.id);await i.editReply(`Ticket renomeado para **${newName}**.`);return;
       }
       if(action==='verify'||action==='verificar'){
-        const settings=store.settings(),v=settings.verification,roles=verificationRoleIds(v);
-        if(!roles.length)throw new AppError('A verificação ainda não possui cargos configurados.');
-        if(Date.now()-i.user.createdTimestamp<v.minimumAccountDays*86400000)throw new AppError(`Sua conta precisa ter pelo menos ${v.minimumAccountDays} dias.`);
-        await assignRoles(i.user.id,roles);
-        const guild=requireGuild(),m=await member(i.user.id),now=store.now(),username=String(i.member?.displayName||i.user.globalName||i.user.username||i.user.id).slice(0,120);
-        store.run('INSERT INTO verifications(user_id,username,verified_at,last_authorized_at) VALUES(?,?,?,?) ON CONFLICT(user_id) DO UPDATE SET username=excluded.username,last_authorized_at=excluded.last_authorized_at',i.user.id,username,now,now);
-        if(v.sendDm){
-          try{
-            const roleText=roles.map(id=>`<@&${id}>`).join(', '),payload=styledPayload(settings.messageStyles.verificationDm,{user:`<@${i.user.id}>`,username,server:guild.name,role:roleText,roles:roleText},env.DISCORD_GUILD_ID);
-            await m.send({...payload,allowedMentions:mentionPolicy(payload)});
-          }catch(e){store.log('aviso',`Verificação nativa concluída para ${i.user.id}, mas a DM não pôde ser entregue: ${String(e.message).slice(0,300)}`);}
+        const current=languagePreference(i.user.id)?.language||'';
+        await i.editReply({content:'Escolha o idioma que o Studio K deve usar nas suas mensagens privadas:',components:[row(languageSelect('verify-language',current))]});
+        return;
+      }
+      if(action==='verify-browser'){
+        const current=languagePreference(i.user.id)?.language||'';
+        await i.editReply({content:'Escolha seu idioma antes de continuar pelo navegador:',components:[row(languageSelect('verify-browser-language',current))]});
+        return;
+      }
+      if(action==='verify-language'){
+        await completeNativeVerification(i,normalizeLanguage(i.values?.[0]));
+        return;
+      }
+      if(action==='verify-browser-language'){
+        const language=saveLanguage(i.user.id,normalizeLanguage(i.values?.[0]));
+        const url=String(env.PUBLIC_URL||'').replace(/\/$/,'')+'/api/oauth/discord/start?lang='+encodeURIComponent(language);
+        await localizedEdit(i,{content:'Idioma salvo. Continue pela autorização oficial do Discord:',components:[row(linkButton('Continuar no navegador',url))]});
+        return;
+      }
+      if(action==='translate-message'){
+        if(!store.settings().translator?.enabled)throw new AppError('A tradução personalizada está desativada.');
+        if(!env.GOOGLE_TRANSLATE_API_KEY)throw new AppError('O tradutor ainda não foi configurado pelo administrador.');
+        const pref=languagePreference(i.user.id);
+        if(!pref){
+          await i.editReply({content:'Escolha seu idioma. O Studio K salvará essa preferência para as próximas traduções:',components:[row(languageSelect('translate-language:'+i.channelId+':'+i.message.id))]});
+          return;
         }
-        void updateLivePanels(true);
-        const targetId=v.redirectChannelId||settings.welcome.channelId||'',components=targetId?[row(linkButton('Continuar no servidor',`https://discord.com/channels/${env.DISCORD_GUILD_ID}/${targetId}`))]:[];
-        await i.editReply({content:'Verificação concluída. Bem-vindo(a)!',components});
+        await translatedMessageEdit(i,i.message,normalizeLanguage(pref.language));
+        return;
+      }
+      if(action.startsWith('translate-language:')){
+        const parts=action.split(':'),channelId=parts[1],messageId=parts[2],language=saveLanguage(i.user.id,normalizeLanguage(i.values?.[0]));
+        const targetChannel=i.channelId===channelId?i.channel:await client.channels.fetch(channelId);
+        const original=await targetChannel.messages.fetch(messageId);
+        await translatedMessageEdit(i,original,language);
         return;
       }
       if(action.startsWith('buy:')||action==='store-buy'){if(store.settings().operationsLive?.storeOpen===false)throw new AppError('A loja está fechada no momento.');if(!store.settings().sales.pixKey)throw new AppError('As vendas ainda não foram configuradas.');const order=store.createOrder(action==='store-buy'?i.values[0]:action.split(':')[1],i.user.id);void updateOperationsLive(true);await i.editReply({content:await orderText(order),components:[row(button('Enviar comprovante / falar com equipe','ticket',2))]});return;}
