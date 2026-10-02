@@ -48,6 +48,8 @@ const mentionPolicy=(payload={},extraUsers=[],extraRoles=[])=>{
 const safe={parse:[]};
 const money=n=>(n/100).toLocaleString('pt-BR',{style:'currency',currency:'BRL'});
 const channelSlug=value=>String(value||'ticket').normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/^-+|-+$/g,'').slice(0,80)||'ticket';
+export const TICKET_OPEN_LIMIT=2;
+export const canOpenTicket=openCount=>Number(openCount)<TICKET_OPEN_LIMIT;
 export function youtubeVideoId(value=''){
   const raw=String(value).trim();
   if(/^[A-Za-z0-9_-]{11}$/.test(raw))return raw;
@@ -327,7 +329,7 @@ export function createBot(store,env=process.env){
     const ticketName=await nextTicketName(category,guild),id=randomUUID(),now=store.now();
     store.transaction(()=>{
       const open=Number(store.one("SELECT COUNT(*) AS n FROM tickets WHERE user_id=? AND status='open'",userId)?.n||0);
-      if(open>=2)throw new AppError('Você já possui 2 tickets abertos. Encerre um deles antes de abrir outro.',409);
+      if(!canOpenTicket(open))throw new AppError('Você já possui 2 tickets abertos. Encerre um deles antes de abrir outro.',409);
       store.run('INSERT INTO tickets(id,user_id,category,status,created,updated) VALUES(?,?,?,?,?,?)',id,userId,category,'open',now,now);
     });
     let c;
