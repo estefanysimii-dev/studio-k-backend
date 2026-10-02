@@ -42,6 +42,10 @@ const messageStylesSchema = z.object({
   giveaway: messageStyle('', { title:'🎁 {title}', description:'{description}\n\nEncerra {ends}.\n{winners} vencedor(es).{roleLine}', color:'#995cff' }),
   giveawayResult: messageStyle('', { title:'Sorteio encerrado · {title}', description:'{result}', color:'#995cff' }),
   salesLive: messageStyle('', { title:'📊 Vendas da semana', description:'**{sales}** venda(s) confirmada(s)\n**{revenue}** em receita\n\nPeríodo: {periodStart} → {periodEnd}', color:'#995cff', footer:'Atualizado {updated}', timestamp:true }),
+  communityLive: messageStyle('', { title:'👥 Comunidade em tempo real', description:'**{members}** membros atuais\n**+{newWeek}** novos nesta semana\n**{verifiedWeek}** verificações concluídas\n**{leftWeek}** saída(s) nesta semana', color:'#995cff', footer:'Atualizado {updated}', timestamp:true }),
+  giveawaysLive: messageStyle('', { title:'🎁 Sorteios ativos', description:'**{activeGiveaways}** sorteio(s) ativo(s)\n**{eligible}** participante(s) elegível(is)\n\n{giveawayList}', color:'#995cff', footer:'Atualizado {updated}', timestamp:true }),
+  operationsLive: messageStyle('', { title:'🟢 Status operacional · Studio K', description:'Bot: **{botStatus}**\nLoja: **{storeStatus}**\nTickets: **{ticketsStatus}**\nTickets abertos: **{openTickets}**\nPedidos pendentes: **{pendingOrders}**', color:'#995cff', footer:'Atualizado {updated}', timestamp:true }),
+  inviteRankingLive: messageStyle('', { title:'🏆 Ranking de convites · {month}', description:'{ranking}', color:'#995cff', footer:'Somente convites válidos rastreados pelo Studio K · Atualizado {updated}', timestamp:true }),
   logs: messageStyle('', { title:'Studio K · {type}', description:'{detail}', color:'#995cff', footer:'Responsável: {actor}', timestamp:true }),
   orderDelivery: messageStyle('', { title:'Compra aprovada · {product}', description:'Pedido {order}\n\n{delivery}\n\n{instructions}', color:'#995cff' })
 }).prefault({});
@@ -54,6 +58,10 @@ export const settingsSchema = z.object({
   verification: z.object({ roleId: optionalId, redirectChannelId: optionalId, title: z.string().min(1).max(256).default('Verifique sua conta'), description: z.string().max(2000).default('Leia as regras. Ao confirmar, você receberá acesso à comunidade.'), button: z.string().min(1).max(80).default('Liberar meu acesso'), minimumAccountDays: z.number().int().min(0).max(365).default(7), oauthEnabled: z.boolean().default(false), sendDm: z.boolean().default(true) }).prefault({}),
   sales: z.object({ pixKey: z.string().max(200).default(''), recipient: z.string().max(100).default(''), instructions: z.string().max(1200).default('Envie o comprovante no ticket e aguarde a conferência da equipe.'), orderExpiryMinutes: z.number().int().min(10).max(10080).default(60), lowStockThreshold: z.number().int().min(0).max(10000).default(3) }).prefault({}),
   salesLive: z.object({ enabled:z.boolean().default(false), channelId:optionalId }).prefault({}),
+  communityLive: z.object({ enabled:z.boolean().default(false), channelId:optionalId }).prefault({}),
+  giveawaysLive: z.object({ enabled:z.boolean().default(false), channelId:optionalId }).prefault({}),
+  operationsLive: z.object({ enabled:z.boolean().default(false), channelId:optionalId, storeOpen:z.boolean().default(true), ticketsOpen:z.boolean().default(true) }).prefault({}),
+  inviteRankingLive: z.object({ enabled:z.boolean().default(false), channelId:optionalId, top:z.number().int().min(3).max(20).default(10) }).prefault({}),
   logs: z.object({ channelId: optionalId, members: z.boolean().default(true), messages: z.boolean().default(true), moderation: z.boolean().default(true), channels: z.boolean().default(true), roles: z.boolean().default(true) }).prefault({}),
   backups: z.object({ enabled: z.boolean().default(true), intervalHours: z.number().int().min(1).max(720).default(24), retain: z.number().int().min(2).max(100).default(14) }).prefault({})
 });
