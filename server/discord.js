@@ -200,6 +200,46 @@ export function createBot(store,env=process.env){
     }
     const message=await c.send({...payload,allowedMentions:mentionPolicy(payload)});await audit('painel',`Painel de ${kind} publicado.`,'painel');return{id:message.id};
   }
+  async function publishConfiguredMessage(source,key,channelId){
+    const settings=store.settings(),c=await channel(channelId);
+    if(source==='template'){
+      if(!['welcome','goodbye'].includes(key))throw new AppError('Modelo de mensagem inválido.',400);
+      const t=settings[key],variables={
+        user:'<@123456789012345678>',
+        username:'Cliente',
+        server:requireGuild().name,
+        count:String(requireGuild().memberCount)
+      };
+      const content=expandText(t.content||'',variables),e=embedPayload(t.embed||{},variables);
+      const payload={
+        content:content||undefined,
+        embeds:hasEmbed(e)?[e]:[],
+        components:linkRows(t.buttons||[],env.DISCORD_GUILD_ID)
+      };
+      payload.allowedMentions=mentionPolicy(payload);
+      const message=await c.send(payload);
+      await audit('mensagem',`${key==='welcome'?'Boas-vindas':'Saída'} publicada separadamente pelo painel.`,'painel');
+      return {id:message.id};
+    }
+    if(source!=='messageStyle')throw new AppError('Origem de mensagem inválida.',400);
+    const allowed=['ticketPanel','ticketOpen','ticketStaffPanel','ticketClaim','ticketCall','ticketCallDm','ticketClose','verificationPanel','verificationDm','product','giveaway','giveawayResult','logs','orderDelivery'];
+    if(!allowed.includes(key))throw new AppError('Modelo de embed inválido.',400);
+    if(key==='ticketPanel')return publishPanel('tickets',channelId);
+    if(key==='verificationPanel')return publishPanel('verification',channelId);
+    const variables={
+      user:'<@123456789012345678>',username:'Cliente',server:requireGuild().name,count:String(requireGuild().memberCount),
+      category:'Orçamento',ticket:'orcamento-1',staff:'<@123456789012345679>',channel:'<#'+channelId+'>',
+      product:'Produto exemplo',description:'Descrição do produto',price:'R$ 49,90',availability:'10 unidades',
+      title:'Sorteio especial',ends:'em 2 horas',winners:'1',roleLine:'',result:'<@123456789012345678>',
+      type:'ticket',detail:'Atendimento atualizado.',actor:'<@123456789012345679>',order:'ABC123',
+      delivery:'CHAVE-EXEMPLO',instructions:'Siga as instruções enviadas.',role:'<@&123456789012345680>',
+      transcript:'https://studio-k-wmrj.netlify.app/transcript'
+    };
+    const payload=stylePayload(settings.messageStyles[key],variables,env.DISCORD_GUILD_ID);
+    const message=await c.send({...payload,allowedMentions:mentionPolicy(payload)});
+    await audit('mensagem',`Embed ${key} publicado separadamente pelo painel.`,'painel');
+    return {id:message.id};
+  }
   async function publishProduct(productId,channelId){
     const p=store.products().find(p=>p.id===productId);if(!p)throw new AppError('Produto não encontrado.',404);
     const availability=p.type==='service'?'Sob demanda':`${p.stock} unidade(s)`;
@@ -325,7 +365,7 @@ export function createBot(store,env=process.env){
     try{const guild=requireGuild();const commands=[{name:'ajuda',description:'Conheça o Studio K'},{name:'loja',description:'Veja produtos e serviços disponíveis'},{name:'pedido',description:'Consulte um pedido e recupere sua entrega',options:[{name:'id',description:'Código completo do pedido; deixe vazio para o mais recente',type:3,required:false}]},{name:'ticket',description:'Abra um atendimento privado'},{name:'verificar',description:'Aceite as regras e receba acesso'},{name:'notificacoes',description:'Ative ou desative mensagens privadas opcionais'}];await new REST({version:'10'}).setToken(env.DISCORD_TOKEN).put(Routes.applicationGuildCommands(env.DISCORD_CLIENT_ID||client.user.id,guild.id),{body:commands});const s=store.settings().brand;client.user.setPresence({status:s.status,activities:s.activity?[{name:s.activity,type:ActivityType[s.activityType]}]:[]});store.log('conexão',`Conectado ao servidor ${guild.name}.`);error='';await tick();}catch(e){error=e.message;store.log('erro',e.message);}
   });
   const timer=setInterval(()=>void tick(),30000);timer.unref();
-  return {status,client,channel,member,assignRole,verifyOAuthUser,sendMessage,openTicket,closeTicket,publishPanel,publishProduct,createGiveaway,createEvent,applyBrand,makeBackup,tick,
+  return {status,client,channel,member,assignRole,verifyOAuthUser,sendMessage,openTicket,closeTicket,publishPanel,publishConfiguredMessage,publishProduct,createGiveaway,createEvent,applyBrand,makeBackup,tick,
     async metadata(){
       const g=requireGuild();
       await Promise.all([g.channels.fetch(),g.roles.fetch(),g.emojis.fetch(),g.members.fetch()]);
