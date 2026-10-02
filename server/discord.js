@@ -46,6 +46,26 @@ export function createBot(store,env=process.env){
     if(!role||role.managed||role.id===guild.id||role.permissions.has(PermissionFlagsBits.Administrator)||role.position>=me.roles.highest.position)throw new AppError('O cargo precisa existir, não pode ser administrativo e deve ficar abaixo do cargo do bot.');
     await(await member(userId)).roles.add(role,'Studio K: cargo configurado');
   }
+  async function verifyOAuthUser(user){
+    const settings=store.settings(),v=settings.verification;
+    if(!v.oauthEnabled)throw new AppError('A verificação OAuth não está ativada.');
+    if(!v.roleId)throw new AppError('Configure o cargo liberado pela verificação.');
+    const guild=requireGuild(),m=await member(user.id);
+    if(Date.now()-m.user.createdTimestamp<v.minimumAccountDays*86400000)throw new AppError(`Sua conta precisa ter pelo menos ${v.minimumAccountDays} dias.`,403);
+    await assignRole(user.id,v.roleId);
+    const now=store.now(),username=String(user.global_name||user.username||m.user.username||user.id).slice(0,120);
+    store.run('INSERT INTO verifications(user_id,username,verified_at,last_authorized_at) VALUES(?,?,?,?) ON CONFLICT(user_id) DO UPDATE SET username=excluded.username,last_authorized_at=excluded.last_authorized_at',user.id,username,now,now);
+    let dmSent=false;
+    if(v.sendDm){
+      try{
+        const style=settings.messageStyles.verificationDm;
+        await m.send({...stylePayload(style,{user:username,username,server:guild.name,role:`<@&${v.roleId}>`}),allowedMentions:safe});
+        dmSent=true;
+      }catch(e){store.log('aviso',`Verificação concluída para ${user.id}, mas a DM não pôde ser entregue: ${String(e.message).slice(0,300)}`);}
+    }
+    await audit('verificação',`OAuth concluído e cargo liberado para ${username} (${user.id}).`,user.id);
+    return {userId:user.id,username,dmSent};
+  }
   async function sendMessage(data){
     const payload={content:data.content||undefined,embeds:data.embed?[embedPayload(data.embed)]:[],allowedMentions:safe};
     let result;
@@ -142,7 +162,10 @@ export function createBot(store,env=process.env){
     if(kind==='tickets'){
       payload={...stylePayload(s.messageStyles.ticketPanel),components:[row({type:3,custom_id:'ticket-category',placeholder:s.tickets.button.slice(0,150),options:s.tickets.categories.map((name,i)=>({label:name,value:String(i)}))})]};
     }else{
-      payload={...stylePayload(s.messageStyles.verificationPanel),components:[row(button(s.verification.button,'verify'))]};
+      const verifyComponent=s.verification.oauthEnabled
+        ? linkButton(s.verification.button,`${String(env.PUBLIC_URL||'').replace(/\/$/,'')}/api/oauth/discord/start`)
+        : button(s.verification.button,'verify');
+      payload={...stylePayload(s.messageStyles.verificationPanel),components:[row(verifyComponent)]};
     }
     const message=await c.send({...payload,allowedMentions:safe});await audit('painel',`Painel de ${kind} publicado.`,'painel');return{id:message.id};
   }
@@ -232,9 +255,15 @@ export function createBot(store,env=process.env){
       if(action.startsWith('call:')){
         if(!await isStaff(i))throw new AppError('Somente a equipe pode chamar o cliente.',403);
         const id=action.split(':')[1],t=store.one("SELECT * FROM tickets WHERE id=? AND status='open'",id);if(!t)throw new AppError('Ticket aberto não encontrado.',404);
-        const c=await channel(t.channel_id),style=store.settings().messageStyles.ticketCall;
-        await c.send({...stylePayload(style,{user:`<@${t.user_id}>`,ticket:c.name,category:t.category}),allowedMentions:{users:[t.user_id]}});
-        store.run('UPDATE tickets SET updated=? WHERE id=?',store.now(),id);await audit('ticket',`Cliente chamado no ticket ${c.name}.`,i.user.id);await i.editReply('Cliente chamado no ticket.');return;
+        const c=await channel(t.channel_id),settings=store.settings(),style=settings.messageStyles.ticketCall;
+        const variables={user:`<@${t.user_id}>`,ticket:c.name,category:t.category,channel:`<#${c.id}>`,server:c.guild.name};
+        await c.send({...stylePayload(style,variables),allowedMentions:{users:[t.user_id]}});
+        let dmSent=false;
+        if(settings.tickets.callDm){
+          try{await(await member(t.user_id)).send({...stylePayload(settings.messageStyles.ticketCallDm,variables),allowedMentions:safe});dmSent=true;}
+          catch(e){store.log('aviso',`Cliente chamado em ${c.name}, mas a DM falhou: ${String(e.message).slice(0,300)}`);}
+        }
+        store.run('UPDATE tickets SET updated=? WHERE id=?',store.now(),id);await audit('ticket',`Cliente chamado no ticket ${c.name}${dmSent?' e por DM':''}.`,i.user.id);await i.editReply(dmSent?'Cliente chamado no ticket e no privado.':'Cliente chamado no ticket. A DM não pôde ser entregue.');return;
       }
       if(action.startsWith('rename-submit:')){
         if(!await isStaff(i))throw new AppError('Somente a equipe pode renomear tickets.',403);
@@ -243,7 +272,7 @@ export function createBot(store,env=process.env){
         const c=await channel(t.channel_id),oldName=c.name;await c.setName(newName,`Studio K: renomeado por ${i.user.id}`);
         store.run('UPDATE tickets SET updated=? WHERE id=?',store.now(),id);await audit('ticket',`Ticket ${oldName} renomeado para ${newName}.`,i.user.id);await i.editReply(`Ticket renomeado para **${newName}**.`);return;
       }
-      if(action==='verify'||action==='verificar'){const s=store.settings().verification;if(!s.roleId)throw new AppError('A verificação ainda não foi configurada.');if(Date.now()-i.user.createdTimestamp<s.minimumAccountDays*86400000)throw new AppError(`Sua conta precisa ter pelo menos ${s.minimumAccountDays} dias.`);await assignRole(i.user.id,s.roleId);await i.editReply('Verificação concluída. Bem-vindo(a)!');return;}
+      if(action==='verify'||action==='verificar'){const v=store.settings().verification;if(v.oauthEnabled){const url=`${String(env.PUBLIC_URL||'').replace(/\/$/,'')}/api/oauth/discord/start`;await i.editReply({content:'Para liberar o acesso, autorize sua conta pelo Discord.',components:[row(linkButton(v.button,url))]});return;}if(!v.roleId)throw new AppError('A verificação ainda não foi configurada.');if(Date.now()-i.user.createdTimestamp<v.minimumAccountDays*86400000)throw new AppError(`Sua conta precisa ter pelo menos ${v.minimumAccountDays} dias.`);await assignRole(i.user.id,v.roleId);await i.editReply('Verificação concluída. Bem-vindo(a)!');return;}
       if(action.startsWith('buy:')||action==='store-buy'){if(!store.settings().sales.pixKey)throw new AppError('As vendas ainda não foram configuradas.');const order=store.createOrder(action==='store-buy'?i.values[0]:action.split(':')[1],i.user.id);await i.editReply({content:await orderText(order),components:[row(button('Enviar comprovante / falar com equipe','ticket',2))]});return;}
       if(action==='pedido'){const orderId=i.options.getString('id');const order=orderId?store.one('SELECT * FROM orders WHERE id=? AND user_id=?',orderId,i.user.id):store.one('SELECT * FROM orders WHERE user_id=? ORDER BY created DESC LIMIT 1',i.user.id);if(!order)throw new AppError('Pedido não encontrado.');let text=order.status==='pending'?await orderText(order):`Pedido ${order.id}\nSituação: ${{paid:'Aprovado; entrega em processamento',delivered:'Entregue',cancelled:'Cancelado'}[order.status]}`;if(['paid','delivered'].includes(order.status)){const unit=store.one('SELECT secret FROM stock WHERE order_id=?',order.id);if(unit)text+=`\n\nSua entrega: ${store.decrypt(unit.secret)}`;}await i.editReply({content:text.slice(0,2000),allowedMentions:safe});return;}
       if(action.startsWith('giveaway:')){const id=action.split(':')[1],g=store.one('SELECT * FROM giveaways WHERE id=?',id);if(!g||g.status!=='active'||Date.parse(JSON.parse(g.data).endsAt)<=Date.now())throw new AppError('Sorteio encerrado.');const data=JSON.parse(g.data);if(data.requiredRoleId&&!i.member.roles.cache.has(data.requiredRoleId))throw new AppError('Você não possui o cargo necessário.');store.run('INSERT OR IGNORE INTO entries VALUES(?,?)',id,i.user.id);await i.editReply('Participação confirmada. Boa sorte!');return;}
@@ -265,7 +294,7 @@ export function createBot(store,env=process.env){
     try{const guild=requireGuild();const commands=[{name:'ajuda',description:'Conheça o Studio K'},{name:'loja',description:'Veja produtos e serviços disponíveis'},{name:'pedido',description:'Consulte um pedido e recupere sua entrega',options:[{name:'id',description:'Código completo do pedido; deixe vazio para o mais recente',type:3,required:false}]},{name:'ticket',description:'Abra um atendimento privado'},{name:'verificar',description:'Aceite as regras e receba acesso'},{name:'notificacoes',description:'Ative ou desative mensagens privadas opcionais'}];await new REST({version:'10'}).setToken(env.DISCORD_TOKEN).put(Routes.applicationGuildCommands(env.DISCORD_CLIENT_ID||client.user.id,guild.id),{body:commands});const s=store.settings().brand;client.user.setPresence({status:s.status,activities:s.activity?[{name:s.activity,type:ActivityType[s.activityType]}]:[]});store.log('conexão',`Conectado ao servidor ${guild.name}.`);error='';await tick();}catch(e){error=e.message;store.log('erro',e.message);}
   });
   const timer=setInterval(()=>void tick(),30000);timer.unref();
-  return {status,client,channel,member,assignRole,sendMessage,openTicket,closeTicket,publishPanel,publishProduct,createGiveaway,createEvent,applyBrand,makeBackup,tick,
+  return {status,client,channel,member,assignRole,verifyOAuthUser,sendMessage,openTicket,closeTicket,publishPanel,publishProduct,createGiveaway,createEvent,applyBrand,makeBackup,tick,
     async metadata(){const g=requireGuild();await g.channels.fetch();await g.roles.fetch();return{channels:[...g.channels.cache.values()].filter(Boolean).map(c=>({id:c.id,name:c.name,type:c.type})),roles:[...g.roles.cache.values()].filter(r=>!r.managed&&r.id!==g.id).map(r=>({id:r.id,name:r.name}))};},
     async start(){if(!env.DISCORD_TOKEN)return;if(!env.DISCORD_GUILD_ID){error='Configure DISCORD_GUILD_ID.';return;}try{await client.login(env.DISCORD_TOKEN);}catch(e){error='Não foi possível conectar. Confira token, servidor e intents no Discord Developer Portal.';console.error(`Discord: ${error} ${e?.message||''}`.trim());store.log('erro',error);}},
     async stop(){clearInterval(timer);await client.destroy();}
