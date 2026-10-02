@@ -10,7 +10,7 @@ import { embedPayload } from '../server/discord.js';
 function fixture(t){const dir=mkdtempSync(join(tmpdir(),'studio-k-test-')),s=openStore(dir);t.after(()=>{s.db.close();rmSync(dir,{recursive:true,force:true});});return s;}
 function product(s,type='digital'){const id=randomUUID(),p=productSchema.parse({name:'Produto teste',priceCents:2990,type});s.run('INSERT INTO products VALUES(?,?,?)',id,JSON.stringify(p),s.now());return id;}
 function stock(s,id,secret='CHAVE-UNICA'){s.run('INSERT INTO stock(id,product_id,secret) VALUES(?,?,?)',randomUUID(),id,s.encrypt(secret));}
-test('defaults are complete and validate',()=>{assert.equal(defaults.brand.name,'Studio K');assert.equal(defaults.welcome.embed.color,'#995cff');assert.equal(defaults.messageStyles.ticketPanel.embed.title,'Como podemos ajudar?');assert.equal(defaults.messageStyles.ticketStaffPanel.embed.title,'Painel da equipe');assert.equal(defaults.messageStyles.orderDelivery.embed.title,'Compra aprovada · {product}');assert.equal(defaults.messageStyles.feedback.embed.title,'💜 Novo feedback · {source}');assert.equal(defaults.voicePresence.enabled,false);assert.deepEqual(settingsSchema.parse(defaults),defaults);});
+test('defaults are complete and validate',()=>{assert.equal(defaults.brand.name,'Studio K');assert.equal(defaults.welcome.embed.color,'#995cff');assert.equal(defaults.messageStyles.ticketPanel.embed.title,'Como podemos ajudar?');assert.equal(defaults.messageStyles.ticketStaffPanel.embed.title,'Painel da equipe');assert.equal(defaults.messageStyles.orderDelivery.embed.title,'Compra aprovada · {product}');assert.equal(defaults.messageStyles.feedback.embed.title,'💜 Novo feedback · {source}');assert.equal(defaults.voicePresence.enabled,false);assert.equal(defaults.translator.enabled,false);assert.deepEqual(settingsSchema.parse(defaults),defaults);});
 test('reserve last unit atomically, cancellation releases stock',t=>{const s=fixture(t),pid=product(s);stock(s,pid);const a=s.createOrder(pid,'123456789012345678');assert.equal(s.products()[0].stock,0);assert.throws(()=>s.createOrder(pid,'223456789012345678'),/sem estoque/);s.cancelOrder(a.id);assert.equal(s.products()[0].stock,1);assert.ok(s.createOrder(pid,'223456789012345678'));});
 test('approval is idempotent and records the real approval time',t=>{const s=fixture(t),pid=product(s);stock(s,pid);const a=s.createOrder(pid,'123456789012345678');const approved=s.approveOrder(a.id,'admin');assert.ok(approved.approved_at);assert.ok(Date.parse(approved.approved_at)>=Date.parse(a.created));s.approveOrder(a.id,'admin');assert.equal(s.one("SELECT COUNT(*) AS n FROM logs WHERE type='pagamento'").n,1);assert.equal(s.one('SELECT COUNT(*) AS n FROM stock WHERE order_id=?',a.id).n,1);assert.throws(()=>s.cancelOrder(a.id),/pendentes/);});
 test('expired and cancelled orders cannot be approved',t=>{const s=fixture(t),pid=product(s,'service'),o=s.createOrder(pid,'123456789012345678');s.run('UPDATE orders SET expires=? WHERE id=?','2020-01-01T00:00:00.000Z',o.id);assert.throws(()=>s.approveOrder(o.id,'admin'),/expirou/);s.cancelOrder(o.id);assert.throws(()=>s.approveOrder(o.id,'admin'),/encerrado/);});
@@ -31,4 +31,12 @@ test('database allows two simultaneous open tickets per user and feedback source
   const source=randomUUID(),id=randomUUID();
   s.run('INSERT INTO feedback_requests(id,type,source_id,user_id,status,meta,created) VALUES(?,?,?,?,?,?,?)',id,'ticket',source,uid,'pending','{}',now);
   assert.throws(()=>s.run('INSERT INTO feedback_requests(id,type,source_id,user_id,status,meta,created) VALUES(?,?,?,?,?,?,?)',randomUUID(),'ticket',source,uid,'pending','{}',now));
+});
+
+test('member language preference persists',t=>{
+  const s=fixture(t),uid='123456789012345678';
+  s.run('INSERT INTO user_preferences(user_id,language,updated_at) VALUES(?,?,?)',uid,'en',s.now());
+  assert.equal(s.one('SELECT language FROM user_preferences WHERE user_id=?',uid).language,'en');
+  s.run('UPDATE user_preferences SET language=?,updated_at=? WHERE user_id=?','es',s.now(),uid);
+  assert.equal(s.one('SELECT language FROM user_preferences WHERE user_id=?',uid).language,'es');
 });
