@@ -50,6 +50,7 @@ const money=n=>(n/100).toLocaleString('pt-BR',{style:'currency',currency:'BRL'})
 const channelSlug=value=>String(value||'ticket').normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/^-+|-+$/g,'').slice(0,80)||'ticket';
 export const TICKET_OPEN_LIMIT=2;
 export const canOpenTicket=openCount=>Number(openCount)<TICKET_OPEN_LIMIT;
+export const feedbackStars=rating=>'⭐'.repeat(Math.max(1,Math.min(5,Number(rating)||1)))+'☆'.repeat(5-Math.max(1,Math.min(5,Number(rating)||1)));
 export function youtubeVideoId(value=''){
   const raw=String(value).trim();
   if(/^[A-Za-z0-9_-]{11}$/.test(raw))return raw;
@@ -83,6 +84,36 @@ export function createBot(store,env=process.env){
     const m=await member(userId);
     return {user:`<@${userId}>`,username:m.displayName||m.user.globalName||m.user.username||userId,server:guild.name};
   };
+  function createFeedbackRequest(type,sourceId,userId,meta={}){
+    const cfg=store.settings().feedback;
+    if(!cfg?.enabled||!cfg.channelId||(type==='ticket'&&!cfg.tickets)||(type==='order'&&!cfg.orders))return null;
+    const existing=store.one('SELECT * FROM feedback_requests WHERE type=? AND source_id=?',type,sourceId);
+    if(existing)return existing;
+    const id=randomUUID();
+    store.run('INSERT INTO feedback_requests(id,type,source_id,user_id,status,meta,created) VALUES(?,?,?,?,?,?,?)',id,type,sourceId,userId,'pending',JSON.stringify(meta),store.now());
+    return store.one('SELECT * FROM feedback_requests WHERE id=?',id);
+  }
+  async function publishFeedback(request,rating,comment,user){
+    const settings=store.settings(),cfg=settings.feedback;
+    if(!cfg?.enabled||!cfg.channelId)throw new AppError('O canal de feedback ainda não foi configurado.',503);
+    const meta=JSON.parse(request.meta||'{}'),source=request.type==='ticket'?'Atendimento':'Compra';
+    const reference=request.type==='ticket'
+      ? (meta.ticket||request.source_id.slice(0,8))
+      : (meta.product?`${meta.product} · #${request.source_id.slice(0,8)}`:`#${request.source_id.slice(0,8)}`);
+    const vars={
+      user:`<@${request.user_id}>`,
+      username:user.globalName||user.username||request.user_id,
+      source,
+      reference,
+      rating:String(rating),
+      stars:feedbackStars(rating),
+      comment
+    };
+    const payload=stylePayload(settings.messageStyles.feedback,vars,env.DISCORD_GUILD_ID);
+    const message=await(await channel(cfg.channelId)).send({...payload,allowedMentions:{parse:[],users:[],roles:[],repliedUser:false}});
+    await audit('feedback',`${source} avaliado com ${rating}/5 por ${request.user_id}.`,request.user_id);
+    return message;
+  }
   const snowflakeCreatedAt=userId=>Number((BigInt(userId)>>22n)+1420070400000n);
   const googleConfigured=()=>!!(env.GOOGLE_CLIENT_ID&&env.GOOGLE_CLIENT_SECRET);
   async function youtubeAccessToken(userId){
@@ -376,9 +407,11 @@ export function createBot(store,env=process.env){
     const transcriptUrl=`${publicBase}/api/public/tickets/${id}/transcript/${shareToken}`;
     let dmSent=false;
     try{
-      const user=await member(ticket.user_id),style=store.settings().messageStyles.ticketClose;
+      const user=await member(ticket.user_id),settings=store.settings(),style=settings.messageStyles.ticketClose;
       const closeVars={user:`<@${ticket.user_id}>`,username:user.displayName||user.user.globalName||user.user.username||ticket.user_id,server:c.guild.name,ticket:ticketName,transcript:transcriptUrl,category:ticket.category};
-      const closePayload=stylePayload(style,closeVars,env.DISCORD_GUILD_ID);await user.send({...closePayload,components:[...(closePayload.components||[]),row(linkButton('Abrir transcript',transcriptUrl))],allowedMentions:mentionPolicy(closePayload,[ticket.user_id])});
+      const closePayload=stylePayload(style,closeVars,env.DISCORD_GUILD_ID),feedback=createFeedbackRequest('ticket',id,ticket.user_id,{ticket:ticketName,category:ticket.category});
+      const finalRow=feedback?row(linkButton('Abrir transcript',transcriptUrl),button('Dar feedback',`feedback:${feedback.id}`,2)):row(linkButton('Abrir transcript',transcriptUrl));
+      await user.send({...closePayload,components:[...(closePayload.components||[]).slice(0,4),finalRow],allowedMentions:mentionPolicy(closePayload,[ticket.user_id])});
       dmSent=true;
     }catch(e){
       store.log('aviso',`Ticket ${ticketName} encerrado, mas a DM com o transcript não pôde ser entregue: ${String(e.message).slice(0,300)}`,actor);
@@ -457,9 +490,12 @@ export function createBot(store,env=process.env){
         let delivery;
         if(p.type==='digital'){const unit=store.one('SELECT secret FROM stock WHERE order_id=?',order.id);if(!unit)throw new Error('Estoque reservado não encontrado.');delivery=store.decrypt(unit.secret);}
         else{const ticket=await openTicket(order.user_id,`Serviço: ${p.name}`);delivery=`Seu atendimento: <#${ticket.channel_id}>`;}
-        const user=await member(order.user_id),style=store.settings().messageStyles.orderDelivery;
+        const user=await member(order.user_id),settings=store.settings(),style=settings.messageStyles.orderDelivery;
         const payload=stylePayload(style,{product:p.name,order:order.id,delivery,instructions:p.delivery||''});
-        await user.send({...payload,allowedMentions:mentionPolicy(payload),nonce:createHash('sha256').update(order.id).digest('hex').slice(0,24),enforceNonce:true});
+        const feedback=p.type==='digital'?createFeedbackRequest('order',order.id,order.user_id,{product:p.name}):null;
+        const components=[...(payload.components||[])].slice(0,4);
+        if(feedback)components.push(row(button('Dar feedback',`feedback:${feedback.id}`,2)));
+        await user.send({...payload,components,allowedMentions:mentionPolicy(payload),nonce:createHash('sha256').update(order.id).digest('hex').slice(0,24),enforceNonce:true});
         store.run('UPDATE orders SET delivery_done=1 WHERE id=?',order.id);
       }
       store.run("UPDATE orders SET status='delivered',error=NULL WHERE id=?",order.id);await audit('entrega',`Pedido ${order.id.slice(0,8)} entregue.`);
@@ -482,7 +518,7 @@ export function createBot(store,env=process.env){
       revenue:money(Number(stats.revenue||0)),
       periodStart:`<t:${Math.floor(start.getTime()/1000)}:d>`,
       periodEnd:`<t:${Math.floor((end.getTime()-1000)/1000)}:d>`,
-      updated:`<t:${Math.floor(Date.now()/1000)}:R>`
+      updated:updatedRelative()
     };
     const payload=stylePayload(settings.messageStyles.salesLive,vars,env.DISCORD_GUILD_ID),c=await channel(cfg.channelId);
     let message=null;
