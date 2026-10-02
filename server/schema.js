@@ -47,7 +47,8 @@ const messageStylesSchema = z.object({
   operationsLive: messageStyle('', { title:'🟢 Status operacional · Studio K', description:'Bot: **{botStatus}**\nLoja: **{storeStatus}**\nTickets: **{ticketsStatus}**\nTickets abertos: **{openTickets}**\nPedidos pendentes: **{pendingOrders}**', color:'#995cff', footer:'Atualizado {updated}', timestamp:true }),
   inviteRankingLive: messageStyle('', { title:'🏆 Ranking de convites · {month}', description:'{ranking}', color:'#995cff', footer:'Somente convites válidos rastreados pelo Studio K · Atualizado {updated}', timestamp:true }),
   logs: messageStyle('', { title:'Studio K · {type}', description:'{detail}', color:'#995cff', footer:'Responsável: {actor}', timestamp:true }),
-  orderDelivery: messageStyle('', { title:'Compra aprovada · {product}', description:'Pedido {order}\n\n{delivery}\n\n{instructions}', color:'#995cff' })
+  orderDelivery: messageStyle('', { title:'Compra aprovada · {product}', description:'Pedido {order}\n\n{delivery}\n\n{instructions}', color:'#995cff' }),
+  feedback: messageStyle('', { title:'💜 Novo feedback · {source}', description:'{stars} **{rating}/5**\n\n{comment}', color:'#995cff', fields:[{name:'Cliente',value:'{user}',inline:true},{name:'Referência',value:'{reference}',inline:true}], footer:'Studio K · Feedback verificado', timestamp:true })
 }).prefault({});
 export const settingsSchema = z.object({
   messageStyles: messageStylesSchema,
@@ -62,6 +63,7 @@ export const settingsSchema = z.object({
   giveawaysLive: z.object({ enabled:z.boolean().default(false), channelId:optionalId }).prefault({}),
   operationsLive: z.object({ enabled:z.boolean().default(false), channelId:optionalId, storeOpen:z.boolean().default(true), ticketsOpen:z.boolean().default(true) }).prefault({}),
   inviteRankingLive: z.object({ enabled:z.boolean().default(false), channelId:optionalId, top:z.number().int().min(3).max(20).default(10) }).prefault({}),
+  feedback: z.object({ enabled:z.boolean().default(true), channelId:optionalId, tickets:z.boolean().default(true), orders:z.boolean().default(true) }).prefault({}),
   logs: z.object({ channelId: optionalId, members: z.boolean().default(true), messages: z.boolean().default(true), moderation: z.boolean().default(true), channels: z.boolean().default(true), roles: z.boolean().default(true) }).prefault({}),
   backups: z.object({ enabled: z.boolean().default(true), intervalHours: z.number().int().min(1).max(720).default(24), retain: z.number().int().min(2).max(100).default(14) }).prefault({})
 });
