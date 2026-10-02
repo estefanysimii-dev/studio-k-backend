@@ -203,7 +203,17 @@ app.get('/api/state',(req,res)=>{
   res.json({demo,status:bot.status(),oauth:{configured:!!(process.env.DISCORD_CLIENT_ID&&process.env.DISCORD_CLIENT_SECRET),redirectUri:oauthRedirect},integrations:{youtube:{configured:!!(process.env.GOOGLE_CLIENT_ID&&process.env.GOOGLE_CLIENT_SECRET),redirectUri:googleRedirect}},settings,products,orders,summary,tickets:store.all('SELECT id,user_id,channel_id,category,status,created,updated,claimed_by FROM tickets ORDER BY created DESC LIMIT 200'),giveaways:store.all('SELECT * FROM giveaways ORDER BY created DESC LIMIT 100').map(g=>({...g,data:JSON.parse(g.data),entries:store.one('SELECT COUNT(*) AS n FROM entries WHERE giveaway_id=?',g.id).n,attempts:store.one('SELECT COUNT(*) AS n FROM giveaway_attempts WHERE giveaway_id=?',g.id).n,incomplete:store.one("SELECT COUNT(*) AS n FROM giveaway_attempts WHERE giveaway_id=? AND status='incomplete'",g.id).n})),events:store.all('SELECT * FROM events ORDER BY created DESC LIMIT 100').map(e=>({...e,data:JSON.parse(e.data)})),logs:store.all('SELECT * FROM logs ORDER BY id DESC LIMIT 100'),feedbacks:store.all("SELECT id,type,source_id,user_id,status,rating,comment,meta,created,submitted_at FROM feedback_requests WHERE status='submitted' ORDER BY submitted_at DESC LIMIT 100").map(f=>({...f,meta:JSON.parse(f.meta||'{}')})),templates:store.all('SELECT * FROM templates ORDER BY name').map(t=>({...t,data:JSON.parse(t.data)})),lastBackup:store.get('lastBackup'),backups:readdirSync(join(store.dir,'backups')).filter(f=>f.endsWith('.json')).sort().reverse()});
 });
 app.get('/api/discord/metadata',async(req,res)=>res.json(await bot.metadata()));
-app.put('/api/settings',async(req,res)=>{const settings=settingsSchema.parse(req.body);store.set('settings',settings);store.log('configuração','Configurações atualizadas.','administrador');if(bot.status().connected){await bot.updateLivePanels(true);await bot.applyVoicePresence();}res.json({ok:true});});
+app.put('/api/settings',(req,res)=>{
+  const settings=settingsSchema.parse(req.body);
+  store.set('settings',settings);
+  store.log('configuração','Configurações atualizadas.','administrador');
+  res.json({ok:true});
+  if(bot.status().connected){
+    void Promise.allSettled([bot.updateLivePanels(true),bot.applyVoicePresence()]).then(results=>{
+      for(const result of results)if(result.status==='rejected')store.log('aviso',`Sincronização após salvar configurações: ${String(result.reason?.message||result.reason).slice(0,400)}`);
+    });
+  }
+});
 app.post('/api/brand/apply',async(req,res)=>{await bot.applyBrand();res.json({ok:true});});
 app.post('/api/messages',async(req,res)=>res.json(await bot.sendMessage(messageSchema.parse(req.body))));
 app.post('/api/templates',(req,res)=>{const body=z.object({name:z.string().min(1).max(80),data:z.unknown()}).parse(req.body);const data=templateSchema.parse(body.data);const tid=randomUUID();store.run('INSERT INTO templates VALUES(?,?,?)',tid,body.name,JSON.stringify(data));res.json({id:tid});});
@@ -247,6 +257,7 @@ app.post('/api/backups',async(req,res)=>res.json({name:await bot.makeBackup()}))
 const backupPath=name=>{if(!/^studio-k-[0-9TZ-]+\.(json|sqlite)$/.test(name))throw new AppError('Arquivo inválido.');if(!readdirSync(join(store.dir,'backups')).includes(name))throw new AppError('Backup não encontrado.',404);return join(store.dir,'backups',name);};
 app.get('/api/backups/:name',(req,res)=>res.download(backupPath(req.params.name)));
 app.post('/api/backups/:name/restore',(req,res)=>{if(!req.params.name.endsWith('.json')||req.body.confirmed!==true)throw new AppError('Confirme a restauração das configurações.');const backup=JSON.parse(readFileSync(backupPath(req.params.name),'utf8'));store.set('settings',settingsSchema.parse(backup.settings));store.log('backup','Configurações do painel restauradas.','administrador');res.json({ok:true});});
+app.use('/api',(req,res,next)=>{res.setHeader('Cache-Control','no-store');next();});
 app.use('/api',(req,res)=>res.status(404).json({error:'Recurso não encontrado.'}));
 app.use(express.static(join(root,'public'),{index:'index.html'}));
 app.use((error,req,res,next)=>{if(res.headersSent)return next(error);if(error instanceof z.ZodError)return res.status(400).json({error:error.issues.map(i=>`${i.path.join('.')}: ${i.message}`).join('\n')});if(error instanceof AppError)return res.status(error.status).json({error:error.message});store.log('erro',`${req.method} ${req.path}: ${String(error.message).slice(0,500)}`);res.status(500).json({error:'A ação não foi concluída. Confira os registros e as permissões do bot.'});});
