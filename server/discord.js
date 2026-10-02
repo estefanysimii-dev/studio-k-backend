@@ -48,9 +48,32 @@ const mentionPolicy=(payload={},extraUsers=[],extraRoles=[])=>{
 const safe={parse:[]};
 const money=n=>(n/100).toLocaleString('pt-BR',{style:'currency',currency:'BRL'});
 const channelSlug=value=>String(value||'ticket').normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/^-+|-+$/g,'').slice(0,80)||'ticket';
+export function youtubeVideoId(value=''){
+  const raw=String(value).trim();
+  if(/^[A-Za-z0-9_-]{11}$/.test(raw))return raw;
+  try{
+    const u=new URL(raw);
+    if(u.hostname==='youtu.be')return u.pathname.split('/').filter(Boolean)[0]||'';
+    if(u.hostname.endsWith('youtube.com')){
+      if(u.searchParams.get('v'))return u.searchParams.get('v');
+      const parts=u.pathname.split('/').filter(Boolean);
+      if(['shorts','embed','live'].includes(parts[0]))return parts[1]||'';
+    }
+  }catch{}
+  return '';
+}
+export function youtubeChannelRef(value=''){
+  const raw=String(value).trim();
+  if(/^UC[A-Za-z0-9_-]{20,}$/.test(raw))return{id:raw,handle:''};
+  const direct=raw.match(/youtube\.com\/channel\/(UC[A-Za-z0-9_-]+)/i);if(direct)return{id:direct[1],handle:''};
+  const handle=raw.match(/(?:youtube\.com\/)?@([A-Za-z0-9._-]+)/i);if(handle)return{id:'',handle:'@'+handle[1]};
+  if(raw.startsWith('@'))return{id:'',handle:raw};
+  return{id:'',handle:''};
+}
+
 export function createBot(store,env=process.env){
-  const client=new Client({intents:[GatewayIntentBits.Guilds,GatewayIntentBits.GuildMembers,GatewayIntentBits.GuildMessages,GatewayIntentBits.MessageContent,GatewayIntentBits.GuildModeration],partials:[Partials.Message,Partials.Channel]});
-  let error='',busy=false,backupBusy=false;
+  const client=new Client({intents:[GatewayIntentBits.Guilds,GatewayIntentBits.GuildMembers,GatewayIntentBits.GuildMessages,GatewayIntentBits.MessageContent,GatewayIntentBits.GuildModeration,GatewayIntentBits.GuildVoiceStates],partials:[Partials.Message,Partials.Channel]});
+  let error='',busy=false,backupBusy=false,inviteCache=new Map();
   const requireGuild=()=>{if(!client.isReady())throw new AppError('Conecte o bot ao Discord antes desta ação.',503);const guild=client.guilds.cache.get(env.DISCORD_GUILD_ID);if(!guild)throw new AppError('O bot não está no servidor configurado.',503);return guild;};
   const channel=async channelId=>{const c=await requireGuild().channels.fetch(channelId);if(!c?.isTextBased()||!('send' in c))throw new AppError('Escolha um canal de texto do servidor.');return c;};
   const member=async userId=>requireGuild().members.fetch(userId);
@@ -58,6 +81,169 @@ export function createBot(store,env=process.env){
     const m=await member(userId);
     return {user:`<@${userId}>`,username:m.displayName||m.user.globalName||m.user.username||userId,server:guild.name};
   };
+  const snowflakeCreatedAt=userId=>Number((BigInt(userId)>>22n)+1420070400000n);
+  const googleConfigured=()=>!!(env.GOOGLE_CLIENT_ID&&env.GOOGLE_CLIENT_SECRET);
+  async function youtubeAccessToken(userId){
+    if(!googleConfigured())throw new AppError('A integração com o YouTube ainda não foi configurada.',503);
+    const account=store.one('SELECT * FROM youtube_accounts WHERE user_id=?',userId);
+    if(!account)throw new AppError('Conecte sua conta do YouTube para verificar este requisito.',428);
+    const refreshToken=store.decrypt(account.refresh_secret);
+    const response=await fetch('https://oauth2.googleapis.com/token',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:new URLSearchParams({client_id:env.GOOGLE_CLIENT_ID,client_secret:env.GOOGLE_CLIENT_SECRET,refresh_token:refreshToken,grant_type:'refresh_token'})});
+    const data=await response.json().catch(()=>({}));
+    if(!response.ok||!data.access_token)throw new AppError('Não foi possível atualizar a autorização do YouTube. Conecte sua conta novamente.',428);
+    return data.access_token;
+  }
+  async function youtubeApi(userId,path,params={}){
+    const token=await youtubeAccessToken(userId),url=new URL(`https://www.googleapis.com/youtube/v3/${path}`);
+    for(const [key,value] of Object.entries(params))if(value!==undefined&&value!==null&&value!=='')url.searchParams.set(key,String(value));
+    const response=await fetch(url,{headers:{Authorization:`Bearer ${token}`}});
+    const data=await response.json().catch(()=>({}));
+    if(!response.ok)throw new AppError(data?.error?.message||'O YouTube não permitiu verificar este requisito.',502);
+    return data;
+  }
+  async function resolveYoutubeChannel(userId,value){
+    const ref=youtubeChannelRef(value);if(ref.id)return ref.id;
+    if(!ref.handle)throw new AppError('Canal do YouTube inválido no requisito.');
+    const data=await youtubeApi(userId,'channels',{part:'id',forHandle:ref.handle});
+    return data.items?.[0]?.id||'';
+  }
+  const requirementLabel=req=>({
+    verified:'Verificação Studio K',
+    role:'Cargo obrigatório',
+    accountAge:`Conta Discord com ${req.days} dia(s)`,
+    serverAge:`No servidor há ${req.days} dia(s)`,
+    invites:`Convidar ${req.count} pessoa(s)`,
+    youtubeSubscription:`Inscrição no YouTube: ${req.channel}`,
+    youtubeLike:`Like no vídeo: ${req.video}`,
+    reaction:'Reagir à mensagem indicada',
+    voiceMinutes:`${req.minutes} minuto(s) em call`,
+    manual:req.label
+  }[req.type]||req.type);
+  async function checkReaction(req,userId){
+    const c=await channel(req.channelId),message=await c.messages.fetch(req.messageId);
+    const customId=String(req.emoji).match(/<a?:[^:]+:(\d+)>/)?.[1]||(/^\d{17,20}$/.test(req.emoji)?req.emoji:'');
+    const reaction=[...message.reactions.cache.values()].find(r=>customId?r.emoji.id===customId:(r.emoji.name===req.emoji||r.emoji.toString()===req.emoji));
+    if(!reaction)return false;
+    let after;
+    for(let page=0;page<100;page++){
+      const users=await reaction.users.fetch({limit:100,...(after?{after}:{})});
+      if(users.has(userId))return true;
+      if(users.size<100)break;
+      after=users.last()?.id;
+    }
+    return false;
+  }
+  async function evaluateRequirement(giveaway,userId,req){
+    const m=await member(userId),label=requirementLabel(req);
+    try{
+      if(req.type==='verified'){
+        const ok=!!store.one('SELECT user_id FROM verifications WHERE user_id=?',userId);return{id:req.id,type:req.type,label,ok,detail:ok?'Verificação concluída.':'Conclua a verificação Studio K.'};
+      }
+      if(req.type==='role'){
+        const ok=m.roles.cache.has(req.roleId);return{id:req.id,type:req.type,label,ok,detail:ok?'Cargo encontrado.':'Você ainda não possui o cargo exigido.'};
+      }
+      if(req.type==='accountAge'){
+        const days=Math.floor((Date.now()-m.user.createdTimestamp)/86400000),ok=days>=req.days;return{id:req.id,type:req.type,label,ok,detail:`${days}/${req.days} dia(s).`};
+      }
+      if(req.type==='serverAge'){
+        const days=Math.floor((Date.now()-(m.joinedTimestamp||Date.now()))/86400000),ok=days>=req.days;return{id:req.id,type:req.type,label,ok,detail:`${days}/${req.days} dia(s) no servidor.`};
+      }
+      if(req.type==='invites'){
+        const rows=store.all('SELECT * FROM invite_joins WHERE giveaway_id=? AND inviter_user_id=? AND left_at IS NULL',giveaway.id,userId);let valid=0;
+        for(const row of rows){
+          if(req.minStayHours&&Date.now()-Date.parse(row.joined_at)<req.minStayHours*3600000)continue;
+          if(req.minAccountDays&&Date.now()-snowflakeCreatedAt(row.joined_user_id)<req.minAccountDays*86400000)continue;
+          if(req.requireVerified&&!store.one('SELECT user_id FROM verifications WHERE user_id=?',row.joined_user_id))continue;
+          valid++;
+        }
+        return{id:req.id,type:req.type,label,ok:valid>=req.count,detail:`${valid}/${req.count} convite(s) válido(s).`,invites:valid};
+      }
+      if(req.type==='youtubeSubscription'){
+        if(!store.one('SELECT user_id FROM youtube_accounts WHERE user_id=?',userId))return{id:req.id,type:req.type,label,ok:false,needsYoutube:true,detail:'Conecte sua conta do YouTube.'};
+        const channelId=await resolveYoutubeChannel(userId,req.channel);if(!channelId)return{id:req.id,type:req.type,label,ok:false,detail:'Canal do YouTube não encontrado.'};
+        const yt=await youtubeApi(userId,'subscriptions',{part:'id',mine:'true',forChannelId:channelId,maxResults:1});
+        const ok=!!yt.items?.length;return{id:req.id,type:req.type,label,ok,detail:ok?'Inscrição confirmada.':'A inscrição não foi encontrada.'};
+      }
+      if(req.type==='youtubeLike'){
+        if(!store.one('SELECT user_id FROM youtube_accounts WHERE user_id=?',userId))return{id:req.id,type:req.type,label,ok:false,needsYoutube:true,detail:'Conecte sua conta do YouTube.'};
+        const videoId=youtubeVideoId(req.video);if(!videoId)return{id:req.id,type:req.type,label,ok:false,detail:'Vídeo do YouTube inválido.'};
+        const yt=await youtubeApi(userId,'videos/getRating',{id:videoId});
+        const rating=yt.items?.[0]?.rating||'none',ok=rating==='like';return{id:req.id,type:req.type,label,ok,detail:ok?'Like confirmado.':'O vídeo ainda não está marcado com like.'};
+      }
+      if(req.type==='reaction'){
+        const ok=await checkReaction(req,userId);return{id:req.id,type:req.type,label,ok,detail:ok?'Reação encontrada.':'A reação exigida ainda não foi encontrada.'};
+      }
+      if(req.type==='voiceMinutes'){
+        const row=store.one('SELECT * FROM giveaway_voice WHERE giveaway_id=? AND user_id=?',giveaway.id,userId);let seconds=Number(row?.seconds||0);
+        if(row?.joined_at)seconds+=Math.max(0,Math.floor((Date.now()-Date.parse(row.joined_at))/1000));
+        const minutes=Math.floor(seconds/60),ok=seconds>=req.minutes*60;return{id:req.id,type:req.type,label,ok,detail:`${minutes}/${req.minutes} minuto(s) em call.`};
+      }
+      if(req.type==='manual'){
+        const ok=!!store.one('SELECT 1 FROM giveaway_manual WHERE giveaway_id=? AND user_id=? AND requirement_id=?',giveaway.id,userId,req.id);return{id:req.id,type:req.type,label,ok,manual:true,detail:ok?'Aprovado pela equipe.':'Aguardando aprovação da equipe.'};
+      }
+      return{id:req.id,type:req.type,label,ok:false,detail:'Requisito desconhecido.'};
+    }catch(e){
+      return{id:req.id,type:req.type,label,ok:false,error:true,needsYoutube:e?.status===428,detail:String(e.message||e).slice(0,300)};
+    }
+  }
+  async function evaluateGiveaway(giveawayId,userId,{enter=true,record=true}={}){
+    const giveaway=store.one('SELECT * FROM giveaways WHERE id=?',giveawayId);if(!giveaway)throw new AppError('Sorteio não encontrado.',404);
+    const data=JSON.parse(giveaway.data),requirements=[...(data.requirements||[])];
+    if(data.requiredRoleId&&!requirements.some(r=>r.type==='role'&&r.roleId===data.requiredRoleId))requirements.unshift({id:'legacy-role',type:'role',roleId:data.requiredRoleId});
+    const results=[];for(const req of requirements)results.push(await evaluateRequirement(giveaway,userId,req));
+    const ok=results.every(r=>r.ok);
+    if(record)store.run('INSERT INTO giveaway_attempts(giveaway_id,user_id,status,detail,updated) VALUES(?,?,?,?,?) ON CONFLICT(giveaway_id,user_id) DO UPDATE SET status=excluded.status,detail=excluded.detail,updated=excluded.updated',giveawayId,userId,ok?'eligible':'incomplete',JSON.stringify(results),store.now());
+    if(ok&&enter)store.run('INSERT OR IGNORE INTO entries VALUES(?,?)',giveawayId,userId);
+    return{ok,results,data,giveaway};
+  }
+  async function createGoogleConnectUrl(giveawayId,userId){
+    if(!googleConfigured())return'';
+    const raw=randomBytes(32).toString('base64url'),digest=createHash('sha256').update(raw).digest('hex');
+    store.set(`google-link:${digest}`,{giveawayId,userId,expires:Date.now()+10*60000});
+    return `${String(env.PUBLIC_URL||'').replace(/\/$/,'')}/api/oauth/google/start?t=${encodeURIComponent(raw)}`;
+  }
+  async function giveawayInviteUrl(giveawayId,userId){
+    const existing=store.one('SELECT code FROM giveaway_invites WHERE giveaway_id=? AND user_id=?',giveawayId,userId);if(existing)return`https://discord.gg/${existing.code}`;
+    const giveaway=store.one('SELECT * FROM giveaways WHERE id=?',giveawayId);if(!giveaway)throw new AppError('Sorteio não encontrado.',404);
+    const data=JSON.parse(giveaway.data),c=await channel(data.channelId);
+    if(typeof c.createInvite!=='function')throw new AppError('O canal do sorteio não permite criar convites.');
+    const invite=await c.createInvite({maxAge:0,maxUses:0,unique:true,reason:`Studio K: convite do sorteio para ${userId}`});
+    store.run('INSERT INTO giveaway_invites(giveaway_id,user_id,code,created) VALUES(?,?,?,?)',giveawayId,userId,invite.code,store.now());
+    inviteCache.set(invite.code,invite.uses||0);return invite.url;
+  }
+  async function refreshInviteCache(guild=requireGuild()){
+    try{const invites=await guild.invites.fetch();inviteCache=new Map([...invites.values()].map(inv=>[inv.code,inv.uses||0]));}
+    catch(e){store.log('aviso',`Não foi possível ler convites do servidor: ${String(e.message).slice(0,300)}`);}
+  }
+  async function attributeInvite(memberJoined){
+    try{
+      const current=await memberJoined.guild.invites.fetch(),owned=[];
+      for(const inv of current.values()){
+        const before=inviteCache.get(inv.code)||0;
+        if((inv.uses||0)>before){
+          const owner=store.one('SELECT giveaway_id,user_id FROM giveaway_invites WHERE code=?',inv.code);
+          if(owner)owned.push({inv,owner});
+        }
+      }
+      inviteCache=new Map([...current.values()].map(inv=>[inv.code,inv.uses||0]));
+      if(owned.length===1){
+        const {inv,owner}=owned[0];
+        store.run('INSERT INTO invite_joins(giveaway_id,joined_user_id,inviter_user_id,code,joined_at,left_at) VALUES(?,?,?,?,?,NULL) ON CONFLICT(giveaway_id,joined_user_id) DO UPDATE SET inviter_user_id=excluded.inviter_user_id,code=excluded.code,joined_at=excluded.joined_at,left_at=NULL',owner.giveaway_id,memberJoined.id,owner.user_id,inv.code,store.now());
+      }
+    }catch(e){store.log('aviso',`Não foi possível atribuir convite de ${memberJoined.id}: ${String(e.message).slice(0,300)}`);}
+  }
+  function stopVoiceForUser(userId,at=Date.now()){
+    for(const row of store.all('SELECT * FROM giveaway_voice WHERE user_id=? AND joined_at IS NOT NULL',userId)){
+      const seconds=Math.max(0,Math.floor((at-Date.parse(row.joined_at))/1000));
+      store.run('UPDATE giveaway_voice SET seconds=seconds+?,joined_at=NULL WHERE giveaway_id=? AND user_id=?',seconds,row.giveaway_id,userId);
+    }
+  }
+  function startVoiceForUser(userId,at=store.now()){
+    for(const g of store.all("SELECT id,data FROM giveaways WHERE status='active'")){
+      const data=JSON.parse(g.data);if(!(data.requirements||[]).some(r=>r.type==='voiceMinutes'))continue;
+      store.run('INSERT INTO giveaway_voice(giveaway_id,user_id,seconds,joined_at) VALUES(?,?,0,?) ON CONFLICT(giveaway_id,user_id) DO UPDATE SET joined_at=COALESCE(giveaway_voice.joined_at,excluded.joined_at)',g.id,userId,at);
+    }
+  }
   const status=()=>({connected:client.isReady()&&client.guilds.cache.has(env.DISCORD_GUILD_ID),configured:!!env.DISCORD_TOKEN,name:client.user?.username||'Studio K',guild:client.guilds.cache.get(env.DISCORD_GUILD_ID)?.name||null,members:client.guilds.cache.get(env.DISCORD_GUILD_ID)?.memberCount||0,latency:client.ws.ping,error});
   async function audit(type,detail,actor='Discord'){
     store.log(type,detail,actor);const cid=store.settings().logs.channelId;
