@@ -634,7 +634,7 @@ ${normalized.previewAfter}
     try{
       const user=await member(ticket.user_id),settings=store.settings(),style=settings.messageStyles.ticketClose;
       const closeVars={user:`<@${ticket.user_id}>`,username:user.displayName||user.user.globalName||user.user.username||ticket.user_id,server:c.guild.name,ticket:ticketName,transcript:transcriptUrl,category:ticket.category};
-      const closePayload=styledPayload(style,closeVars,env.DISCORD_GUILD_ID),feedback=createFeedbackRequest('ticket',id,ticket.user_id,{ticket:ticketName,category:ticket.category});
+      const closePayload=styledPayload(style,closeVars,env.DISCORD_GUILD_ID),feedback=createFeedbackRequest('ticket',id,ticket.user_id,{ticket:ticketName,category:ticket.category,staffId:ticket.claimed_by||actor||''});
       const reopenButton=store.settings().tickets.allowReopen?button('Reabrir atendimento',`reopen:${id}`,2):null;
       const finalButtons=[linkButton('Abrir transcript',transcriptUrl),...(feedback?[button('Dar feedback',`feedback:${feedback.id}`,2)]:[]),...(reopenButton?[reopenButton]:[])];
       const finalRow=row(...finalButtons);
@@ -1008,8 +1008,11 @@ ${normalized.previewAfter}
         if(request.status==='submitted')throw new AppError('Você já enviou seu feedback.');
         if(!Number.isInteger(rating)||rating<1||rating>5)throw new AppError('Nota inválida.');
         const modal=new ModalBuilder().setCustomId(`feedback-submit:${id}:${rating}`).setTitle(`Feedback · ${rating} estrela${rating===1?'':'s'}`);
-        const input=new TextInputBuilder().setCustomId('feedback-comment').setLabel('Conte como foi sua experiência').setStyle(TextInputStyle.Paragraph).setRequired(true).setMinLength(3).setMaxLength(1500).setPlaceholder('Escreva seu feedback sobre o atendimento ou compra.');
-        modal.addComponents(new ActionRowBuilder().addComponents(input));
+        const service=new TextInputBuilder().setCustomId('feedback-service').setLabel('Atendimento (1 a 5)').setStyle(TextInputStyle.Short).setRequired(true).setMaxLength(1).setPlaceholder('5');
+        const speed=new TextInputBuilder().setCustomId('feedback-speed').setLabel('Rapidez (1 a 5)').setStyle(TextInputStyle.Short).setRequired(true).setMaxLength(1).setPlaceholder('5');
+        const resolution=new TextInputBuilder().setCustomId('feedback-resolution').setLabel('Resolução (1 a 5)').setStyle(TextInputStyle.Short).setRequired(true).setMaxLength(1).setPlaceholder('5');
+        const input=new TextInputBuilder().setCustomId('feedback-comment').setLabel('Conte como foi sua experiência').setStyle(TextInputStyle.Paragraph).setRequired(true).setMinLength(3).setMaxLength(1200).setPlaceholder('Escreva seu feedback sobre o atendimento ou compra.');
+        modal.addComponents(new ActionRowBuilder().addComponents(service),new ActionRowBuilder().addComponents(speed),new ActionRowBuilder().addComponents(resolution),new ActionRowBuilder().addComponents(input));
         await i.showModal(modal);
       }catch(e){await localizedReply(i,{content:e instanceof AppError?e.message:'Não foi possível abrir o formulário.'}).catch(()=>{});}
       return;
@@ -1024,11 +1027,15 @@ ${normalized.previewAfter}
         if(request.status==='submitted')throw new AppError('Você já enviou seu feedback.');
         if(!Number.isInteger(rating)||rating<1||rating>5)throw new AppError('Nota inválida.');
         const comment=String(i.fields.getTextInputValue('feedback-comment')||'').trim();if(comment.length<3)throw new AppError('Escreva um comentário sobre sua experiência.');
-        const claim=store.run("UPDATE feedback_requests SET status='publishing' WHERE id=? AND user_id=? AND status='pending'",id,i.user.id);
+        const service=Number(i.fields.getTextInputValue('feedback-service')),speed=Number(i.fields.getTextInputValue('feedback-speed')),resolution=Number(i.fields.getTextInputValue('feedback-resolution'));
+        if([service,speed,resolution].some(v=>!Number.isInteger(v)||v<1||v>5))throw new AppError('As notas de atendimento, rapidez e resolução devem ser de 1 a 5.');
+        const requestMeta=(()=>{try{return JSON.parse(request.meta||'{}')}catch{return {}}})();requestMeta.service=service;requestMeta.speed=speed;requestMeta.resolution=resolution;
+        const detailedComment=`Atendimento: ${service}/5 · Rapidez: ${speed}/5 · Resolução: ${resolution}/5\n\n${comment}`;
+        const claim=store.run("UPDATE feedback_requests SET status='publishing',meta=? WHERE id=? AND user_id=? AND status='pending'",JSON.stringify(requestMeta),id,i.user.id);
         if(!claim.changes)throw new AppError('Este feedback já foi processado.');
         try{
-          await publishFeedback(request,rating,comment,i.user);
-          store.run("UPDATE feedback_requests SET status='submitted',rating=?,comment=?,submitted_at=? WHERE id=?",rating,comment,store.now(),id);
+          await publishFeedback({...request,meta:JSON.stringify(requestMeta)},rating,detailedComment,i.user);
+          store.run("UPDATE feedback_requests SET status='submitted',rating=?,comment=?,meta=?,submitted_at=? WHERE id=?",rating,comment,JSON.stringify(requestMeta),store.now(),id);
         }catch(e){
           store.run("UPDATE feedback_requests SET status='pending' WHERE id=? AND status='publishing'",id);
           throw e;
@@ -1075,30 +1082,42 @@ ${normalized.previewAfter}
     try{
       await i.deferReply({flags:MessageFlags.Ephemeral});
       const action=i.commandName||i.customId;
-      if(action==='ajuda'){await localizedEdit(i,'**Studio K**\n/loja · catálogo\n/pedido · consultar compra e entrega\n/ticket · atendimento\n/verificar · liberar acesso\n/idioma · alterar seu idioma\n/notificacoes · autorizar ou desativar mensagens privadas');return;}
+      if(action==='ajuda'||action==='central-help'){
+        const query=i.isChatInputCommand()?i.options.getString('busca'):'';const matches=faqMatches(query);
+        if(query){await localizedEdit(i,matches.length?matches.map(x=>`**${x.question}**\n${x.answer}`).join('\n\n').slice(0,1900):'Não encontrei uma resposta para essa busca. Você pode abrir um ticket para falar com a equipe.');return;}
+        const items=matches.slice(0,25);await localizedEdit(i,{content:'**Ajuda Studio K**\nEscolha uma dúvida comum ou abra um atendimento.',components:[...(items.length?[row({type:3,custom_id:'help-faq',placeholder:'Escolha uma dúvida',options:items.map((x,n)=>({label:x.question.slice(0,100),value:String(n)}))})]:[]),row(button('Abrir atendimento','central-ticket',2))]});return;
+      }
+      if(action==='help-faq'){const item=(store.settings().faq?.items||[])[Number(i.values?.[0])];await localizedEdit(i,item?`**${item.question}**\n${item.answer}`:'Essa resposta não está mais disponível.');return;}
       if(action==='notificacoes'){
-        const exists=store.one('SELECT * FROM optins WHERE user_id=?',i.user.id);if(exists)store.run('DELETE FROM optins WHERE user_id=?',i.user.id);else store.run('INSERT INTO optins VALUES(?,?)',i.user.id,store.now());await localizedEdit(i,exists?'Mensagens opcionais desativadas.':'Mensagens opcionais ativadas. Use este comando novamente para desativar.');return;
+        const current=store.one('SELECT * FROM user_notifications WHERE user_id=?',i.user.id)||{promotions:0,giveaways:1,orders:1,tickets:1};
+        const selected=[['promotions','Promoções',current.promotions],['giveaways','Sorteios',current.giveaways],['orders','Pedidos',current.orders],['tickets','Tickets',current.tickets]];
+        await localizedEdit(i,{content:'Escolha quais notificações opcionais você quer receber:',components:[row({type:3,custom_id:'notification-select',placeholder:'Preferências de notificação',min_values:0,max_values:4,options:selected.map(([value,label,on])=>({label,value,default:!!on}))})]});return;
+      }
+      if(action==='notification-select'){
+        const values=new Set(i.values||[]),now=store.now();store.run('INSERT INTO user_notifications(user_id,promotions,giveaways,orders,tickets,updated) VALUES(?,?,?,?,?,?) ON CONFLICT(user_id) DO UPDATE SET promotions=excluded.promotions,giveaways=excluded.giveaways,orders=excluded.orders,tickets=excluded.tickets,updated=excluded.updated',i.user.id,values.has('promotions')?1:0,values.has('giveaways')?1:0,values.has('orders')?1:0,values.has('tickets')?1:0,now);
+        if(values.size)store.run('INSERT INTO optins(user_id,created) VALUES(?,?) ON CONFLICT(user_id) DO NOTHING',i.user.id,now);else store.run('DELETE FROM optins WHERE user_id=?',i.user.id);
+        await localizedEdit(i,'Preferências de notificação atualizadas.');return;
       }
       if(action==='loja'){if(store.settings().operationsLive?.storeOpen===false)throw new AppError('A loja está fechada no momento.');const products=store.products().filter(p=>p.active);await localizedEdit(i,products.length?{content:'**Catálogo Studio K**\nSelecione um produto para comprar.',components:[row({type:3,custom_id:'store-buy',placeholder:'Escolha um produto',options:products.slice(0,25).map(p=>({label:p.name.slice(0,100),description:`${money(p.priceCents)} · ${p.type==='service'?'Serviço':`${p.stock} em estoque`}`,value:p.id}))})]}:'Ainda não há produtos disponíveis.');return;}
       if(action==='ticket-open'||action==='ticket'){
         if(store.settings().operationsLive?.ticketsOpen===false)throw new AppError('Os tickets estão fechados no momento.');
-        const settings=store.settings().tickets,open=Number(store.one("SELECT COUNT(*) AS n FROM tickets WHERE user_id=? AND status='open'",i.user.id)?.n||0);
-        if(open>=2)throw new AppError('Você já possui 2 tickets abertos. Encerre um deles antes de abrir outro.',409);
+        const settings=store.settings().tickets,open=Number(store.one("SELECT COUNT(*) AS n FROM tickets WHERE user_id=? AND status='open'",i.user.id)?.n||0),maxOpen=settings.maxOpen||TICKET_OPEN_LIMIT;
+        if(open>=maxOpen)throw new AppError(`Você já possui ${maxOpen} ticket(s) aberto(s). Encerre um antes de abrir outro.`,409);
         const categoryButtons=settings.categories.map((name,index)=>button(name.slice(0,80),`ticket-category:${index}`,2));
         const rows=[];for(let p=0;p<categoryButtons.length;p+=5)rows.push(row(...categoryButtons.slice(p,p+5)));
-        await localizedEdit(i,{content:`Você possui **${open}/2** tickets abertos. Escolha a categoria do novo atendimento:`,components:rows});
+        await localizedEdit(i,{content:`Você possui **${open}/${maxOpen}** ticket(s) aberto(s). Escolha a categoria do novo atendimento:`,components:rows});
         return;
       }
       if(action.startsWith('ticket-category:')||action==='ticket-category'){
         const index=action==='ticket-category'?Number(i.values?.[0]||0):Number(action.split(':')[1]),category=store.settings().tickets.categories[index];
         if(!category)throw new AppError('Categoria indisponível.');
         const t=await openTicket(i.user.id,category);
-        const open=Number(store.one("SELECT COUNT(*) AS n FROM tickets WHERE user_id=? AND status='open'",i.user.id)?.n||0);
-        await localizedEdit(i,{content:`Olá <@${i.user.id}>! Seu atendimento: <#${t.channel_id}>\nVocê está com **${open}/2** tickets abertos.`,components:[],allowedMentions:{parse:[],users:[i.user.id]}});
+        const open=Number(store.one("SELECT COUNT(*) AS n FROM tickets WHERE user_id=? AND status='open'",i.user.id)?.n||0),maxOpen=store.settings().tickets.maxOpen||TICKET_OPEN_LIMIT;
+        const queue=store.settings().tickets.queueEnabled?`\nPosição aproximada na fila: **${t.queuePosition}**.`:'';
+        await localizedEdit(i,{content:`Olá <@${i.user.id}>! Seu atendimento: <#${t.channel_id}>\nVocê está com **${open}/${maxOpen}** ticket(s) aberto(s).${queue}`,components:[],allowedMentions:{parse:[],users:[i.user.id]}});
         return;
       }
-      if(action.startsWith('claim:')){if(!await isStaff(i))throw new AppError('Somente a equipe pode assumir tickets.',403);const id=action.split(':')[1],changed=store.run("UPDATE tickets SET claimed_by=?,updated=? WHERE id=? AND status='open' AND claimed_by IS NULL",i.user.id,store.now(),id);if(changed.changes){const t=store.one('SELECT * FROM tickets WHERE id=?',id),c=await channel(t.channel_id),style=store.settings().messageStyles.ticketClaim,customer=await memberVariables(t.user_id,c.guild),staffMember=await member(i.user.id);const variables={...customer,staff:`<@${i.user.id}>`,staffUsername:staffMember.displayName||staffMember.user.globalName||staffMember.user.username||i.user.id,ticket:c.name,category:t.category,channel:`<#${c.id}>`,server:c.guild.name};const claimPayload=styledPayload(style,variables,env.DISCORD_GUILD_ID);await c.send({...claimPayload,allowedMentions:mentionPolicy(claimPayload,[i.user.id,t.user_id])});ticketAuditAppend(t.id,{action:'claim',actor:i.user.id,target:t.user_id});}await localizedEdit(i,changed.changes?'Atendimento atribuído a você.':'Esse atendimento já está atribuído ou encerrado.');return;}
-      if(action.startsWith('close:')){if(!await isStaff(i))throw new AppError('Somente a equipe pode finalizar tickets.',403);const t=store.one('SELECT * FROM tickets WHERE id=?',action.split(':')[1]);if(!t)throw new AppError('Ticket não encontrado.',404);await closeTicket(t.id,i.user.id);await localizedEdit(i,'Atendimento encerrado.');return;}
+      if(action.startsWith('claim:')){if(!await isStaff(i))throw new AppError('Somente a equipe pode assumir tickets.',403);const id=action.split(':')[1],changed=store.run("UPDATE tickets SET claimed_by=?,state='in_progress',updated=? WHERE id=? AND status='open' AND claimed_by IS NULL",i.user.id,store.now(),id);if(changed.changes){const t=store.one('SELECT * FROM tickets WHERE id=?',id),c=await channel(t.channel_id),style=store.settings().messageStyles.ticketClaim,customer=await memberVariables(t.user_id,c.guild),staffMember=await member(i.user.id);const variables={...customer,staff:`<@${i.user.id}>`,staffUsername:staffMember.displayName||staffMember.user.globalName||staffMember.user.username||i.user.id,ticket:c.name,category:t.category,channel:`<#${c.id}>`,server:c.guild.name};const claimPayload=styledPayload(style,variables,env.DISCORD_GUILD_ID);await c.send({...claimPayload,allowedMentions:mentionPolicy(claimPayload,[i.user.id,t.user_id])});ticketAuditAppend(t.id,{action:'claim',actor:i.user.id,target:t.user_id});store.recordStaffAction(i.user.id,'claim',t.id,t.user_id);}await localizedEdit(i,changed.changes?'Atendimento atribuído a você.':'Esse atendimento já está atribuído ou encerrado.');return;}
       if(action.startsWith('call:')){
         if(!await isStaff(i))throw new AppError('Somente a equipe pode chamar o cliente.',403);
         const id=action.split(':')[1],t=store.one("SELECT * FROM tickets WHERE id=? AND status='open'",id);if(!t)throw new AppError('Ticket aberto não encontrado.',404);
@@ -1110,14 +1129,14 @@ ${normalized.previewAfter}
           try{const dmPayload=styledPayload(settings.messageStyles.ticketCallDm,variables,env.DISCORD_GUILD_ID),localizedDm=await localizeFor(t.user_id,dmPayload);await(await member(t.user_id)).send({...localizedDm,allowedMentions:mentionPolicy(localizedDm)});dmSent=true;}
           catch(e){store.log('aviso',`Cliente chamado em ${c.name}, mas a DM falhou: ${String(e.message).slice(0,300)}`);}
         }
-        store.run('UPDATE tickets SET updated=? WHERE id=?',store.now(),id);ticketAuditAppend(t.id,{action:'call',actor:i.user.id,target:t.user_id,dmSent});await localizedEdit(i,dmSent?'Cliente chamado no ticket e no privado.':'Cliente chamado no ticket. A DM não pôde ser entregue.');return;
+        store.run("UPDATE tickets SET state='waiting_customer',updated=? WHERE id=?",store.now(),id);ticketAuditAppend(t.id,{action:'call',actor:i.user.id,target:t.user_id,dmSent});store.recordStaffAction(i.user.id,'call',t.id,t.user_id,{dmSent});await localizedEdit(i,dmSent?'Cliente chamado no ticket e no privado.':'Cliente chamado no ticket. A DM não pôde ser entregue.');return;
       }
       if(action.startsWith('rename-submit:')){
         if(!await isStaff(i))throw new AppError('Somente a equipe pode renomear tickets.',403);
         const id=action.split(':')[1],t=store.one("SELECT * FROM tickets WHERE id=? AND status='open'",id);if(!t)throw new AppError('Ticket aberto não encontrado.',404);
         const requested=i.fields.getTextInputValue('ticket-name'),newName=channelSlug(requested);if(!newName)throw new AppError('Digite um nome válido.');
         const c=await channel(t.channel_id),oldName=c.name;await c.setName(newName,`Studio K: renomeado por ${i.user.id}`);
-        store.run('UPDATE tickets SET updated=? WHERE id=?',store.now(),id);ticketAuditAppend(t.id,{action:'rename',actor:i.user.id,target:t.user_id,from:oldName,to:newName});await localizedEdit(i,`Ticket renomeado para **${newName}**.`);return;
+        store.run('UPDATE tickets SET updated=? WHERE id=?',store.now(),id);ticketAuditAppend(t.id,{action:'rename',actor:i.user.id,target:t.user_id,from:oldName,to:newName});store.recordStaffAction(i.user.id,'rename',t.id,t.user_id,{from:oldName,to:newName});await localizedEdit(i,`Ticket renomeado para **${newName}**.`);return;
       }
       if(action==='idioma'){
         const current=languagePreference(i.user.id)?.language||'';
