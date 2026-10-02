@@ -577,7 +577,7 @@ ${normalized.previewAfter}
         button('Chamar cliente',`call:${id}`,2),
         button('Finalizar',`close:${id}`,4)
       )],allowedMentions:mentionPolicy(staffPayload)});
-      await audit('ticket',`Ticket ${ticketName} aberto: ${category}`,userId);void updateOperationsLive(true);return store.one('SELECT * FROM tickets WHERE id=?',id);
+      await audit('ticket aberto',`<@${userId}> abriu o ticket **${ticketName}** na categoria **${category}**.`,userId,{targetId:userId,channelId:c.id,ticketId:id,ticketName,category,action:'open'});void updateOperationsLive(true);return store.one('SELECT * FROM tickets WHERE id=?',id);
     }catch(e){
       if(!c)store.run('DELETE FROM tickets WHERE id=?',id);
       else store.log('erro',`Ticket ${id.slice(0,8)} criado, mas mensagem inicial falhou.`);
@@ -607,7 +607,7 @@ ${normalized.previewAfter}
     }catch(e){
       store.log('aviso',`Ticket ${ticketName} encerrado, mas a DM com o transcript não pôde ser entregue: ${String(e.message).slice(0,300)}`,actor);
     }
-    await audit('ticket',`Ticket ${ticketName} encerrado${dmSent?' e transcript enviado por DM':' sem entrega da DM'}. O canal será removido.`,actor);
+    await audit('ticket encerrado',`${/^\d{17,20}$/.test(String(actor))?`<@${actor}>`:'Sistema'} encerrou o ticket **${ticketName}** de <@${ticket.user_id}>${dmSent?' e o transcript foi enviado por DM':' sem entrega da DM'}.`,actor,{targetId:ticket.user_id,channelId:ticket.channel_id,ticketId:id,ticketName,category:ticket.category,action:'close',transcriptUrl,dmSent});
     try{await c.delete(`Studio K: ticket encerrado por ${actor}`);}
     catch(e){store.log('erro',`Ticket ${ticketName} foi encerrado, mas o canal não pôde ser removido: ${String(e.message).slice(0,300)}`,actor);throw new AppError('O atendimento foi encerrado e o transcript salvo, mas não foi possível apagar o canal. Confira a permissão Gerenciar Canais do bot.',500);}
     void updateOperationsLive(true);
@@ -968,7 +968,7 @@ ${normalized.previewAfter}
         await localizedEdit(i,{content:`Olá <@${i.user.id}>! Seu atendimento: <#${t.channel_id}>\nVocê está com **${open}/2** tickets abertos.`,components:[],allowedMentions:{parse:[],users:[i.user.id]}});
         return;
       }
-      if(action.startsWith('claim:')){if(!await isStaff(i))throw new AppError('Somente a equipe pode assumir tickets.',403);const id=action.split(':')[1],changed=store.run("UPDATE tickets SET claimed_by=?,updated=? WHERE id=? AND status='open' AND claimed_by IS NULL",i.user.id,store.now(),id);if(changed.changes){const t=store.one('SELECT * FROM tickets WHERE id=?',id),c=await channel(t.channel_id),style=store.settings().messageStyles.ticketClaim,customer=await memberVariables(t.user_id,c.guild),staffMember=await member(i.user.id);const variables={...customer,staff:`<@${i.user.id}>`,staffUsername:staffMember.displayName||staffMember.user.globalName||staffMember.user.username||i.user.id,ticket:c.name,category:t.category,channel:`<#${c.id}>`,server:c.guild.name};const claimPayload=styledPayload(style,variables,env.DISCORD_GUILD_ID);await c.send({...claimPayload,allowedMentions:mentionPolicy(claimPayload,[i.user.id,t.user_id])});await audit('ticket',`Ticket ${c.name} assumido.`,i.user.id);}await localizedEdit(i,changed.changes?'Atendimento atribuído a você.':'Esse atendimento já está atribuído ou encerrado.');return;}
+      if(action.startsWith('claim:')){if(!await isStaff(i))throw new AppError('Somente a equipe pode assumir tickets.',403);const id=action.split(':')[1],changed=store.run("UPDATE tickets SET claimed_by=?,updated=? WHERE id=? AND status='open' AND claimed_by IS NULL",i.user.id,store.now(),id);if(changed.changes){const t=store.one('SELECT * FROM tickets WHERE id=?',id),c=await channel(t.channel_id),style=store.settings().messageStyles.ticketClaim,customer=await memberVariables(t.user_id,c.guild),staffMember=await member(i.user.id);const variables={...customer,staff:`<@${i.user.id}>`,staffUsername:staffMember.displayName||staffMember.user.globalName||staffMember.user.username||i.user.id,ticket:c.name,category:t.category,channel:`<#${c.id}>`,server:c.guild.name};const claimPayload=styledPayload(style,variables,env.DISCORD_GUILD_ID);await c.send({...claimPayload,allowedMentions:mentionPolicy(claimPayload,[i.user.id,t.user_id])});await audit('ticket assumido',`<@${i.user.id}> assumiu o ticket **${c.name}** de <@${t.user_id}>.`,i.user.id,{targetId:t.user_id,channelId:c.id,ticketId:t.id,ticketName:c.name,category:t.category,action:'claim'});}await localizedEdit(i,changed.changes?'Atendimento atribuído a você.':'Esse atendimento já está atribuído ou encerrado.');return;}
       if(action.startsWith('close:')){if(!await isStaff(i))throw new AppError('Somente a equipe pode finalizar tickets.',403);const t=store.one('SELECT * FROM tickets WHERE id=?',action.split(':')[1]);if(!t)throw new AppError('Ticket não encontrado.',404);await closeTicket(t.id,i.user.id);await localizedEdit(i,'Atendimento encerrado.');return;}
       if(action.startsWith('call:')){
         if(!await isStaff(i))throw new AppError('Somente a equipe pode chamar o cliente.',403);
@@ -981,14 +981,14 @@ ${normalized.previewAfter}
           try{const dmPayload=styledPayload(settings.messageStyles.ticketCallDm,variables,env.DISCORD_GUILD_ID),localizedDm=await localizeFor(t.user_id,dmPayload);await(await member(t.user_id)).send({...localizedDm,allowedMentions:mentionPolicy(localizedDm)});dmSent=true;}
           catch(e){store.log('aviso',`Cliente chamado em ${c.name}, mas a DM falhou: ${String(e.message).slice(0,300)}`);}
         }
-        store.run('UPDATE tickets SET updated=? WHERE id=?',store.now(),id);await audit('ticket',`Cliente chamado no ticket ${c.name}${dmSent?' e por DM':''}.`,i.user.id);await localizedEdit(i,dmSent?'Cliente chamado no ticket e no privado.':'Cliente chamado no ticket. A DM não pôde ser entregue.');return;
+        store.run('UPDATE tickets SET updated=? WHERE id=?',store.now(),id);await audit('ticket chamada',`<@${i.user.id}> chamou <@${t.user_id}> no ticket **${c.name}**${dmSent?' e também por DM':''}.`,i.user.id,{targetId:t.user_id,channelId:c.id,ticketId:t.id,ticketName:c.name,category:t.category,action:'call',dmSent});await localizedEdit(i,dmSent?'Cliente chamado no ticket e no privado.':'Cliente chamado no ticket. A DM não pôde ser entregue.');return;
       }
       if(action.startsWith('rename-submit:')){
         if(!await isStaff(i))throw new AppError('Somente a equipe pode renomear tickets.',403);
         const id=action.split(':')[1],t=store.one("SELECT * FROM tickets WHERE id=? AND status='open'",id);if(!t)throw new AppError('Ticket aberto não encontrado.',404);
         const requested=i.fields.getTextInputValue('ticket-name'),newName=channelSlug(requested);if(!newName)throw new AppError('Digite um nome válido.');
         const c=await channel(t.channel_id),oldName=c.name;await c.setName(newName,`Studio K: renomeado por ${i.user.id}`);
-        store.run('UPDATE tickets SET updated=? WHERE id=?',store.now(),id);await audit('ticket',`Ticket ${oldName} renomeado para ${newName}.`,i.user.id);await localizedEdit(i,`Ticket renomeado para **${newName}**.`);return;
+        store.run('UPDATE tickets SET updated=? WHERE id=?',store.now(),id);await audit('ticket renomeado',`<@${i.user.id}> renomeou o ticket de <@${t.user_id}> de **${oldName}** para **${newName}**.`,i.user.id,{targetId:t.user_id,channelId:c.id,ticketId:t.id,ticketName:newName,previousTicketName:oldName,category:t.category,action:'rename'});await localizedEdit(i,`Ticket renomeado para **${newName}**.`);return;
       }
       if(action==='idioma'){
         const current=languagePreference(i.user.id)?.language||'';
