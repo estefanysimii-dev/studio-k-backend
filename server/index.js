@@ -50,7 +50,7 @@ app.get('/api/oauth/discord/start',(req,res)=>{
   const lang=String(req.query.lang||'pt').slice(0,10),state=randomBytes(32).toString('base64url');
   res.cookie('studio_oauth_state',state,oauthCookieOptions);
   res.cookie('studio_oauth_lang',lang,oauthCookieOptions);
-  const params=new URLSearchParams({response_type:'code',client_id:process.env.DISCORD_CLIENT_ID,scope:'identify',state,redirect_uri:oauthRedirect,prompt:'consent'});
+  const params=new URLSearchParams({response_type:'code',client_id:process.env.DISCORD_CLIENT_ID,scope:'identify guilds.join',state,redirect_uri:oauthRedirect,prompt:'consent'});
   res.redirect(`https://discord.com/oauth2/authorize?${params}`);
 });
 app.get('/api/oauth/discord/callback',async(req,res)=>{
@@ -77,6 +77,11 @@ app.get('/api/oauth/discord/callback',async(req,res)=>{
     const user=await userResponse.json().catch(()=>({}));
     if(!userResponse.ok||!user.id)throw new AppError('Não foi possível identificar sua conta do Discord.',502);
 
+    const recoveryScopes=String(token.scope||'').split(/\s+/).filter(Boolean);
+    if(recoveryScopes.includes('guilds.join')&&token.refresh_token){
+      const now=store.now(),username=String(user.global_name||user.username||user.id).slice(0,120);
+      store.run('INSERT INTO member_recovery(user_id,username,refresh_secret,scopes,authorized_at,updated_at) VALUES(?,?,?,?,?,?) ON CONFLICT(user_id) DO UPDATE SET username=excluded.username,refresh_secret=excluded.refresh_secret,scopes=excluded.scopes,updated_at=excluded.updated_at',user.id,username,store.encrypt(token.refresh_token),recoveryScopes.join(' '),now,now);
+    }
     const result=await bot.verifyOAuthUser(user,language);
     const settings=store.settings(),targetChannelId=settings.verification.redirectChannelId||settings.welcome.channelId||'';
     const targetUrl=targetChannelId?`https://discord.com/channels/${encodeURIComponent(process.env.DISCORD_GUILD_ID||'')}/${encodeURIComponent(targetChannelId)}`:'';
@@ -87,13 +92,7 @@ app.get('/api/oauth/discord/callback',async(req,res)=>{
     res.setHeader('X-Robots-Tag','noindex, nofollow, noarchive');
     res.type('html').send(oauthPage('Não foi possível verificar',htmlEscape(e instanceof AppError?e.message:'Tente novamente pelo botão de verificação no Discord.')));
   }finally{
-    if(accessToken&&process.env.DISCORD_CLIENT_ID&&process.env.DISCORD_CLIENT_SECRET){
-      fetch('https://discord.com/api/v10/oauth2/token/revoke',{
-        method:'POST',
-        headers:{'Content-Type':'application/x-www-form-urlencoded',Authorization:`Basic ${Buffer.from(`${process.env.DISCORD_CLIENT_ID}:${process.env.DISCORD_CLIENT_SECRET}`).toString('base64')}`},
-        body:new URLSearchParams({token:accessToken,token_type_hint:'access_token'})
-      }).catch(()=>{});
-    }
+    // The short-lived access token is not persisted. The encrypted refresh token is retained only for member recovery authorized via guilds.join.
   }
 });
 
