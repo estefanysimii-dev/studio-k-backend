@@ -47,3 +47,12 @@
 .discord-link-button small{font-size:.65rem;color:#d5d7db;font-weight:500}
 @media(max-width:1280px){.link-button-row{grid-template-columns:1fr 1fr}.link-button-actions{grid-column:1/-1}}
 @media(max-width:700px){.link-button-row{grid-template-columns:1fr}}
+
+.requirement-chips{display:flex;flex-wrap:wrap;gap:7px;margin:12px 0}
+.attempt-card{border:1px solid var(--line);border-radius:12px;padding:14px;background:#15121b;margin-bottom:12px}
+.requirement-results{display:grid;gap:8px;margin-top:12px}
+.requirement-result{display:grid;grid-template-columns:auto minmax(0,1fr) auto;gap:10px;align-items:center;padding:10px 12px;border:1px solid var(--line);border-radius:9px;background:#1b1722}
+.requirement-result>span{font-size:1rem}
+.requirement-result>div{display:grid;gap:3px}
+.requirement-result small{color:var(--muted);font-size:.72rem}
+@media(max-width:720px){.requirement-result{grid-template-columns:auto 1fr}.requirement-result button{grid-column:1/-1}}
