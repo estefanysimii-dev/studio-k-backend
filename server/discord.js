@@ -193,7 +193,7 @@ export function createBot(store,env=process.env){
     const results=[];for(const req of requirements)results.push(await evaluateRequirement(giveaway,userId,req));
     const ok=results.every(r=>r.ok);
     if(record)store.run('INSERT INTO giveaway_attempts(giveaway_id,user_id,status,detail,updated) VALUES(?,?,?,?,?) ON CONFLICT(giveaway_id,user_id) DO UPDATE SET status=excluded.status,detail=excluded.detail,updated=excluded.updated',giveawayId,userId,ok?'eligible':'incomplete',JSON.stringify(results),store.now());
-    if(ok&&enter)store.run('INSERT OR IGNORE INTO entries VALUES(?,?)',giveawayId,userId);
+    if(enter){if(ok)store.run('INSERT OR IGNORE INTO entries VALUES(?,?)',giveawayId,userId);else store.run('DELETE FROM entries WHERE giveaway_id=? AND user_id=?',giveawayId,userId);}
     return{ok,results,data,giveaway};
   }
   async function createGoogleConnectUrl(giveawayId,userId){
@@ -456,24 +456,63 @@ export function createBot(store,env=process.env){
       store.run("UPDATE orders SET status='delivered',error=NULL WHERE id=?",order.id);await audit('entrega',`Pedido ${order.id.slice(0,8)} entregue.`);
     }catch(e){store.run('UPDATE orders SET error=? WHERE id=?',String(e.message).slice(0,500),order.id);}
   }
+  const currentWeek=()=>{
+    const now=new Date(),start=new Date(now),offset=(start.getUTCDay()+6)%7;
+    start.setUTCDate(start.getUTCDate()-offset);start.setUTCHours(0,0,0,0);
+    const end=new Date(start.getTime()+7*86400000);
+    return{start,end,key:start.toISOString().slice(0,10)};
+  };
+  async function updateSalesLive(force=false){
+    const settings=store.settings(),cfg=settings.salesLive;if(!cfg?.enabled||!cfg.channelId||!client.isReady())return null;
+    const {start,end,key}=currentWeek();
+    const stats=store.one("SELECT COUNT(*) AS sales,COALESCE(SUM(price),0) AS revenue FROM orders WHERE status IN ('paid','delivered') AND COALESCE(approved_at,created)>=? AND COALESCE(approved_at,created)<?",start.toISOString(),end.toISOString());
+    const state=store.get('sales-live-message',{}),signature=`${key}:${stats.sales}:${stats.revenue}:${cfg.channelId}`;
+    if(!force&&state.signature===signature&&Date.now()-Number(state.checkedAt||0)<60000)return state;
+    const vars={
+      sales:String(stats.sales||0),
+      revenue:money(Number(stats.revenue||0)),
+      periodStart:`<t:${Math.floor(start.getTime()/1000)}:d>`,
+      periodEnd:`<t:${Math.floor((end.getTime()-1000)/1000)}:d>`,
+      updated:`<t:${Math.floor(Date.now()/1000)}:R>`
+    };
+    const payload=stylePayload(settings.messageStyles.salesLive,vars,env.DISCORD_GUILD_ID),c=await channel(cfg.channelId);
+    let message=null;
+    if(state.messageId&&state.channelId===cfg.channelId){
+      try{message=await c.messages.fetch(state.messageId);await message.edit({...payload,allowedMentions:mentionPolicy(payload)});}catch{}
+    }
+    if(!message)message=await c.send({...payload,allowedMentions:mentionPolicy(payload)});
+    const next={messageId:message.id,channelId:cfg.channelId,week:key,signature,checkedAt:Date.now()};store.set('sales-live-message',next);return next;
+  }
   async function createGiveaway(data){
-    const c=await channel(data.channelId),id=randomUUID();store.run('INSERT INTO giveaways(id,data,status,created) VALUES(?,?,?,?)',id,JSON.stringify(data),'draft',store.now());
-    const roleLine=data.requiredRoleId?`\nCargo necessário: <@&${data.requiredRoleId}>`:'';
+    data={...data,requirements:(data.requirements||[]).map((r,i)=>({...r,id:r.id||`req-${i+1}-${randomUUID().slice(0,8)}`}))};
+    const c=await channel(data.channelId),id=randomUUID();
+    store.run('INSERT INTO giveaways(id,data,status,created) VALUES(?,?,?,?)',id,JSON.stringify(data),'draft',store.now());
+    const legacy=data.requiredRoleId?`\nCargo necessário: <@&${data.requiredRoleId}>`:'';
+    const reqLines=(data.requirements||[]).map(r=>`• ${requirementLabel(r)}`).join('\n');
+    const roleLine=`${legacy}${reqLines?`\n\n**Requisitos para participar:**\n${reqLines}`:''}`;
     const payload=stylePayload(store.settings().messageStyles.giveaway,{title:data.title,description:data.description,ends:`<t:${Math.floor(Date.parse(data.endsAt)/1000)}:R>`,winners:data.winners,roleLine});
-    const message=await c.send({...payload,components:[...(payload.components||[]),row(button('Participar do sorteio',`giveaway:${id}`))],allowedMentions:mentionPolicy(payload)});
-    store.run("UPDATE giveaways SET status='active',message_id=? WHERE id=?",message.id,id);return{id};
+    const message=await c.send({...payload,components:[...(payload.components||[]),row(button('Verificar participação',`giveaway:${id}`))],allowedMentions:mentionPolicy(payload,[],data.requiredRoleId?[data.requiredRoleId]:[])});
+    store.run("UPDATE giveaways SET status='active',message_id=? WHERE id=?",message.id,id);
+    if((data.requirements||[]).some(r=>r.type==='voiceMinutes')){
+      for(const state of requireGuild().voiceStates.cache.values())if(state.member&&!state.member.user.bot&&state.channelId)startVoiceForUser(state.id,store.now());
+    }
+    return{id};
   }
   async function finishGiveaway(g){
     const data=JSON.parse(g.data);let winners=g.winners?JSON.parse(g.winners):null;
     if(g.status==='active'){
-      const eligible=[];for(const e of store.all('SELECT user_id FROM entries WHERE giveaway_id=?',g.id)){
-        try{const m=await member(e.user_id);if(!m.user.bot&&(!data.requiredRoleId||m.roles.cache.has(data.requiredRoleId)))eligible.push(e.user_id);}catch(e){if(e.code!==10007)throw e;}
+      const eligible=[];
+      for(const e of store.all('SELECT user_id FROM entries WHERE giveaway_id=?',g.id)){
+        try{
+          const checked=await evaluateGiveaway(g.id,e.user_id,{enter:false,record:true});
+          if(checked.ok)eligible.push(e.user_id);else store.run('DELETE FROM entries WHERE giveaway_id=? AND user_id=?',g.id,e.user_id);
+        }catch(error){if(error.code!==10007)store.log('erro',`Revalidação do sorteio ${g.id.slice(0,8)} para ${e.user_id}: ${error.message}`);}
       }
       winners=store.drawGiveaway(g.id,eligible);
     }
     const result=winners.length?`Vencedor(es): ${winners.map(id=>`<@${id}>`).join(', ')}`:'Não houve participantes elegíveis.';
     const payload=stylePayload(store.settings().messageStyles.giveawayResult,{title:data.title,result});
-    const c=await channel(data.channelId);await c.messages.edit(g.message_id,{...payload,components:payload.components||[],allowedMentions:mentionPolicy(payload)});
+    const c=await channel(data.channelId);await c.messages.edit(g.message_id,{...payload,components:payload.components||[],allowedMentions:mentionPolicy(payload,winners||[])});
     store.run("UPDATE giveaways SET status='ended' WHERE id=?",g.id);
   }
   async function createEvent(data){const event=await requireGuild().scheduledEvents.create({name:data.name,description:data.description||undefined,scheduledStartTime:new Date(data.startsAt),scheduledEndTime:new Date(data.endsAt),privacyLevel:GuildScheduledEventPrivacyLevel.GuildOnly,entityType:GuildScheduledEventEntityType.External,entityMetadata:{location:data.location}});const id=randomUUID();store.run('INSERT INTO events VALUES(?,?,?,?)',id,JSON.stringify(data),event.id,store.now());return{id,discordId:event.id};}
