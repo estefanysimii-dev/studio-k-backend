@@ -205,7 +205,7 @@ export function createBot(store,env=process.env){
         const id=i.customId.split(':')[1],t=store.one("SELECT * FROM tickets WHERE id=? AND status='open'",id);if(!t)throw new AppError('Ticket aberto não encontrado.',404);
         const c=await channel(t.channel_id);
         const modal=new ModalBuilder().setCustomId(`rename-submit:${id}`).setTitle('Renomear ticket');
-        const input=new TextInputBuilder().setCustomId('ticket-name').setLabel('Novo nome do ticket').setStyle(TextInputStyle.Short).setRequired(true).setMaxLength(90).setValue(c.name);
+        const input=new TextInputBuilder().setCustomId('ticket-name').setLabel('Novo nome do ticket').setStyle(TextInputStyle.Short).setRequired(true).setMaxLength(90).setValue(c.name.slice(0,90));
         modal.addComponents(new ActionRowBuilder().addComponents(input));
         await i.showModal(modal);
       }catch(e){
@@ -222,7 +222,7 @@ export function createBot(store,env=process.env){
       }
       if(action==='loja'){const products=store.products().filter(p=>p.active);await i.editReply(products.length?{content:'**Catálogo Studio K**\nSelecione um produto para comprar.',components:[row({type:3,custom_id:'store-buy',placeholder:'Escolha um produto',options:products.slice(0,25).map(p=>({label:p.name.slice(0,100),description:`${money(p.priceCents)} · ${p.type==='service'?'Serviço':`${p.stock} em estoque`}`,value:p.id}))})]}:'Ainda não há produtos disponíveis.');return;}
       if(action==='ticket'||action==='ticket-category'){const category=action==='ticket-category'?store.settings().tickets.categories[Number(i.values[0])]:store.settings().tickets.categories[0];if(!category)throw new AppError('Categoria indisponível.');const t=await openTicket(i.user.id,category);await i.editReply(`Seu atendimento: <#${t.channel_id}>`);return;}
-      if(action.startsWith('claim:')){if(!await isStaff(i))throw new AppError('Somente a equipe pode assumir tickets.',403);const changed=store.run("UPDATE tickets SET claimed_by=?,updated=? WHERE id=? AND status='open' AND claimed_by IS NULL",i.user.id,store.now(),action.split(':')[1]);await i.editReply(changed.changes?'Atendimento atribuído a você.':'Esse atendimento já está atribuído ou encerrado.');return;}
+      if(action.startsWith('claim:')){if(!await isStaff(i))throw new AppError('Somente a equipe pode assumir tickets.',403);const id=action.split(':')[1],changed=store.run("UPDATE tickets SET claimed_by=?,updated=? WHERE id=? AND status='open' AND claimed_by IS NULL",i.user.id,store.now(),id);if(changed.changes){const t=store.one('SELECT * FROM tickets WHERE id=?',id),c=await channel(t.channel_id),style=store.settings().messageStyles.ticketClaim;await c.send({...stylePayload(style,{staff:`<@${i.user.id}>`,user:`<@${t.user_id}>`,ticket:c.name,category:t.category}),allowedMentions:{users:[i.user.id,t.user_id]}});await audit('ticket',`Ticket ${c.name} assumido.`,i.user.id);}await i.editReply(changed.changes?'Atendimento atribuído a você.':'Esse atendimento já está atribuído ou encerrado.');return;}
       if(action.startsWith('close:')){if(!await isStaff(i))throw new AppError('Somente a equipe pode finalizar tickets.',403);const t=store.one('SELECT * FROM tickets WHERE id=?',action.split(':')[1]);if(!t)throw new AppError('Ticket não encontrado.',404);await closeTicket(t.id,i.user.id);await i.editReply('Atendimento encerrado.');return;}
       if(action.startsWith('call:')){
         if(!await isStaff(i))throw new AppError('Somente a equipe pode chamar o cliente.',403);
