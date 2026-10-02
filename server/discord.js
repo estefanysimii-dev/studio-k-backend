@@ -1,5 +1,5 @@
 import { Client, GatewayIntentBits, Partials, Events, ChannelType, PermissionFlagsBits, ActivityType, REST, Routes, MessageFlags, GuildScheduledEventEntityType, GuildScheduledEventPrivacyLevel, ModalBuilder, TextInputBuilder, TextInputStyle, ActionRowBuilder } from 'discord.js';
-import { randomUUID, createHash } from 'node:crypto';
+import { randomUUID, randomBytes, createHash } from 'node:crypto';
 import { AppError } from './store.js';
 export function expandText(value,variables={}) {
   return String(value||'').replace(/\{([A-Za-z][A-Za-z0-9_]*)\}/g,(match,key)=>Object.prototype.hasOwnProperty.call(variables,key)?String(variables[key]??''):match);
@@ -22,6 +22,7 @@ const stylePayload=(style,variables={})=>{
   return {content:expandText(style?.content||'',variables)||undefined,embeds:hasEmbed(embed)?[embed]:[]};
 };
 const button=(label,custom_id,style=1)=>({type:2,label,custom_id,style});
+const linkButton=(label,url)=>({type:2,label,style:5,url});
 const row=(...components)=>({type:1,components});
 const money=n=>(n/100).toLocaleString('pt-BR',{style:'currency',currency:'BRL'});
 const safe={parse:[]};
@@ -126,11 +127,15 @@ export function createBot(store,env=process.env){
     const c=await channel(ticket.channel_id),messages=[];let before;
     for(let page=0;page<50;page++){const batch=await c.messages.fetch({limit:100,before});if(!batch.size)break;messages.push(...batch.values());before=batch.last().id;if(batch.size<100)break;}
     const transcript=messages.reverse().map(m=>`[${m.createdAt.toISOString()}] ${m.author?.tag||'desconhecido'} (${m.author?.id||''}): ${m.content||''}${m.attachments.size?'\n'+[...m.attachments.values()].map(a=>a.url).join('\n'):''}${m.embeds.length?'\n'+m.embeds.map(e=>[e.title,e.description].filter(Boolean).join('\n')).join('\n'):''}`).join('\n\n');
+    const shareToken=randomBytes(32).toString('base64url');
     store.run('UPDATE tickets SET transcript=? WHERE id=?',transcript,id);
+    store.set(`transcript-share:${id}`,{hash:createHash('sha256').update(shareToken).digest('hex'),created:store.now()});
     await c.permissionOverwrites.edit(ticket.user_id,{SendMessages:false});
     const style=store.settings().messageStyles.ticketClose;
-    await c.send({...stylePayload(style,{ticket:id.slice(0,8)}),components:[],allowedMentions:safe});
-    store.run("UPDATE tickets SET status='closed',updated=? WHERE id=?",store.now(),id);await audit('ticket',`Ticket ${id.slice(0,8)} encerrado.`,actor);
+    const publicBase=(env.PUBLIC_URL||'').replace(/\/$/,'');
+    const transcriptUrl=`${publicBase}/api/public/tickets/${id}/transcript/${shareToken}`;
+    await c.send({...stylePayload(style,{ticket:c.name,transcript:transcriptUrl}),components:[row(linkButton('Abrir transcript',transcriptUrl))],allowedMentions:safe});
+    store.run("UPDATE tickets SET status='closed',updated=? WHERE id=?",store.now(),id);await audit('ticket',`Ticket ${c.name} encerrado e transcript disponibilizado ao cliente.`,actor);
   }
   async function publishPanel(kind,channelId){
     const s=store.settings(),c=await channel(channelId);let payload;
