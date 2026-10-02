@@ -120,6 +120,13 @@ function readStylePreview(form,prefix,base){
     value:d.get(`${prefix}.embed.fields.${i}.value`)??field.value??'',
     inline:d.has(`${prefix}.embed.fields.${i}.inline`)
   }));
+  style.buttons=(base.buttons||[]).map((b,i)=>({
+    label:d.get(`${prefix}.buttons.${i}.label`)??b.label??'',
+    type:d.get(`${prefix}.buttons.${i}.type`)??b.type??'url',
+    url:d.get(`${prefix}.buttons.${i}.url`)??b.url??'',
+    channelId:d.get(`${prefix}.buttons.${i}.channelId`)??b.channelId??'',
+    emoji:d.get(`${prefix}.buttons.${i}.emoji`)??b.emoji??''
+  }));
   return style;
 }
 function readTemplatePreview(form,key,base){
@@ -130,6 +137,13 @@ function readTemplatePreview(form,key,base){
     name:d.get(`embed.fields.${i}.name`)??item.name??'',
     value:d.get(`embed.fields.${i}.value`)??item.value??'',
     inline:d.has(`embed.fields.${i}.inline`)
+  }));
+  style.buttons=(base.buttons||[]).map((b,i)=>({
+    label:d.get(`buttons.${i}.label`)??b.label??'',
+    type:d.get(`buttons.${i}.type`)??b.type??'url',
+    url:d.get(`buttons.${i}.url`)??b.url??'',
+    channelId:d.get(`buttons.${i}.channelId`)??b.channelId??'',
+    emoji:d.get(`buttons.${i}.emoji`)??b.emoji??''
   }));
   return style;
 }
