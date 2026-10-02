@@ -23,6 +23,11 @@ const loginLimit=rateLimit({windowMs:15*60000,limit:12,standardHeaders:'draft-8'
 const hash=value=>createHash('sha256').update(value).digest('hex');
 const setupKey=process.env.SETUP_KEY||'',setupKeyRequired=!demo&&host!=='127.0.0.1';
 const cookieOptions={httpOnly:true,sameSite:'strict',secure:process.env.COOKIE_SECURE==='true',path:'/',maxAge:12*3600000};
+const oauthRedirect=new URL('/api/oauth/discord/callback',base).toString();
+const oauthCookieOptions={httpOnly:true,sameSite:'lax',secure:process.env.COOKIE_SECURE==='true',path:'/api/oauth/discord',maxAge:10*60000};
+const cookieValue=(req,name)=>(req.headers.cookie||'').split(';').map(c=>c.trim()).find(c=>c.startsWith(name+'='))?.slice(name.length+1)||'';
+const oauthPage=(title,message,ok=false)=>`<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Studio K · ${title}</title><style>body{margin:0;background:#0d0c13;color:#f5f1ff;font:15px/1.55 system-ui,-apple-system,Segoe UI,sans-serif;display:grid;min-height:100vh;place-items:center}.card{width:min(620px,calc(100% - 36px));box-sizing:border-box;background:#17141f;border:1px solid #30283d;border-radius:18px;padding:28px;box-shadow:0 24px 70px #0006}.mark{width:54px;height:54px;border-radius:14px;background:#995cff;display:grid;place-items:center;font-weight:900;font-size:26px;margin-bottom:18px}.eyebrow{font-size:12px;letter-spacing:.14em;text-transform:uppercase;color:#ad7cff;font-weight:800}h1{font-size:27px;margin:5px 0 10px}.ok{color:#75e6a4}.bad{color:#ff9aa9}p{color:#bdb5c9;margin:0}.button{display:inline-block;margin-top:22px;padding:11px 15px;border-radius:10px;background:#995cff;color:white;text-decoration:none;font-weight:800}</style></head><body><main class="card"><div class="mark">K</div><div class="eyebrow">Studio K · Verificação</div><h1 class="${ok?'ok':'bad'}">${title}</h1><p>${message}</p><a class="button" href="https://discord.com/channels/${encodeURIComponent(process.env.DISCORD_GUILD_ID||'')}">Voltar ao Discord</a></main></body></html>`;
+
 function session(req){const raw=(req.headers.cookie||'').split(';').map(c=>c.trim()).find(c=>c.startsWith('studio_session='))?.slice(15);if(!raw)return null;return store.one('SELECT * FROM sessions WHERE id=? AND expires>?',hash(raw),Date.now());}
 function newSession(res){const raw=randomBytes(32).toString('hex'),csrf=randomBytes(32).toString('hex');store.run('DELETE FROM sessions WHERE expires<?',Date.now());store.run('INSERT INTO sessions VALUES(?,?,?)',hash(raw),csrf,Date.now()+12*3600000);res.cookie('studio_session',raw,cookieOptions);return csrf;}
 function sameOrigin(req,res,next){
@@ -31,6 +36,57 @@ function sameOrigin(req,res,next){
 }
 app.get('/healthz',(req,res)=>res.json({ok:true}));
 app.get('/api/auth', (req,res)=>{const s=session(req);res.json({authenticated:!!s,csrf:s?.csrf||null,setup:!store.get('password'),setupKeyRequired,demo});});
+app.get('/api/oauth/discord/start',(req,res)=>{
+  const v=store.settings().verification;
+  if(!v.oauthEnabled)throw new AppError('A verificação OAuth ainda não está ativada.',400);
+  if(!v.roleId)throw new AppError('Configure o cargo da verificação antes de publicar o painel.',400);
+  if(!process.env.DISCORD_CLIENT_ID||!process.env.DISCORD_CLIENT_SECRET)throw new AppError('OAuth do Discord ainda não está configurado no servidor.',503);
+  const state=randomBytes(32).toString('base64url');
+  res.cookie('studio_oauth_state',state,oauthCookieOptions);
+  const params=new URLSearchParams({response_type:'code',client_id:process.env.DISCORD_CLIENT_ID,scope:'identify',state,redirect_uri:oauthRedirect,prompt:'consent'});
+  res.redirect(`https://discord.com/oauth2/authorize?${params}`);
+});
+app.get('/api/oauth/discord/callback',async(req,res)=>{
+  let accessToken='';
+  try{
+    const expected=cookieValue(req,'studio_oauth_state'),given=String(req.query.state||''),code=String(req.query.code||'');
+    res.clearCookie('studio_oauth_state',{path:'/api/oauth/discord'});
+    if(req.query.error)throw new AppError('A autorização foi cancelada ou recusada.',400);
+    if(!expected||!given||!timingSafeEqual(Buffer.from(hash(expected)),Buffer.from(hash(given))))throw new AppError('A verificação expirou ou não corresponde a esta solicitação.',403);
+    if(!code)throw new AppError('O Discord não retornou o código de autorização.',400);
+    if(!process.env.DISCORD_CLIENT_ID||!process.env.DISCORD_CLIENT_SECRET)throw new AppError('OAuth do Discord ainda não está configurado.',503);
+
+    const tokenResponse=await fetch('https://discord.com/api/v10/oauth2/token',{
+      method:'POST',
+      headers:{'Content-Type':'application/x-www-form-urlencoded',Authorization:`Basic ${Buffer.from(`${process.env.DISCORD_CLIENT_ID}:${process.env.DISCORD_CLIENT_SECRET}`).toString('base64')}`},
+      body:new URLSearchParams({grant_type:'authorization_code',code,redirect_uri:oauthRedirect})
+    });
+    const token=await tokenResponse.json().catch(()=>({}));
+    if(!tokenResponse.ok||!token.access_token)throw new AppError('Não foi possível concluir a autorização com o Discord.',502);
+    accessToken=token.access_token;
+
+    const userResponse=await fetch('https://discord.com/api/v10/users/@me',{headers:{Authorization:`Bearer ${accessToken}`}});
+    const user=await userResponse.json().catch(()=>({}));
+    if(!userResponse.ok||!user.id)throw new AppError('Não foi possível identificar sua conta do Discord.',502);
+
+    const result=await bot.verifyOAuthUser(user);
+    res.setHeader('X-Robots-Tag','noindex, nofollow, noarchive');
+    res.type('html').send(oauthPage('Acesso liberado',`Conta <strong>${htmlEscape(result.username)}</strong> verificada com sucesso. Seu cargo de acesso já foi aplicado.${result.dmSent?' Também enviamos uma confirmação no seu privado.':''}`,true));
+  }catch(e){
+    res.status(e instanceof AppError?e.status:500);
+    res.setHeader('X-Robots-Tag','noindex, nofollow, noarchive');
+    res.type('html').send(oauthPage('Não foi possível verificar',htmlEscape(e instanceof AppError?e.message:'Tente novamente pelo botão de verificação no Discord.')));
+  }finally{
+    if(accessToken&&process.env.DISCORD_CLIENT_ID&&process.env.DISCORD_CLIENT_SECRET){
+      fetch('https://discord.com/api/v10/oauth2/token/revoke',{
+        method:'POST',
+        headers:{'Content-Type':'application/x-www-form-urlencoded',Authorization:`Basic ${Buffer.from(`${process.env.DISCORD_CLIENT_ID}:${process.env.DISCORD_CLIENT_SECRET}`).toString('base64')}`},
+        body:new URLSearchParams({token:accessToken,token_type_hint:'access_token'})
+      }).catch(()=>{});
+    }
+  }
+});
+
 app.post('/api/setup',loginLimit,sameOrigin,(req,res)=>{
   if(demo)throw new AppError('Use a entrada de demonstração.');
   if(store.get('password'))throw new AppError('A senha já foi definida.',409);
@@ -83,7 +139,7 @@ app.post('/api/logout',(req,res)=>{store.run('DELETE FROM sessions WHERE id=?',r
 app.get('/api/state',(req,res)=>{
   const settings=store.settings(),products=store.products();const orders=store.all('SELECT * FROM orders ORDER BY created DESC LIMIT 200').map(o=>({...o,product:JSON.parse(o.product)}));
   const summary=store.one("SELECT COUNT(*) AS orders,COALESCE(SUM(CASE WHEN status IN ('paid','delivered') THEN price ELSE 0 END),0) AS revenue,SUM(CASE WHEN status='pending' THEN 1 ELSE 0 END) AS pending FROM orders");
-  res.json({demo,status:bot.status(),settings,products,orders,summary,tickets:store.all('SELECT id,user_id,channel_id,category,status,created,updated,claimed_by FROM tickets ORDER BY created DESC LIMIT 200'),giveaways:store.all('SELECT * FROM giveaways ORDER BY created DESC LIMIT 100').map(g=>({...g,data:JSON.parse(g.data),entries:store.one('SELECT COUNT(*) AS n FROM entries WHERE giveaway_id=?',g.id).n})),events:store.all('SELECT * FROM events ORDER BY created DESC LIMIT 100').map(e=>({...e,data:JSON.parse(e.data)})),logs:store.all('SELECT * FROM logs ORDER BY id DESC LIMIT 100'),templates:store.all('SELECT * FROM templates ORDER BY name').map(t=>({...t,data:JSON.parse(t.data)})),lastBackup:store.get('lastBackup'),backups:readdirSync(join(store.dir,'backups')).filter(f=>f.endsWith('.json')).sort().reverse()});
+  res.json({demo,status:bot.status(),oauth:{configured:!!(process.env.DISCORD_CLIENT_ID&&process.env.DISCORD_CLIENT_SECRET),redirectUri:oauthRedirect},settings,products,orders,summary,tickets:store.all('SELECT id,user_id,channel_id,category,status,created,updated,claimed_by FROM tickets ORDER BY created DESC LIMIT 200'),giveaways:store.all('SELECT * FROM giveaways ORDER BY created DESC LIMIT 100').map(g=>({...g,data:JSON.parse(g.data),entries:store.one('SELECT COUNT(*) AS n FROM entries WHERE giveaway_id=?',g.id).n})),events:store.all('SELECT * FROM events ORDER BY created DESC LIMIT 100').map(e=>({...e,data:JSON.parse(e.data)})),logs:store.all('SELECT * FROM logs ORDER BY id DESC LIMIT 100'),templates:store.all('SELECT * FROM templates ORDER BY name').map(t=>({...t,data:JSON.parse(t.data)})),lastBackup:store.get('lastBackup'),backups:readdirSync(join(store.dir,'backups')).filter(f=>f.endsWith('.json')).sort().reverse()});
 });
 app.get('/api/discord/metadata',async(req,res)=>res.json(await bot.metadata()));
 app.put('/api/settings',(req,res)=>{const settings=settingsSchema.parse(req.body);store.set('settings',settings);store.log('configuração','Configurações atualizadas.','administrador');res.json({ok:true});});
