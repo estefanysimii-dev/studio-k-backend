@@ -60,5 +60,25 @@ export const productSchema = z.object({ name: z.string().min(2).max(100), descri
 const messageObject = z.object({ target: z.enum(['channel','dm']), targetId: id, content: z.string().max(2000).default(''), embed: embedSchema.optional(), buttons: linkButtonsSchema, webhookName: z.string().max(80).default(''), webhookAvatar: https });
 export const templateSchema = messageObject.extend({ targetId: optionalId });
 export const messageSchema = messageObject.refine(m => m.content || (m.embed && (m.embed.title || m.embed.description || m.embed.fields.length)), 'Escreva uma mensagem ou um embed.');
-export const giveawaySchema = z.object({ title: z.string().min(2).max(200), description: z.string().max(2000).default(''), channelId: id, endsAt: z.string().datetime(), winners: z.number().int().min(1).max(20), requiredRoleId: optionalId }).refine(g => Date.parse(g.endsAt) > Date.now() + 60000, 'O sorteio precisa terminar daqui a mais de um minuto.');
+export const giveawayRequirementSchema = z.discriminatedUnion('type',[
+  z.object({id:z.string().max(80).default(''),type:z.literal('verified')}),
+  z.object({id:z.string().max(80).default(''),type:z.literal('role'),roleId:id}),
+  z.object({id:z.string().max(80).default(''),type:z.literal('accountAge'),days:z.number().int().min(1).max(3650)}),
+  z.object({id:z.string().max(80).default(''),type:z.literal('serverAge'),days:z.number().int().min(1).max(3650)}),
+  z.object({id:z.string().max(80).default(''),type:z.literal('invites'),count:z.number().int().min(1).max(1000),minStayHours:z.number().int().min(0).max(8760).default(0),minAccountDays:z.number().int().min(0).max(3650).default(0),requireVerified:z.boolean().default(true)}),
+  z.object({id:z.string().max(80).default(''),type:z.literal('youtubeSubscription'),channel:z.string().min(2).max(500)}),
+  z.object({id:z.string().max(80).default(''),type:z.literal('youtubeLike'),video:z.string().min(2).max(500)}),
+  z.object({id:z.string().max(80).default(''),type:z.literal('reaction'),channelId:id,messageId:id,emoji:z.string().min(1).max(100)}),
+  z.object({id:z.string().max(80).default(''),type:z.literal('voiceMinutes'),minutes:z.number().int().min(1).max(100000)}),
+  z.object({id:z.string().max(80).default(''),type:z.literal('manual'),label:z.string().min(2).max(200)})
+]);
+export const giveawaySchema = z.object({
+  title:z.string().min(2).max(200),
+  description:z.string().max(2000).default(''),
+  channelId:id,
+  endsAt:z.string().datetime(),
+  winners:z.number().int().min(1).max(20),
+  requiredRoleId:optionalId,
+  requirements:z.array(giveawayRequirementSchema).max(20).default([])
+}).refine(g=>Date.parse(g.endsAt)>Date.now()+60000,'O sorteio precisa terminar daqui a mais de um minuto.');
 export const eventSchema = z.object({ name: z.string().min(2).max(100), description: z.string().max(1000).default(''), startsAt: z.string().datetime(), endsAt: z.string().datetime(), location: z.string().min(1).max(100) }).refine(e => Date.parse(e.startsAt) > Date.now() && Date.parse(e.endsAt) > Date.parse(e.startsAt), 'Confira início e fim do evento.');
