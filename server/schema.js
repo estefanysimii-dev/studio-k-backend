@@ -10,10 +10,23 @@ export const embedSchema = z.object({
   timestamp: z.boolean().default(false),
   fields: z.array(z.object({ name: z.string().min(1).max(256), value: z.string().min(1).max(1024), inline: z.boolean().default(false) })).max(25).default([])
 }).refine(e => e.title.length + e.description.length + e.author.length + e.footer.length + e.fields.reduce((n,f) => n + f.name.length + f.value.length, 0) <= 6000, 'O embed ultrapassa 6.000 caracteres.');
-const template = z.object({ enabled: z.boolean().default(false), channelId: optionalId, content: z.string().max(1800).default(''), embed: embedSchema.prefault({}) });
+const linkButtonSchema = z.object({
+  label: z.string().min(1).max(80),
+  type: z.enum(['url','channel']).default('url'),
+  url: https,
+  channelId: optionalId,
+  emoji: z.string().max(100).default('')
+}).superRefine((b,ctx)=>{
+  if(b.type==='url'&&!b.url)ctx.addIssue({code:'custom',message:'Informe a URL do botão.'});
+  if(b.type==='channel'&&!b.channelId)ctx.addIssue({code:'custom',message:'Escolha o canal do botão.'});
+});
+const linkButtonsSchema = z.array(linkButtonSchema).max(5).default([]);
+
+const template = z.object({ enabled: z.boolean().default(false), channelId: optionalId, content: z.string().max(1800).default(''), embed: embedSchema.prefault({}), buttons: linkButtonsSchema });
 const messageStyle = (content='', embed={}) => z.object({
   content: z.string().max(2000).default(content),
-  embed: embedSchema.prefault(embed)
+  embed: embedSchema.prefault(embed),
+  buttons: linkButtonsSchema
 }).prefault({});
 const messageStylesSchema = z.object({
   ticketPanel: messageStyle('', { title:'Como podemos ajudar?', description:'Abra um atendimento privado com nossa equipe.', color:'#995cff' }),
@@ -44,7 +57,7 @@ export const settingsSchema = z.object({
 });
 export const defaults = settingsSchema.parse({});
 export const productSchema = z.object({ name: z.string().min(2).max(100), description: z.string().max(2000).default(''), priceCents: z.number().int().min(1).max(100000000), type: z.enum(['digital','service']), roleId: optionalId, active: z.boolean().default(true), image: https, delivery: z.string().max(1500).default(''), category: z.string().max(80).default('Geral') });
-const messageObject = z.object({ target: z.enum(['channel','dm']), targetId: id, content: z.string().max(2000).default(''), embed: embedSchema.optional(), webhookName: z.string().max(80).default(''), webhookAvatar: https });
+const messageObject = z.object({ target: z.enum(['channel','dm']), targetId: id, content: z.string().max(2000).default(''), embed: embedSchema.optional(), buttons: linkButtonsSchema, webhookName: z.string().max(80).default(''), webhookAvatar: https });
 export const templateSchema = messageObject.extend({ targetId: optionalId });
 export const messageSchema = messageObject.refine(m => m.content || (m.embed && (m.embed.title || m.embed.description || m.embed.fields.length)), 'Escreva uma mensagem ou um embed.');
 export const giveawaySchema = z.object({ title: z.string().min(2).max(200), description: z.string().max(2000).default(''), channelId: id, endsAt: z.string().datetime(), winners: z.number().int().min(1).max(20), requiredRoleId: optionalId }).refine(g => Date.parse(g.endsAt) > Date.now() + 60000, 'O sorteio precisa terminar daqui a mais de um minuto.');
