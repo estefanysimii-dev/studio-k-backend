@@ -888,7 +888,19 @@ export function createBot(store,env=process.env){
         payload.allowedMentions=mentionPolicy(payload,key==='welcome'?[m.id]:[]);
         await(await channel(t.channelId)).send(payload);
       }
-      if(s.logs.members)await audit('membro',`${m.user.username} ${key==='welcome'?'entrou':'saiu'} do servidor.`,m.id);
+      if(s.logs.members){
+        if(key==='welcome'){
+          await audit('membro entrou',`Membro <@${m.id}> entrou no servidor.`,m.id);
+        }else{
+          await wait(650);
+          const banEntry=await recentAudit(m.guild,AuditLogEvent.MemberBanAdd,{targetId:m.id,maxAge:3500});
+          if(!banEntry){
+            const kickEntry=await recentAudit(m.guild,AuditLogEvent.MemberKick,{targetId:m.id,maxAge:3500});
+            if(kickEntry?.executorId)await audit('membro expulso',`Membro <@${m.id}> foi expulso do servidor por <@${kickEntry.executorId}>.${kickEntry.reason?` Motivo: ${kickEntry.reason}`:''}`,kickEntry.executorId);
+            else await audit('membro saiu',`Membro <@${m.id}> saiu do servidor.`,m.id);
+          }
+        }
+      }
       void updateLivePanels(true);
     }catch(e){store.log('erro',e.message);}
   });
