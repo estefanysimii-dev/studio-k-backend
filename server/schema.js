@@ -46,6 +46,7 @@ const messageStylesSchema = z.object({
   giveawaysLive: messageStyle('', { title:'🎁 Sorteios ativos', description:'**{activeGiveaways}** sorteio(s) ativo(s)\n**{eligible}** participante(s) elegível(is)\n\n{giveawayList}', color:'#995cff', footer:'Atualizado {updated}', timestamp:true }),
   operationsLive: messageStyle('', { title:'🟢 Status operacional · Studio K', description:'Bot: **{botStatus}**\nLoja: **{storeStatus}**\nTickets: **{ticketsStatus}**\nTickets abertos: **{openTickets}**\nPedidos pendentes: **{pendingOrders}**', color:'#995cff', footer:'Atualizado {updated}', timestamp:true }),
   inviteRankingLive: messageStyle('', { title:'🏆 Ranking de convites · {month}', description:'{ranking}', color:'#995cff', footer:'Somente convites válidos rastreados pelo Studio K · Atualizado {updated}', timestamp:true }),
+  commandCenter: messageStyle('', { title:'Studio K · Central', description:'Tudo o que você precisa em um só lugar. Use os botões abaixo para acessar loja, atendimento, pedidos, perfil, idioma, sorteios e ajuda.', color:'#995cff' }),
   logs: messageStyle('', { title:'Studio K · {type}', description:'{detail}', color:'#995cff', footer:'Responsável: {actor}', timestamp:true }),
   orderDelivery: messageStyle('', { title:'Compra aprovada · {product}', description:'Pedido {order}\n\n{delivery}\n\n{instructions}', color:'#995cff' }),
   feedback: messageStyle('', { title:'💜 Novo feedback · {source}', description:'{stars} **{rating}/5**\n\n{comment}', color:'#995cff', fields:[{name:'Cliente',value:'{user}',inline:true},{name:'Referência',value:'{reference}',inline:true}], footer:'Studio K · Feedback verificado', timestamp:true })
@@ -55,7 +56,7 @@ export const settingsSchema = z.object({
   brand: z.object({ name: z.string().min(2).max(32).default('Studio K'), status: z.enum(['online','idle','dnd','invisible']).default('online'), activity: z.string().max(128).default('Sua loja, sua comunidade.'), activityType: z.enum(['Playing','Watching','Listening','Competing']).default('Watching'), description: z.string().max(400).default(''), avatar: z.string().max(4000000).regex(/^(data:image\/(png|jpeg|webp);base64,[A-Za-z0-9+/=]+)?$/).default(''), banner: z.string().max(4000000).regex(/^(data:image\/(png|jpeg|webp);base64,[A-Za-z0-9+/=]+)?$/).default('') }).prefault({}),
   welcome: template.prefault({ content: 'Bem-vindo(a), {user}! Você está no {server}.', embed: { title: 'Seu lugar é aqui.', description: 'Confira as regras e conheça nossa loja.' } }),
   goodbye: template.prefault({ content: '{username} saiu do servidor.' }),
-  tickets: z.object({ categoryId: optionalId, staffRoleId: optionalId, staffRoleIds: z.array(id).max(25).default([]), logChannelId: optionalId, title: z.string().min(1).max(256).default('Como podemos ajudar?'), description: z.string().max(2000).default('Abra um atendimento privado com nossa equipe.'), button: z.string().min(1).max(80).default('Abrir ticket'), categories: z.array(z.string().min(1).max(80)).min(1).max(10).default(['Suporte','Compras','Orçamento']), color: z.string().regex(/^#[0-9a-f]{6}$/i).default('#995cff'), autoCloseHours: z.number().int().min(0).max(720).default(0), callDm: z.boolean().default(true) }).prefault({}),
+  tickets: z.object({ categoryId: optionalId, staffRoleId: optionalId, staffRoleIds: z.array(id).max(25).default([]), logChannelId: optionalId, title: z.string().min(1).max(256).default('Como podemos ajudar?'), description: z.string().max(2000).default('Abra um atendimento privado com nossa equipe.'), button: z.string().min(1).max(80).default('Abrir ticket'), categories: z.array(z.string().min(1).max(80)).min(1).max(10).default(['Suporte','Compras','Orçamento']), color: z.string().regex(/^#[0-9a-f]{6}$/i).default('#995cff'), autoCloseHours: z.number().int().min(0).max(720).default(0), callDm: z.boolean().default(true), maxOpen:z.number().int().min(1).max(10).default(2), queueEnabled:z.boolean().default(true), slaMinutes:z.number().int().min(0).max(10080).default(60), escalationMinutes:z.number().int().min(0).max(10080).default(30), staleReminderMinutes:z.number().int().min(0).max(10080).default(120), allowReopen:z.boolean().default(true), defaultPriority:z.enum(['low','normal','high','urgent']).default('normal') }).prefault({}),
   verification: z.object({ roleId: optionalId, roleIds: z.array(id).max(25).default([]), redirectChannelId: optionalId, title: z.string().min(1).max(256).default('Verifique sua conta'), description: z.string().max(2000).default('Leia as regras. Ao confirmar, você receberá acesso à comunidade.'), button: z.string().min(1).max(80).default('Liberar meu acesso'), minimumAccountDays: z.number().int().min(0).max(365).default(7), oauthEnabled: z.boolean().default(false), sendDm: z.boolean().default(true) }).prefault({}),
   roleGroups: z.object({
     staff:z.array(id).max(50).default([]),
@@ -64,6 +65,24 @@ export const settingsSchema = z.object({
     customers:z.array(id).max(50).default([]),
     decorative:z.array(id).max(100).default([])
   }).prefault({}),
+  permissions: z.object({
+    ticketManage:z.array(id).max(50).default([]),
+    ticketClose:z.array(id).max(50).default([]),
+    ticketTransfer:z.array(id).max(50).default([]),
+    salesManage:z.array(id).max(50).default([]),
+    moderation:z.array(id).max(50).default([]),
+    logsView:z.array(id).max(50).default([])
+  }).prefault({}),
+  commandCenter: z.object({ enabled:z.boolean().default(true), channelId:optionalId, title:z.string().max(120).default('Central Studio K') }).prefault({}),
+  faq: z.object({
+    enabled:z.boolean().default(true),
+    items:z.array(z.object({question:z.string().min(2).max(120),answer:z.string().min(2).max(1200),keywords:z.string().max(300).default('')})).max(25).default([
+      {question:'Como abrir um ticket?',answer:'Use a Central Studio K ou o comando /ticket e escolha a categoria do atendimento.',keywords:'ticket suporte atendimento'},
+      {question:'Como consultar meu pedido?',answer:'Use /pedido ou abra Minha conta na Central Studio K.',keywords:'pedido compra entrega'},
+      {question:'Como alterar meu idioma?',answer:'Use /idioma ou o botão Idioma na Central Studio K.',keywords:'idioma linguagem tradução'}
+    ])
+  }).prefault({}),
+  alerts: z.object({ enabled:z.boolean().default(true), channelId:optionalId, deletedMessagesThreshold:z.number().int().min(2).max(100).default(5), lowStock:z.boolean().default(true), staleTickets:z.boolean().default(true) }).prefault({}),
   sales: z.object({ pixKey: z.string().max(200).default(''), recipient: z.string().max(100).default(''), instructions: z.string().max(1200).default('Envie o comprovante no ticket e aguarde a conferência da equipe.'), orderExpiryMinutes: z.number().int().min(10).max(10080).default(60), lowStockThreshold: z.number().int().min(0).max(10000).default(3) }).prefault({}),
   salesLive: z.object({ enabled:z.boolean().default(false), channelId:optionalId }).prefault({}),
   communityLive: z.object({ enabled:z.boolean().default(false), channelId:optionalId }).prefault({}),
