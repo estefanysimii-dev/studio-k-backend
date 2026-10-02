@@ -2,8 +2,6 @@ name: Studio K CI
 on:
   pull_request:
     branches: [main]
-  push:
-    branches: [feature/command-center-v2]
 jobs:
   validate:
     runs-on: ubuntu-latest
