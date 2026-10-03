@@ -88,6 +88,9 @@ export const splitTranslationText=value=>{
 };
 export const TICKET_OPEN_LIMIT=2;
 export const canOpenTicket=openCount=>Number(openCount)<TICKET_OPEN_LIMIT;
+export const isSupportedInteractionKind=i=>!!(i&&(i.isChatInputCommand?.()||i.isMessageContextMenuCommand?.()||i.isButton?.()||i.isStringSelectMenu?.()||i.isUserSelectMenu?.()||i.isModalSubmit?.()));
+export const ticketStateLabel=state=>({waiting_staff:'Aguardando staff',in_progress:'Em atendimento',waiting_customer:'Aguardando cliente',escalated:'Escalado',closed:'Finalizado'}[String(state||'')]||String(state||'Desconhecido'));
+export const ticketPriorityLabel=priority=>({low:'Baixa',normal:'Normal',high:'Alta',urgent:'Urgente'}[String(priority||'')]||String(priority||'Normal'));
 export const feedbackStars=rating=>'⭐'.repeat(Math.max(1,Math.min(5,Number(rating)||1)))+'☆'.repeat(5-Math.max(1,Math.min(5,Number(rating)||1)));
 export function youtubeVideoId(value=''){
   const raw=String(value).trim();
@@ -606,6 +609,11 @@ ${normalized.previewAfter}
     if(e.action==='reopen')return `${actor} reabriu o atendimento a partir do ticket anterior`;
     return e.label||e.action||'Ação registrada';
   };
+  const ticketRuntimeLine=t=>`📌 **Status:** ${ticketStateLabel(t?.state)} · **Prioridade:** ${ticketPriorityLabel(t?.priority)} · **Responsável:** ${t?.claimed_by?`<@${t.claimed_by}>`:'Não atribuído'}`;
+  const ticketRuntimeContent=(content,t)=>{
+    const base=String(content||'').split('\n').filter(line=>!line.startsWith('📌 **Status:**')).join('\n').trim();
+    return [base,ticketRuntimeLine(t)].filter(Boolean).join('\n');
+  };
   const ticketControlRows=(id,state='waiting_staff',claimed=false)=>{
     const top=[];
     if(!claimed)top.push(button('Assumir',`claim:${id}`,1));
@@ -617,7 +625,10 @@ ${normalized.previewAfter}
   };
   async function refreshTicketControls(id){
     const t=store.one('SELECT * FROM tickets WHERE id=?',id),messageId=store.get(`ticket-controls:${id}`);if(!t||t.status!=='open'||!messageId)return;
-    try{const ch=await channel(t.channel_id),msg=await ch.messages.fetch(messageId);await msg.edit({components:ticketControlRows(id,t.state,!!t.claimed_by)});}catch{}
+    try{
+      const ch=await channel(t.channel_id),msg=await ch.messages.fetch(messageId);
+      await msg.edit({content:ticketRuntimeContent(msg.content,t),components:ticketControlRows(id,t.state,!!t.claimed_by),allowedMentions:safe});
+    }catch{}
   }
   async function openTicket(userId,category,options={}){
     const guild=requireGuild(),settings=store.settings(),ticketSettings=settings.tickets,configuredStaffIds=staffRoleIds(settings);
@@ -651,7 +662,8 @@ ${normalized.previewAfter}
       const customerPayload=styledPayload(settings.messageStyles.ticketOpen,customerVars,env.DISCORD_GUILD_ID);
       await c.send({...customerPayload,allowedMentions:mentionPolicy(customerPayload,[userId])});
       const staffPayload=styledPayload(settings.messageStyles.ticketStaffPanel,customerVars,env.DISCORD_GUILD_ID);
-      const controlMessage=await c.send({...staffPayload,components:[...(staffPayload.components||[]),...ticketControlRows(id,'waiting_staff',false)],allowedMentions:mentionPolicy(staffPayload)});
+      const initialTicket=store.one('SELECT * FROM tickets WHERE id=?',id);
+      const controlMessage=await c.send({...staffPayload,content:ticketRuntimeContent(staffPayload.content,initialTicket),components:[...(staffPayload.components||[]),...ticketControlRows(id,'waiting_staff',false)],allowedMentions:mentionPolicy(staffPayload)});
       store.set(`ticket-controls:${id}`,controlMessage.id);
       ticketAuditWrite(id,{events:[{action:options.reopenedFrom?'reopen':'open',actor:userId,target:userId,at:now}],ticketName,category,openedBy:userId,openedAt:now,channelId:c.id,reopenedFrom:options.reopenedFrom||''});void updateOperationsLive(true);return {...store.one('SELECT * FROM tickets WHERE id=?',id),queuePosition};
     }catch(e){
@@ -1050,7 +1062,7 @@ ${normalized.previewAfter}
   }catch(e){store.log('erro',e.message);}finally{busy=false;}}
   client.on(Events.InteractionCreate,async i=>{
     const customId=String(i.customId||''),privateInteraction=(i.isButton()||i.isStringSelectMenu()||i.isModalSubmit())&&(customId.startsWith('feedback')||customId.startsWith('translate')||customId.startsWith('reopen'));
-    if((i.guildId!==env.DISCORD_GUILD_ID&&!privateInteraction)||(!i.isChatInputCommand()&&!i.isMessageContextMenuCommand()&&!i.isButton()&&!i.isStringSelectMenu()&&!i.isModalSubmit()))return;
+    if((i.guildId!==env.DISCORD_GUILD_ID&&!privateInteraction)||!isSupportedInteractionKind(i))return;
     if(i.isButton()&&i.customId.startsWith('feedback:')){
       try{
         const id=i.customId.split(':')[1],request=store.one('SELECT * FROM feedback_requests WHERE id=?',id);
@@ -1204,7 +1216,7 @@ ${normalized.previewAfter}
         const parts=action.split(':'),id=parts[1],state=parts[2],allowed=new Set(['waiting_staff','in_progress','waiting_customer','escalated']);if(!allowed.has(state))throw new AppError('Status inválido.');
         const t=store.one("SELECT * FROM tickets WHERE id=? AND status='open'",id);if(!t)throw new AppError('Ticket aberto não encontrado.',404);
         store.run('UPDATE tickets SET state=?,updated=? WHERE id=?',state,store.now(),id);ticketAuditAppend(id,{action:'state',actor:i.user.id,target:t.user_id,state});store.recordStaffAction(i.user.id,'state',id,t.user_id,{state});await refreshTicketControls(id);
-        await localizedEdit(i,`Status atualizado para **${state}**.`);return;
+        await localizedEdit(i,`Status atualizado para **${ticketStateLabel(state)}**.`);return;
       }
       if(action.startsWith('status:')){
         if(!await isStaff(i))throw new AppError('Somente a equipe pode alterar o status.',403);
@@ -1228,7 +1240,7 @@ ${normalized.previewAfter}
         const id=action.split(':')[1],priority=String(i.values?.[0]||''),allowed=new Set(['low','normal','high','urgent']);if(!allowed.has(priority))throw new AppError('Prioridade inválida.');
         const t=store.one("SELECT * FROM tickets WHERE id=? AND status='open'",id);if(!t)throw new AppError('Ticket aberto não encontrado.',404);
         store.run('UPDATE tickets SET priority=?,updated=? WHERE id=?',priority,store.now(),id);ticketAuditAppend(id,{action:'priority',actor:i.user.id,target:t.user_id,priority});store.recordStaffAction(i.user.id,'priority',id,t.user_id,{priority});
-        await localizedEdit(i,`Prioridade atualizada para **${priority}**.`);return;
+        await localizedEdit(i,`Prioridade atualizada para **${ticketPriorityLabel(priority)}**.`);return;
       }
       if(action.startsWith('transfer:')){
         if(!await hasStaffPermission(i,'ticketTransfer'))throw new AppError('Você não possui permissão para transferir tickets.',403);
@@ -1240,8 +1252,10 @@ ${normalized.previewAfter}
         const id=action.split(':')[1],to=String(i.values?.[0]||''),t=store.one("SELECT * FROM tickets WHERE id=? AND status='open'",id);if(!t)throw new AppError('Ticket aberto não encontrado.',404);
         const guild=requireGuild(),m=await guild.members.fetch(to),settings=store.settings(),allowedRoles=[...new Set([...staffRoleIds(settings),...(settings.permissions?.ticketManage||[])])];
         if(!allowedRoles.some(r=>m.roles.cache.has(r))&&!m.permissions.has(PermissionFlagsBits.ManageGuild)&&!m.permissions.has(PermissionFlagsBits.Administrator))throw new AppError('Escolha um membro que pertença à equipe.');
+        const tc=await channel(t.channel_id);
+        await tc.permissionOverwrites.edit(to,{ViewChannel:true,SendMessages:true,ReadMessageHistory:true,AttachFiles:true,ManageMessages:true});
         store.run("UPDATE tickets SET claimed_by=?,state='in_progress',updated=? WHERE id=?",to,store.now(),id);ticketAuditAppend(id,{action:'transfer',actor:i.user.id,target:t.user_id,to});store.recordStaffAction(i.user.id,'transfer',id,t.user_id,{to});await refreshTicketControls(id);
-        try{const tc=await channel(t.channel_id);await tc.send({content:`Atendimento transferido para <@${to}> por <@${i.user.id}>.`,allowedMentions:{parse:[],users:[to,i.user.id]}});}catch{}
+        try{await tc.send({content:`Atendimento transferido para <@${to}> por <@${i.user.id}>.`,allowedMentions:{parse:[],users:[to,i.user.id]}});}catch{}
         await localizedEdit(i,`Atendimento transferido para <@${to}>.`);return;
       }
       if(action.startsWith('reopen:')){
