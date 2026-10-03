@@ -496,19 +496,59 @@ const portfolioAnalyticsSummary=(days=30)=>{
   const since=new Date(Date.now()-windowDays*86400000).toISOString();
   const count=event=>Number(store.one('SELECT COUNT(*) AS n FROM portfolio_events WHERE event=? AND created>=?',event,since)?.n||0);
   const pageViews=count('page_view'),productViews=count('product_view'),portfolioViews=count('portfolio_view'),favoriteAdds=count('favorite_add'),checkoutStarts=count('checkout_start'),ordersCreated=count('order_created');
+  const clicks=count('click'),searches=count('search'),filters=count('filter'),checkoutErrors=count('checkout_error');
   const uniqueVisitors=Number(store.one("SELECT COUNT(DISTINCT session_id) AS n FROM portfolio_events WHERE event='page_view' AND created>=?",since)?.n||0);
+  const returningVisitors=Number(store.one("SELECT COUNT(*) AS n FROM (SELECT session_id FROM portfolio_events WHERE event='page_view' AND created>=? GROUP BY session_id HAVING COUNT(DISTINCT substr(created,1,10))>1)",since)?.n||0);
   const paid=store.one("SELECT COUNT(*) AS n,COALESCE(SUM(price),0) AS revenue FROM orders WHERE status IN ('paid','delivered') AND created>=?",since)||{};
   const paidOrders=Number(paid.n||0),revenue=Number(paid.revenue||0);
   const topRows=store.all("SELECT item_id, SUM(CASE WHEN event='product_view' THEN 1 ELSE 0 END) AS views, SUM(CASE WHEN event='favorite_add' THEN 1 ELSE 0 END) AS favorites, SUM(CASE WHEN event='checkout_start' THEN 1 ELSE 0 END) AS checkouts, SUM(CASE WHEN event='order_created' THEN 1 ELSE 0 END) AS orders FROM portfolio_events WHERE item_kind='product' AND item_id IS NOT NULL AND created>=? GROUP BY item_id ORDER BY views DESC,favorites DESC LIMIT 20",since);
+  const rawEvents=store.all("SELECT session_id,event,item_kind,item_id,path,meta,created FROM portfolio_events WHERE created>=? ORDER BY id DESC LIMIT 10000",since);
+  const productDwell=new Map(),sourceCounts=new Map(),clickCounts=new Map(),searchCounts=new Map(),exitCounts=new Map();
+  let pageDurationTotal=0,pageDurationCount=0,scrollTotal=0,scrollCount=0;
+  for(const row of rawEvents){
+    let meta={};try{meta=JSON.parse(row.meta||'{}')}catch{}
+    if(row.event==='page_view'){
+      const source=String(meta.source||meta.referrerHost||'Direto').trim().slice(0,80)||'Direto';
+      sourceCounts.set(source,(sourceCounts.get(source)||0)+1);
+    }else if(row.event==='page_leave'){
+      const duration=Math.max(0,Math.min(3600,Number(meta.durationSec)||0));
+      const scroll=Math.max(0,Math.min(100,Number(meta.scrollDepth)||0));
+      if(duration){pageDurationTotal+=duration;pageDurationCount++;}
+      if(Number.isFinite(scroll)){scrollTotal+=scroll;scrollCount++;}
+      const path=String(row.path||'/').slice(0,160);
+      exitCounts.set(path,(exitCounts.get(path)||0)+1);
+    }else if(row.event==='product_dwell'&&row.item_id){
+      const duration=Math.max(0,Math.min(3600,Number(meta.durationSec)||0));
+      const current=productDwell.get(row.item_id)||{seconds:0,count:0};
+      current.seconds+=duration;current.count+=1;productDwell.set(row.item_id,current);
+    }else if(row.event==='click'){
+      const label=String(meta.label||meta.href||'Clique').trim().slice(0,100);
+      if(label)clickCounts.set(label,(clickCounts.get(label)||0)+1);
+    }else if(row.event==='search'){
+      const query=String(meta.query||'').trim().toLowerCase().slice(0,80);
+      if(query)searchCounts.set(query,(searchCounts.get(query)||0)+1);
+    }
+  }
   const products=portfolioProducts();
-  const topProducts=topRows.map(row=>{const product=products.find(item=>item.id===row.item_id);return{id:row.item_id,name:product?.name||'Produto removido',views:Number(row.views||0),favorites:Number(row.favorites||0),checkouts:Number(row.checkouts||0),orders:Number(row.orders||0)};});
+  const topProducts=topRows.map(row=>{
+    const product=products.find(item=>item.id===row.item_id),dwell=productDwell.get(row.item_id)||{seconds:0,count:0};
+    return{id:row.item_id,name:product?.name||'Produto removido',views:Number(row.views||0),favorites:Number(row.favorites||0),checkouts:Number(row.checkouts||0),orders:Number(row.orders||0),dwellSeconds:Math.round(dwell.seconds),avgDwellSeconds:dwell.count?Math.round(dwell.seconds/dwell.count):0};
+  });
+  const sortMap=(map,limit=8)=>[...map.entries()].sort((a,b)=>b[1]-a[1]).slice(0,limit).map(([label,value])=>({label,value}));
   const daily=store.all("SELECT substr(created,1,10) AS day, SUM(CASE WHEN event='page_view' THEN 1 ELSE 0 END) AS pageViews, SUM(CASE WHEN event='product_view' THEN 1 ELSE 0 END) AS productViews, SUM(CASE WHEN event='checkout_start' THEN 1 ELSE 0 END) AS checkouts, SUM(CASE WHEN event='order_created' THEN 1 ELSE 0 END) AS orders FROM portfolio_events WHERE created>=? GROUP BY substr(created,1,10) ORDER BY day",since).map(row=>({day:row.day,pageViews:Number(row.pageViews||0),productViews:Number(row.productViews||0),checkouts:Number(row.checkouts||0),orders:Number(row.orders||0)}));
   return{
-    days:windowDays,pageViews,uniqueVisitors,productViews,portfolioViews,favoriteAdds,checkoutStarts,ordersCreated,paidOrders,revenue,
+    days:windowDays,pageViews,uniqueVisitors,returningVisitors,productViews,portfolioViews,favoriteAdds,checkoutStarts,ordersCreated,paidOrders,revenue,clicks,searches,filters,checkoutErrors,
+    avgPageSeconds:pageDurationCount?Math.round(pageDurationTotal/pageDurationCount):0,
+    avgScrollDepth:scrollCount?Math.round(scrollTotal/scrollCount):0,
     checkoutAbandonment:checkoutStarts?Math.max(0,Math.min(100,Math.round((checkoutStarts-ordersCreated)/checkoutStarts*100))):0,
     checkoutConversion:checkoutStarts?Math.max(0,Math.min(100,Math.round(paidOrders/checkoutStarts*100))):0,
     viewToOrder:productViews?Math.max(0,Math.min(100,Math.round(ordersCreated/productViews*100))):0,
-    topProducts,daily
+    topProducts,
+    topSources:sortMap(sourceCounts),
+    topClicks:sortMap(clickCounts),
+    topSearches:sortMap(searchCounts),
+    exitPages:sortMap(exitCounts),
+    daily
   };
 };
 const portfolioStatus=()=>{
@@ -675,7 +715,7 @@ app.get('/api/portfolio/feedbacks',async(req,res)=>res.json(await publicPortfoli
 app.post('/api/portfolio/analytics/event',portfolioSameOrigin,(req,res)=>{
   const body=z.object({
     sessionId:z.string().trim().min(8).max(96),
-    event:z.enum(['page_view','product_view','portfolio_view','checkout_start']),
+    event:z.enum(['page_view','page_leave','product_view','product_dwell','portfolio_view','search','filter','click','checkout_start','checkout_error']),
     itemKind:z.enum(['product','portfolio','page']).default('page'),
     itemId:z.string().trim().max(160).default(''),
     path:z.string().trim().max(500).default(''),
