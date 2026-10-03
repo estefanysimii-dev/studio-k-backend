@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { scheduledPosition } from './radio-clock.js';
 
 const audioUrl=z.string().trim().max(2000).refine(value=>{
   if (/^\/(?!\/)[^\\\s]*$/.test(value)) return true;
@@ -11,7 +12,8 @@ export const radioSchema=z.object({
   source:z.enum(['spotify','schedule','hls']).default('spotify'),
   spotifyUrl:playlist.default(''),
   streamUrl:audioUrl.or(z.literal('')).default(''),
-  tracks:z.array(z.object({title:z.string().trim().min(1).max(120),url:audioUrl,duration:z.number().finite().positive().max(86400)})).max(200).default([]),
+  tracks:z.array(z.object({title:z.string().trim().min(1).max(120),url:audioUrl,duration:z.number().finite().positive().max(86400)})).max(500).default([]),
+  shuffle:z.boolean().default(false),
   epochMs:z.number().int().min(0).max(8640000000000000).default(0),
   position:z.enum(['left','right']).default('right'),
   compact:z.boolean().default(true),
@@ -27,7 +29,7 @@ export const radioSchema=z.object({
 export const defaultRadio=radioSchema.parse({});
 export function normalizeRadio(input,current=defaultRadio,now=Date.now()){
   const next=radioSchema.parse(input);
-  const changed=next.source!==current.source||next.streamUrl!==current.streamUrl||JSON.stringify(next.tracks)!==JSON.stringify(current.tracks);
+  const changed=next.shuffle!==current.shuffle||next.source!==current.source||next.streamUrl!==current.streamUrl||JSON.stringify(next.tracks)!==JSON.stringify(current.tracks);
   // The server owns the shared epoch. Cosmetic changes and restarts preserve it.
   next.epochMs=changed||!current.epochMs?now:current.epochMs;
   return next;
@@ -35,12 +37,8 @@ export function normalizeRadio(input,current=defaultRadio,now=Date.now()){
 export function radioSnapshot(radio,now=Date.now()){
   let live=null;
   if(radio.source==='schedule'&&radio.tracks.length){
-    const total=radio.tracks.reduce((sum,t)=>sum+t.duration,0);
-    let position=((now-radio.epochMs)/1000%total+total)%total;
-    for(let index=0;index<radio.tracks.length;index++){
-      if(position<radio.tracks[index].duration){live={index,positionSeconds:position};break;}
-      position-=radio.tracks[index].duration;
-    }
+    const target=scheduledPosition(radio,now);
+    if(target)live={index:target.index,positionSeconds:target.seconds};
   }
   return {radio,serverNowMs:now,live,capabilities:{synchronized:radio.source!=='spotify',volume:radio.source!=='spotify',spectrum:radio.source!=='spotify'&&radio.analyze}};
 }
