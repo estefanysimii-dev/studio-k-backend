@@ -68,6 +68,18 @@ export const normalizeLanguage=value=>{
   const exact=SUPPORTED_LANGUAGES.find(l=>l.code.toLowerCase()===lower);
   return exact?.code||'pt';
 };
+const protectedTranslationPattern=/```[\s\S]*?```|`[^`\n]+`|<(?:@!?|@&|#)\d+>|<t:\d+(?::[tTdDfFR])?>|<a?:[A-Za-z0-9_]+:\d+>|https?:\/\/[^\s)]+|[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}|[A-Za-z0-9_-]{12,}/gi;
+export const splitTranslationText=value=>{
+  const source=String(value||''),parts=[];let last=0;
+  protectedTranslationPattern.lastIndex=0;
+  for(const match of source.matchAll(protectedTranslationPattern)){
+    if(match.index>last)parts.push({text:source.slice(last,match.index),protected:false});
+    parts.push({text:match[0],protected:true});
+    last=match.index+match[0].length;
+  }
+  if(last<source.length)parts.push({text:source.slice(last),protected:false});
+  return parts.length?parts:[{text:source,protected:false}];
+};
 export const TICKET_OPEN_LIMIT=2;
 export const canOpenTicket=openCount=>Number(openCount)<TICKET_OPEN_LIMIT;
 export const feedbackStars=rating=>'⭐'.repeat(Math.max(1,Math.min(5,Number(rating)||1)))+'☆'.repeat(5-Math.max(1,Math.min(5,Number(rating)||1)));
@@ -105,18 +117,6 @@ export function createBot(store,env=process.env){
   const libreTranslateUrl=()=>String(env.LIBRETRANSLATE_URL||'http://libretranslate.railway.internal:5000').replace(/\/$/,'');
   const libreLanguage=code=>normalizeLanguage(code)==='zh-CN'?'zh-Hans':normalizeLanguage(code);
   const translationReady=()=>!!(store.settings().translator?.enabled&&libreTranslateUrl());
-  const protectedTranslationPattern=/```[\s\S]*?```|`[^`\n]+`|<(?:@!?|@&|#)\d+>|<t:\d+(?::[tTdDfFR])?>|<a?:[A-Za-z0-9_]+:\d+>|https?:\/\/[^\s)]+|[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}|[A-Za-z0-9_-]{12,}/gi;
-  export const splitTranslationText=value=>{
-    const source=String(value||''),parts=[];let last=0;
-    protectedTranslationPattern.lastIndex=0;
-    for(const match of source.matchAll(protectedTranslationPattern)){
-      if(match.index>last)parts.push({text:source.slice(last,match.index),protected:false});
-      parts.push({text:match[0],protected:true});
-      last=match.index+match[0].length;
-    }
-    if(last<source.length)parts.push({text:source.slice(last),protected:false});
-    return parts.length?parts:[{text:source,protected:false}];
-  };
   const decodeTranslation=value=>String(value||'').replace(/&quot;/g,'"').replace(/&#39;|&#x27;/g,"'").replace(/&lt;/g,'<').replace(/&gt;/g,'>').replace(/&amp;/g,'&');
   async function translateTexts(values,target){
     const language=normalizeLanguage(target),source=values.map(v=>String(v||''));
