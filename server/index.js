@@ -607,6 +607,27 @@ app.get('/api/portfolio/oauth/exchange',(req,res)=>{
 app.post('/api/portfolio/logout',(req,res)=>{const s=portfolioSession(req);if(s?.key)store.run('DELETE FROM kv WHERE key=?',s.key);res.clearCookie('studio_web_session',{path:'/'});res.json({ok:true})});
 app.get('/api/portfolio/feedbacks',async(req,res)=>res.json(await publicPortfolioFeedbacks(500)));
 app.get('/api/portfolio/public-state',async(req,res)=>{const web=portfolioSession(req),items=portfolioItems().filter(x=>x.published),products=portfolioProducts().filter(x=>x.published),feedbacks=await publicPortfolioFeedbacks(500);const canControl=web?await portfolioCanControl(req,web):false;const me=web?{authenticated:true,user:web.user,member:web.member,canControl,profile:portfolioMemberProfile(web.user.id,web.member||{}),favorites:portfolioFavoritesFor(web.user.id)}:{authenticated:false,canControl:false};res.json({site:portfolioSite(),status:portfolioStatus(),items,products,feedbacks,me})});
+app.get('/api/portfolio/me/profile',(req,res)=>{
+  const web=portfolioSession(req);
+  if(!web?.user?.id)throw new AppError('Conecte sua conta do Discord para acessar seu perfil Studio K.',401);
+  res.json({profile:portfolioMemberProfile(web.user.id,web.member||{}),favorites:portfolioFavoritesFor(web.user.id)});
+});
+app.put('/api/portfolio/me/favorites/:kind/:id',portfolioSameOrigin,(req,res)=>{
+  const web=portfolioSession(req);
+  if(!web?.user?.id)throw new AppError('Conecte sua conta do Discord para salvar favoritos.',401);
+  const kind=String(req.params.kind||'');
+  const itemId=String(req.params.id||'').slice(0,160);
+  if(!['items','products'].includes(kind))throw new AppError('Tipo de favorito inválido.',400);
+  const source=kind==='products'?portfolioProducts():portfolioItems();
+  if(!source.some(entry=>entry.id===itemId&&entry.published!==false))throw new AppError('Item não encontrado.',404);
+  const favorites=portfolioFavoritesFor(web.user.id);
+  const shouldFavorite=req.body?.favorite!==false;
+  const list=new Set(favorites[kind]);
+  if(shouldFavorite)list.add(itemId);else list.delete(itemId);
+  favorites[kind]=[...list].slice(0,500);
+  store.set(`portfolio:favorites:${web.user.id}`,favorites);
+  res.json({ok:true,favorite:shouldFavorite,favorites,profile:portfolioMemberProfile(web.user.id,web.member||{})});
+});
 app.get('/api/portfolio/me/orders',(req,res)=>{
   const web=portfolioSession(req);
   if(!web?.user?.id)throw new AppError('Conecte sua conta do Discord para ver seus pedidos.',401);
