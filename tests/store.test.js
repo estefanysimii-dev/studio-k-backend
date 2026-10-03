@@ -12,6 +12,20 @@ function product(s,type='digital'){const id=randomUUID(),p=productSchema.parse({
 function stock(s,id,secret='CHAVE-UNICA'){s.run('INSERT INTO stock(id,product_id,secret) VALUES(?,?,?)',randomUUID(),id,s.encrypt(secret));}
 test('defaults are complete and validate',()=>{assert.equal(defaults.brand.name,'Studio K');assert.equal(defaults.welcome.embed.color,'#995cff');assert.equal(defaults.messageStyles.ticketPanel.embed.title,'Como podemos ajudar?');assert.equal(defaults.messageStyles.ticketStaffPanel.embed.title,'Painel da equipe');assert.equal(defaults.messageStyles.orderDelivery.embed.title,'Compra aprovada · {product}');assert.equal(defaults.messageStyles.feedback.embed.title,'💜 Novo feedback · {source}');assert.equal(defaults.voicePresence.enabled,false);assert.equal(defaults.translator.enabled,false);assert.deepEqual(settingsSchema.parse(defaults),defaults);});
 test('reserve last unit atomically, cancellation releases stock',t=>{const s=fixture(t),pid=product(s);stock(s,pid);const a=s.createOrder(pid,'123456789012345678');assert.equal(s.products()[0].stock,0);assert.throws(()=>s.createOrder(pid,'223456789012345678'),/sem estoque/);s.cancelOrder(a.id);assert.equal(s.products()[0].stock,1);assert.ok(s.createOrder(pid,'223456789012345678'));});
+test('cancelled coupon order releases global and per-user quota',t=>{
+  const s=fixture(t),pid=product(s,'service'),uid='123456789012345678',code='STUDIO10';
+  s.run('INSERT INTO coupons(code,type,value,active,max_uses,uses,per_user,created) VALUES(?,?,?,?,?,?,?,?)',code,'percent',10,1,1,0,1,s.now());
+  const first=s.createOrder(pid,uid,code);
+  assert.equal(s.one('SELECT uses FROM coupons WHERE code=?',code).uses,1);
+  assert.equal(s.one('SELECT COUNT(*) AS n FROM coupon_uses WHERE code=? AND user_id=?',code,uid).n,1);
+  assert.throws(()=>s.createOrder(pid,uid,code),/limite/);
+  s.cancelOrder(first.id);
+  assert.equal(s.one('SELECT uses FROM coupons WHERE code=?',code).uses,0);
+  assert.equal(s.one('SELECT COUNT(*) AS n FROM coupon_uses WHERE code=? AND user_id=?',code,uid).n,0);
+  const second=s.createOrder(pid,uid,code);
+  assert.equal(second.coupon_code,code);
+  assert.equal(s.one('SELECT uses FROM coupons WHERE code=?',code).uses,1);
+});
 test('approval is idempotent and records the real approval time',t=>{const s=fixture(t),pid=product(s);stock(s,pid);const a=s.createOrder(pid,'123456789012345678');const approved=s.approveOrder(a.id,'admin');assert.ok(approved.approved_at);assert.ok(Date.parse(approved.approved_at)>=Date.parse(a.created));s.approveOrder(a.id,'admin');assert.equal(s.one("SELECT COUNT(*) AS n FROM logs WHERE type='pagamento'").n,1);assert.equal(s.one('SELECT COUNT(*) AS n FROM stock WHERE order_id=?',a.id).n,1);assert.throws(()=>s.cancelOrder(a.id),/pendentes/);});
 test('expired and cancelled orders cannot be approved',t=>{const s=fixture(t),pid=product(s,'service'),o=s.createOrder(pid,'123456789012345678');s.run('UPDATE orders SET expires=? WHERE id=?','2020-01-01T00:00:00.000Z',o.id);assert.throws(()=>s.approveOrder(o.id,'admin'),/expirou/);s.cancelOrder(o.id);assert.throws(()=>s.approveOrder(o.id,'admin'),/encerrado/);});
 test('order keeps original price and role snapshot after product edits',t=>{const s=fixture(t),pid=product(s,'service'),o=s.createOrder(pid,'123456789012345678');s.run('UPDATE products SET data=? WHERE id=?',JSON.stringify(productSchema.parse({name:'Novo preço',priceCents:100,type:'service'})),pid);assert.equal(o.price,2990);assert.equal(JSON.parse(o.product).name,'Produto teste');});
