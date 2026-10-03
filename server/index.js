@@ -714,6 +714,19 @@ app.get('/api/portfolio/oauth/exchange',(req,res)=>{
 
 app.post('/api/portfolio/logout',(req,res)=>{const s=portfolioSession(req);if(s?.key)store.run('DELETE FROM kv WHERE key=?',s.key);res.clearCookie('studio_web_session',{path:'/'});res.json({ok:true})});
 app.get('/api/portfolio/feedbacks',async(req,res)=>res.json(await publicPortfolioFeedbacks(500)));
+app.post('/api/portfolio/analytics/event',portfolioSameOrigin,(req,res)=>{
+  const body=z.object({
+    sessionId:z.string().trim().min(8).max(96),
+    event:z.enum(['page_view','product_view','portfolio_view','checkout_start']),
+    itemKind:z.enum(['product','portfolio','page']).default('page'),
+    itemId:z.string().trim().max(160).default(''),
+    path:z.string().trim().max(500).default(''),
+    meta:z.record(z.string(),z.union([z.string(),z.number(),z.boolean(),z.null()])).default({})
+  }).parse(req.body||{});
+  const web=portfolioSession(req);
+  recordPortfolioEvent(body.event,{sessionId:body.sessionId,userId:web?.user?.id||'',itemKind:body.itemKind,itemId:body.itemId,path:body.path,meta:body.meta});
+  res.status(204).end();
+});
 app.get('/api/portfolio/public-state',async(req,res)=>{const web=portfolioSession(req),items=portfolioItems().filter(x=>x.published),products=portfolioProducts().filter(x=>x.published),feedbacks=await publicPortfolioFeedbacks(500);const canControl=web?await portfolioCanControl(req,web):false;const me=web?{authenticated:true,user:web.user,member:web.member,canControl,profile:portfolioMemberProfile(web.user.id,web.member||{}),favorites:portfolioFavoritesFor(web.user.id)}:{authenticated:false,canControl:false};res.json({site:portfolioSite(),status:portfolioStatus(),items,products,drops:publicPortfolioDrops(),feedbacks,me})});
 app.get('/api/portfolio/me/profile',(req,res)=>{
   const web=portfolioSession(req);
@@ -831,6 +844,7 @@ app.get('/api/portfolio/control/state',portfolioControl,async(req,res)=>{
     items:portfolioItems(),
     products:portfolioProducts(),
     drops:portfolioDrops().map(drop=>({...drop,status:portfolioDropStatus(drop)})),
+    analytics:portfolioAnalyticsSummary(30),
     assets:portfolioAssets(),
     feedbacks:await publicPortfolioFeedbacks(50),
     discord:{
