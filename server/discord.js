@@ -565,7 +565,7 @@ ${normalized.previewAfter}
   const isStaff=i=>hasStaffPermission(i,'ticketManage');
   async function memberProfile(userId){
     const guild=requireGuild(),m=await guild.members.fetch(userId);
-    return{id:m.id,name:m.displayName||m.user.globalName||m.user.username||m.id,username:m.user.username||'',joinedAt:m.joinedAt?.toISOString?.()||null,createdAt:m.user.createdAt?.toISOString?.()||null,roles:[...m.roles.cache.values()].filter(r=>r.id!==guild.id).map(r=>({id:r.id,name:r.name})),avatar:m.displayAvatarURL({size:128})};
+    return{id:m.id,name:m.displayName||m.user.globalName||m.user.username||m.id,username:m.user.username||'',joinedAt:m.joinedAt?.toISOString?.()||null,createdAt:m.user.createdAt?.toISOString?.()||null,roles:[...m.roles.cache.values()].filter(r=>r.id!==guild.id).map(r=>({id:r.id,name:r.name})),avatar:m.displayAvatarURL({size:128}),administrator:m.permissions.has(PermissionFlagsBits.Administrator),manageGuild:m.permissions.has(PermissionFlagsBits.ManageGuild)};
   }
   async function nextTicketName(category,guild){
     const slug=channelSlug(category),prefix=`${slug}-`;await guild.channels.fetch();
