@@ -1,7 +1,8 @@
-name: Studio K CI
+name: Studio K backend CI
 on:
-  pull_request:
+  push:
     branches: [main]
+  pull_request:
 jobs:
   validate:
     runs-on: ubuntu-latest
@@ -9,8 +10,8 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: '24'
+          node-version: 24
           cache: npm
-      - run: npm install --omit=dev
+      - run: npm ci
       - run: npm run check
       - run: npm test

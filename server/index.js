@@ -9,6 +9,7 @@ import { spawn } from 'node:child_process';
 import { z } from 'zod';
 import { openStore, AppError } from './store.js';
 import { createBot } from './discord.js';
+import { defaultRadio, radioSchema, normalizeRadio, radioSnapshot } from './radio.js';
 import { settingsSchema, productSchema, messageSchema, templateSchema, giveawaySchema, eventSchema, id } from './schema.js';
 const demo=process.env.STUDIO_DEMO==='true',port=Number(process.env.PORT||3210),host=demo?'127.0.0.1':process.env.HOST||'127.0.0.1';
 const base=new URL(process.env.PUBLIC_URL||`http://localhost:${port}`);
@@ -264,6 +265,7 @@ const defaultPortfolioSite={
 };
 const portfolioSite=()=>{
   const site={...defaultPortfolioSite,...store.get('portfolio:site',{})};
+  site.radio={...defaultRadio,...site.radio};
   if(!site.brandTagline||site.brandTagline==='KINETIC LOOM')site.brandTagline=defaultPortfolioSite.brandTagline;
   if(!site.logoUrl||site.logoUrl==='/media/studio-k-logo.webp')site.logoUrl=defaultPortfolioSite.logoUrl;
   return site;
@@ -453,6 +455,7 @@ const portfolioItemSchema=z.object({
 });
 const portfolioProductSchema=portfolioItemSchema.extend({priceCents:z.number().int().min(0).max(1000000000).default(0),botProductId:z.string().max(80).default('')});
 const portfolioSiteSchema=z.object({
+  radio:radioSchema.default(defaultRadio),
   brandName:z.string().trim().min(1).max(80).default(defaultPortfolioSite.brandName),
   brandTagline:z.string().trim().max(80).default(defaultPortfolioSite.brandTagline),
   logoUrl:z.string().max(2000).default(defaultPortfolioSite.logoUrl),
@@ -599,7 +602,8 @@ app.get('/api/portfolio/control/state',portfolioControl,async(req,res)=>{
     }
   });
 });
-app.put('/api/portfolio/control/site',portfolioControl,portfolioSameOrigin,(req,res)=>{const current=portfolioSite(),next=portfolioSiteSchema.parse({...current,...req.body});store.set('portfolio:site',next);store.log('portfólio','Configurações do site atualizadas.','portfolio-control');res.json(next)});
+app.get('/api/portfolio/radio',(req,res)=>{res.set('Cache-Control','no-store');res.json(radioSnapshot(portfolioSite().radio));});
+app.put('/api/portfolio/control/site',portfolioControl,portfolioSameOrigin,(req,res)=>{const current=portfolioSite(),next=portfolioSiteSchema.parse({...current,...req.body});next.radio=normalizeRadio(next.radio,current.radio);store.set('portfolio:site',next);store.log('portfólio','Configurações do site atualizadas.','portfolio-control');res.json(next)});
 app.post('/api/portfolio/control/items',portfolioControl,portfolioSameOrigin,(req,res)=>{const item={id:randomUUID(),...portfolioItemSchema.parse(req.body),created:store.now(),updated:store.now()};const items=portfolioItems();if(item.featured)for(const x of items)x.featured=false;items.unshift(item);store.set('portfolio:items',items);res.json(item)});
 app.put('/api/portfolio/control/items/:id',portfolioControl,portfolioSameOrigin,(req,res)=>{const items=portfolioItems(),index=items.findIndex(x=>x.id===req.params.id);if(index<0)throw new AppError('Projeto não encontrado.',404);const next={...items[index],...portfolioItemSchema.parse(req.body),updated:store.now()};if(next.featured)for(const x of items)x.featured=false;items[index]=next;store.set('portfolio:items',items);res.json(next)});
 app.delete('/api/portfolio/control/items/:id',portfolioControl,portfolioSameOrigin,(req,res)=>{store.set('portfolio:items',portfolioItems().filter(x=>x.id!==req.params.id));res.json({ok:true})});
