@@ -671,7 +671,15 @@ app.post('/api/portfolio/products/:id/order',portfolioSameOrigin,async(req,res)=
   if(!product.botProductId)throw new AppError('Este produto ainda não está sincronizado com o bot do Studio K.',409);
   if(!demo)await bot.member(web.user.id);
   const couponCode=String(req.body?.couponCode||'').trim().slice(0,40);
-  const order=store.createOrder(product.botProductId,web.user.id,couponCode);
+  let order=store.createOrder(product.botProductId,web.user.id,couponCode);
+  const memberDiscountPercent=Math.max(0,Math.min(100,Number(portfolioSite().memberDiscountPercent||0)));
+  if(memberDiscountPercent>0&&Number(order.price||0)>0){
+    const memberDiscount=Math.floor(Number(order.price||0)*memberDiscountPercent/100);
+    if(memberDiscount>0){
+      store.run('UPDATE orders SET price=?,discount=COALESCE(discount,0)+? WHERE id=?',Math.max(0,Number(order.price||0)-memberDiscount),memberDiscount,order.id);
+      order=store.one('SELECT * FROM orders WHERE id=?',order.id);
+    }
+  }
   const sales=store.settings().sales||{};
   res.json({
     id:order.id,
