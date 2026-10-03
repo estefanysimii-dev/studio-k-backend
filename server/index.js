@@ -247,6 +247,15 @@ const portfolioRedirect=new URL('/api/oauth/discord/callback',portfolioBackendOr
 const portfolioPublicOrigin=new URL(process.env.PORTFOLIO_PUBLIC_URL||base.origin);
 const portfolioCookieOptions={httpOnly:true,sameSite:'lax',secure:process.env.COOKIE_SECURE==='true',path:'/',maxAge:30*86400000};
 const portfolioOauthCookieOptions={httpOnly:true,sameSite:'lax',secure:process.env.COOKIE_SECURE==='true',path:'/api/oauth/discord',maxAge:10*60000};
+const defaultPortfolioAssistant={
+  enabled:true,
+  intervalSeconds:5,
+  imageUrl:'/studio-assets/studio-k-mascot.webp',
+  campaigns:[
+    {id:'welcome',type:'cute',title:'Oi, eu sou a Kiki 💜',text:'Vou ficar por aqui te mostrando coisinhas legais do Studio K.',ctaLabel:'',href:'',priceCents:0,oldPriceCents:0,active:true},
+    {id:'motivation',type:'motivation',title:'Um lembrete fofo ✨',text:'Seu projeto não precisa ficar perfeito de primeira. O importante é continuar criando.',ctaLabel:'',href:'',priceCents:0,oldPriceCents:0,active:true}
+  ]
+};
 const defaultPortfolioSite={
   brandName:'Studio K',
   brandTagline:'SUA IDENTIDADE. SUA CIDADE.',
@@ -262,11 +271,14 @@ const defaultPortfolioSite={
   discordInviteUrl:'',
   defaultAnnouncementChannelId:'',
   autoAnnounceProducts:false,
-  adminRoleIds:[]
+  adminRoleIds:[],
+  assistant:defaultPortfolioAssistant
 };
 const portfolioSite=()=>{
   const site={...defaultPortfolioSite,...store.get('portfolio:site',{})};
   site.radio={...defaultRadio,...site.radio};
+  site.assistant={...defaultPortfolioAssistant,...(site.assistant||{})};
+  site.assistant.campaigns=Array.isArray(site.assistant.campaigns)?site.assistant.campaigns:defaultPortfolioAssistant.campaigns;
   if(!site.brandTagline||site.brandTagline==='KINETIC LOOM')site.brandTagline=defaultPortfolioSite.brandTagline;
   if(!site.logoUrl||site.logoUrl==='/media/studio-k-logo.webp')site.logoUrl=defaultPortfolioSite.logoUrl;
   return site;
@@ -455,8 +467,26 @@ const portfolioItemSchema=z.object({
   published:z.boolean().default(true)
 });
 const portfolioProductSchema=portfolioItemSchema.extend({priceCents:z.number().int().min(0).max(1000000000).default(0),botProductId:z.string().max(80).default('')});
+const portfolioAssistantCampaignSchema=z.object({
+  id:z.string().trim().min(1).max(80),
+  type:z.enum(['promotion','combo','news','bestseller','motivation','cute']).default('cute'),
+  title:z.string().trim().max(140).default(''),
+  text:z.string().trim().max(600).default(''),
+  ctaLabel:z.string().trim().max(60).default(''),
+  href:z.string().trim().max(2000).default(''),
+  priceCents:z.number().int().min(0).max(1000000000).default(0),
+  oldPriceCents:z.number().int().min(0).max(1000000000).default(0),
+  active:z.boolean().default(true)
+});
+const portfolioAssistantSchema=z.object({
+  enabled:z.boolean().default(true),
+  intervalSeconds:z.number().int().min(5).max(120).default(5),
+  imageUrl:z.string().max(2000).default(defaultPortfolioAssistant.imageUrl),
+  campaigns:z.array(portfolioAssistantCampaignSchema).max(50).default(defaultPortfolioAssistant.campaigns)
+});
 const portfolioSiteSchema=z.object({
   radio:radioSchema.default(defaultRadio),
+  assistant:portfolioAssistantSchema.default(defaultPortfolioAssistant),
   brandName:z.string().trim().min(1).max(80).default(defaultPortfolioSite.brandName),
   brandTagline:z.string().trim().max(80).default(defaultPortfolioSite.brandTagline),
   logoUrl:z.string().max(2000).default(defaultPortfolioSite.logoUrl),
