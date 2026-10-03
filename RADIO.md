@@ -1,8 +1,8 @@
 # Rádio Studio K — configuração e publicação
 
 Implementação nos repositórios atuais, baseada em:
-- site: 0d1a354ab9d6a697e0406540845df863c508fa5a
-- backend: a3e7fd520ff486c325111d07617048dcea6793bd
+- site: ea8ecedfe740940d0fe55ba8eaa906d81c7acd74
+- backend: a7914b1961621545d840e1f317c2d3ed578a6f71
 
 ## Onde configurar
 Central de Controle → Site → Rádio Studio K → Salvar alterações.
@@ -46,3 +46,6 @@ Não houve publicação em produção. Não foram usados tokens Discord reais ne
 - https://developer.spotify.com/documentation/embeds/tutorials/creating-an-embed
 
 A documentação de seek descreve episódios de podcast e não garante seek de faixas musicais/playlist. A lista de métodos não oferece setVolume. Por isso um link de playlist, sozinho, não implementa a rádio musical sincronizada solicitada.
+
+PRs de rascunho: frontend https://github.com/estefanysimii-dev/studio-k-portfolio/pull/5 ; backend https://github.com/estefanysimii-dev/studio-k-backend/pull/3 . As atualizações de anúncios automáticos e links externos da main foram integradas antes da entrega.
+
