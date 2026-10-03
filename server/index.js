@@ -238,28 +238,78 @@ const portfolioRedirect=oauthRedirect;
 const portfolioPublicOrigin=new URL(process.env.PORTFOLIO_PUBLIC_URL||base.origin);
 const portfolioCookieOptions={httpOnly:true,sameSite:'lax',secure:process.env.COOKIE_SECURE==='true',path:'/',maxAge:30*86400000};
 const portfolioOauthCookieOptions={httpOnly:true,sameSite:'lax',secure:process.env.COOKIE_SECURE==='true',path:'/api/oauth/discord',maxAge:10*60000};
-const defaultPortfolioSite={heroSubtitle:'Roupas, texturas e experiências visuais criadas para transformar personagens e projetos no GTA V / FiveM.',discordInviteUrl:'',adminRoleIds:[]};
+const defaultPortfolioSite={
+  brandName:'Studio K',
+  brandTagline:'KINETIC LOOM',
+  logoUrl:'/media/studio-k-logo.webp',
+  homeBackgroundUrl:'/media/studio-k-home.webp',
+  controlBackgroundUrl:'/media/studio-k-control.webp',
+  heroEyebrow:'DESIGN 3D · FIVEM · MODA DIGITAL',
+  heroTitle:'DESIGN ALÉM',
+  heroAccent:'DA TEXTURA.',
+  heroSubtitle:'Roupas, texturas e experiências visuais criadas para transformar personagens e projetos no GTA V / FiveM.',
+  primaryCtaLabel:'Explorar Portfólio',
+  secondaryCtaLabel:'Entrar no Discord',
+  discordInviteUrl:'',
+  adminRoleIds:[]
+};
 const portfolioSite=()=>({...defaultPortfolioSite,...store.get('portfolio:site',{})});
 const portfolioItems=()=>{const v=store.get('portfolio:items',[]);return Array.isArray(v)?v:[]};
 const storedPortfolioProducts=()=>{const v=store.get('portfolio:products',[]);return Array.isArray(v)?v:[]};
 const portfolioProducts=()=>{const stored=storedPortfolioProducts();if(stored.length)return stored;return store.products().map(p=>({id:p.id,name:p.name,description:p.description||'',priceCents:p.priceCents||0,category:p.category||'Studio K',tags:[],coverUrl:p.image||'',modelUrl:'',featured:false,published:true,botProductId:p.id,created:p.created||''}))};
 const portfolioAssets=()=>{const v=store.get('portfolio:assets',[]);return Array.isArray(v)?v:[]};
-const portfolioSession=req=>{const raw=cookieValue(req,'studio_web_session');if(!raw)return null;const key=`portfolio-session:${hash(raw)}`,data=store.get(key);if(!data||Number(data.expires||0)<Date.now()){if(data)store.run('DELETE FROM kv WHERE key=?',key);return null;}return{...data,key}};
+const portfolioSession=req=>{
+  const bearer=String(req.headers.authorization||'').match(/^Bearer\s+(.+)$/i)?.[1]||'';
+  const raw=cookieValue(req,'studio_web_session')||bearer;
+  if(!raw)return null;
+  const key=`portfolio-session:${hash(raw)}`,data=store.get(key);
+  if(!data||Number(data.expires||0)<Date.now()){
+    if(data)store.run('DELETE FROM kv WHERE key=?',key);
+    return null;
+  }
+  return{...data,key,raw};
+};
 const portfolioAdminRoleIds=()=>[...new Set([...(portfolioSite().adminRoleIds||[]),...String(process.env.PORTFOLIO_ADMIN_ROLE_IDS||'').split(',').map(x=>x.trim()).filter(Boolean)])];
 const portfolioCanControl=(req,web=portfolioSession(req))=>{if(session(req))return true;if(!web?.user?.id)return false;if(process.env.PORTFOLIO_OWNER_ID&&web.user.id===process.env.PORTFOLIO_OWNER_ID)return true;if(web.member?.administrator||web.member?.manageGuild)return true;const allowed=portfolioAdminRoleIds();return allowed.length>0&&(web.member?.roles||[]).some(role=>allowed.includes(role.id))};
-const portfolioItemSchema=z.object({name:z.string().trim().min(1).max(140),description:z.string().max(3000).default(''),category:z.string().trim().max(80).default('Studio K'),tags:z.array(z.string().trim().min(1).max(40)).max(20).default([]),coverUrl:z.string().max(2000).default(''),modelUrl:z.string().max(2000).default(''),featured:z.boolean().default(false),published:z.boolean().default(true)});
+const portfolioItemSchema=z.object({
+  name:z.string().trim().min(1).max(140),
+  description:z.string().max(3000).default(''),
+  category:z.string().trim().max(80).default('Studio K'),
+  tags:z.array(z.string().trim().min(1).max(40)).max(20).default([]),
+  coverUrl:z.string().max(2000).default(''),
+  modelUrl:z.string().max(2000).default(''),
+  videoUrl:z.string().max(2000).default(''),
+  gifUrl:z.string().max(2000).default(''),
+  galleryUrls:z.array(z.string().max(2000)).max(20).default([]),
+  featured:z.boolean().default(false),
+  published:z.boolean().default(true)
+});
 const portfolioProductSchema=portfolioItemSchema.extend({priceCents:z.number().int().min(0).max(1000000000).default(0),botProductId:z.string().max(80).default('')});
-const portfolioSiteSchema=z.object({heroSubtitle:z.string().max(900).default(defaultPortfolioSite.heroSubtitle),discordInviteUrl:z.string().max(2000).default(''),adminRoleIds:z.array(z.string().regex(/^\d{17,20}$/)).max(30).default([])});
+const portfolioSiteSchema=z.object({
+  brandName:z.string().trim().min(1).max(80).default(defaultPortfolioSite.brandName),
+  brandTagline:z.string().trim().max(80).default(defaultPortfolioSite.brandTagline),
+  logoUrl:z.string().max(2000).default(defaultPortfolioSite.logoUrl),
+  homeBackgroundUrl:z.string().max(2000).default(defaultPortfolioSite.homeBackgroundUrl),
+  controlBackgroundUrl:z.string().max(2000).default(defaultPortfolioSite.controlBackgroundUrl),
+  heroEyebrow:z.string().max(140).default(defaultPortfolioSite.heroEyebrow),
+  heroTitle:z.string().max(160).default(defaultPortfolioSite.heroTitle),
+  heroAccent:z.string().max(160).default(defaultPortfolioSite.heroAccent),
+  heroSubtitle:z.string().max(900).default(defaultPortfolioSite.heroSubtitle),
+  primaryCtaLabel:z.string().max(80).default(defaultPortfolioSite.primaryCtaLabel),
+  secondaryCtaLabel:z.string().max(80).default(defaultPortfolioSite.secondaryCtaLabel),
+  discordInviteUrl:z.string().max(2000).default(''),
+  adminRoleIds:z.array(z.string().regex(/^\d{17,20}$/)).max(30).default([])
+});
 async function portfolioMember(userId){try{const m=bot.status().connected?await bot.memberProfile(userId):null;return m?{...m,inGuild:true}:{inGuild:false,roles:[]}}catch{return{inGuild:false,roles:[]}}}
 async function publicPortfolioFeedbacks(limit=18){const rows=store.all("SELECT id,type,source_id,user_id,rating,comment,meta,submitted_at FROM feedback_requests WHERE status='submitted' ORDER BY submitted_at DESC LIMIT ?",Math.max(1,Math.min(50,Number(limit)||18)));return Promise.all(rows.map(async row=>{let meta={};try{meta=JSON.parse(row.meta||'{}')}catch{}let profile=null;try{profile=await portfolioMember(row.user_id)}catch{}const source=row.type==='ticket'?'Atendimento':'Compra';const reference=row.type==='ticket'?(meta.ticket||`#${row.source_id.slice(0,8)}`):(meta.product||`#${row.source_id.slice(0,8)}`);return{id:row.id,rating:Number(row.rating||0),comment:String(row.comment||'').slice(0,1200),source,reference,name:profile?.name||'Cliente Studio K',avatar:profile?.avatar||'',submittedAt:row.submitted_at||'',meta:{service:meta.service||null,speed:meta.speed||null,resolution:meta.resolution||null}}}))}
 app.get('/api/portfolio/oauth/start',(req,res)=>{
   if(!process.env.DISCORD_CLIENT_ID||!process.env.DISCORD_CLIENT_SECRET)throw new AppError('OAuth do Discord ainda não está configurado no servidor.',503);
-  const next=String(req.query.next||'/portfolio/#account'),safeNext=next.startsWith('/portfolio/')?next:'/portfolio/#account';
+  const next=String(req.query.next||'/account'),safeNext=(next.startsWith('/')&&!next.startsWith('//'))?next:'/account';
   const bridge=new URL('/api/portfolio/oauth/bridge',base);bridge.searchParams.set('next',safeNext);res.redirect(bridge.toString());
 });
 app.get('/api/portfolio/oauth/bridge',(req,res)=>{
   if(!process.env.DISCORD_CLIENT_ID||!process.env.DISCORD_CLIENT_SECRET)throw new AppError('OAuth do Discord ainda não está configurado no servidor.',503);
-  const next=String(req.query.next||'/portfolio/#account'),safeNext=next.startsWith('/portfolio/')?next:'/portfolio/#account',state=randomBytes(32).toString('base64url');
+  const next=String(req.query.next||'/account'),safeNext=(next.startsWith('/')&&!next.startsWith('//'))?next:'/account',state=randomBytes(32).toString('base64url');
   store.set(`portfolio-oauth:${hash(state)}`,{next:safeNext,expires:Date.now()+10*60000});
   res.cookie('studio_portfolio_oauth_state',state,portfolioOauthCookieOptions);
   const params=new URLSearchParams({response_type:'code',client_id:process.env.DISCORD_CLIENT_ID,scope:'identify',state,redirect_uri:oauthRedirect,prompt:'consent'});
@@ -275,6 +325,16 @@ app.get('/api/portfolio/oauth/complete',(req,res)=>{
   res.redirect(handoff.next||'/portfolio/#account');
 });
 app.get('/api/portfolio/oauth/callback',async(req,res)=>{try{const expected=cookieValue(req,'studio_portfolio_oauth_state'),given=String(req.query.state||''),code=String(req.query.code||'');res.clearCookie('studio_portfolio_oauth_state',{path:'/api/portfolio/oauth'});if(req.query.error)throw new AppError('A autorização do Discord foi cancelada.',400);if(!expected||!given||!timingSafeEqual(Buffer.from(hash(expected)),Buffer.from(hash(given))))throw new AppError('A autorização expirou ou não corresponde a esta solicitação.',403);const stateData=store.get(`portfolio-oauth:${hash(given)}`);store.run('DELETE FROM kv WHERE key=?',`portfolio-oauth:${hash(given)}`);if(!stateData||Number(stateData.expires||0)<Date.now())throw new AppError('A autorização expirou. Tente novamente.',403);const tokenResponse=await fetch('https://discord.com/api/v10/oauth2/token',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:new URLSearchParams({client_id:process.env.DISCORD_CLIENT_ID,client_secret:process.env.DISCORD_CLIENT_SECRET,grant_type:'authorization_code',code,redirect_uri:portfolioRedirect})});const token=await tokenResponse.json().catch(()=>({}));if(!tokenResponse.ok||!token.access_token)throw new AppError('Não foi possível concluir a autenticação com o Discord.',502);const userResponse=await fetch('https://discord.com/api/v10/users/@me',{headers:{Authorization:`Bearer ${token.access_token}`}});const discordUser=await userResponse.json().catch(()=>({}));if(!userResponse.ok||!discordUser.id)throw new AppError('Não foi possível identificar sua conta do Discord.',502);const member=await portfolioMember(discordUser.id),avatar=discordUser.avatar?`https://cdn.discordapp.com/avatars/${discordUser.id}/${discordUser.avatar}.png?size=128`:(member.avatar||'');const raw=randomBytes(32).toString('hex'),sessionData={user:{id:discordUser.id,username:discordUser.username||'',name:discordUser.global_name||member.name||discordUser.username||discordUser.id,avatar},member,created:Date.now(),expires:Date.now()+30*86400000};store.set(`portfolio-session:${hash(raw)}`,sessionData);res.cookie('studio_web_session',raw,portfolioCookieOptions);res.redirect(stateData.next||'/portfolio/#account')}catch(e){res.status(e instanceof AppError?e.status:500).type('html').send(`<meta charset="utf-8"><title>Studio K</title><style>body{background:#07040c;color:#fff;font:16px system-ui;display:grid;place-items:center;min-height:100vh}.c{max-width:560px;padding:28px;border:1px solid #5c2786;border-radius:18px;background:#11091d}.c a{color:#c67aff}</style><div class="c"><h1>Não foi possível conectar</h1><p>${htmlEscape(e instanceof AppError?e.message:'Tente novamente.')}</p><a href="/portfolio/#account">Voltar ao Studio K</a></div>`)}});
+
+app.get('/api/portfolio/oauth/exchange',(req,res)=>{
+  const raw=String(req.query.t||''),key=raw?`portfolio-handoff:${hash(raw)}`:'',handoff=key?store.get(key):null;
+  if(key)store.run('DELETE FROM kv WHERE key=?',key);
+  if(!handoff||Number(handoff.expires||0)<Date.now())throw new AppError('Conexão expirada. Inicie novamente o login com Discord.',403);
+  const sessionRaw=randomBytes(32).toString('hex');
+  store.set(`portfolio-session:${hash(sessionRaw)}`,handoff.session);
+  res.json({sessionToken:sessionRaw,user:handoff.session.user,member:handoff.session.member,next:handoff.next||'/account'});
+});
+
 app.post('/api/portfolio/logout',(req,res)=>{const s=portfolioSession(req);if(s?.key)store.run('DELETE FROM kv WHERE key=?',s.key);res.clearCookie('studio_web_session',{path:'/'});res.json({ok:true})});
 app.get('/api/portfolio/feedbacks',async(req,res)=>res.json(await publicPortfolioFeedbacks(18)));
 app.get('/api/portfolio/public-state',async(req,res)=>{const web=portfolioSession(req),items=portfolioItems().filter(x=>x.published),products=portfolioProducts().filter(x=>x.published),feedbacks=await publicPortfolioFeedbacks(18);const me=web?{authenticated:true,user:web.user,member:web.member,canControl:portfolioCanControl(req,web)}:{authenticated:false,canControl:false};res.json({site:portfolioSite(),items,products,feedbacks,me})});
@@ -287,6 +347,41 @@ app.delete('/api/portfolio/control/items/:id',portfolioControl,sameOrigin,(req,r
 app.post('/api/portfolio/control/products',portfolioControl,sameOrigin,(req,res)=>{const item={id:randomUUID(),...portfolioProductSchema.parse(req.body),created:store.now(),updated:store.now()};const products=storedPortfolioProducts();if(item.featured)for(const x of products)x.featured=false;products.unshift(item);store.set('portfolio:products',products);res.json(item)});
 app.put('/api/portfolio/control/products/:id',portfolioControl,sameOrigin,(req,res)=>{let products=storedPortfolioProducts();if(!products.length)products=portfolioProducts();const index=products.findIndex(x=>x.id===req.params.id);if(index<0)throw new AppError('Produto não encontrado.',404);const next={...products[index],...portfolioProductSchema.parse(req.body),updated:store.now()};if(next.featured)for(const x of products)x.featured=false;products[index]=next;store.set('portfolio:products',products);res.json(next)});
 app.delete('/api/portfolio/control/products/:id',portfolioControl,sameOrigin,(req,res)=>{store.set('portfolio:products',storedPortfolioProducts().filter(x=>x.id!==req.params.id));res.json({ok:true})});
+
+app.post('/api/portfolio/control/upload-ticket',portfolioControl,sameOrigin,(req,res)=>{
+  const name=String(req.body?.name||'arquivo').slice(0,180),requestedPublic=req.body?.public===true,token=randomBytes(32).toString('base64url');
+  store.set(`portfolio-upload:${hash(token)}`,{userId:req.portfolioWeb?.user?.id||'',name,public:requestedPublic,expires:Date.now()+5*60000});
+  const uploadUrl=new URL(`/api/portfolio/upload/${encodeURIComponent(token)}`,base);
+  res.json({token,uploadUrl:uploadUrl.toString(),expiresIn:300});
+});
+const portfolioDirectAssetUpload=express.raw({type:()=>true,limit:'80mb'});
+app.options('/api/portfolio/upload/:token',(req,res)=>{
+  if(req.headers.origin===portfolioPublicOrigin.origin){
+    res.setHeader('Access-Control-Allow-Origin',portfolioPublicOrigin.origin);
+    res.setHeader('Access-Control-Allow-Methods','PUT,OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers','Content-Type');
+    res.setHeader('Vary','Origin');
+  }
+  res.status(204).end();
+});
+app.put('/api/portfolio/upload/:token',portfolioDirectAssetUpload,(req,res)=>{
+  if(req.headers.origin!==portfolioPublicOrigin.origin)throw new AppError('Origem não autorizada.',403);
+  res.setHeader('Access-Control-Allow-Origin',portfolioPublicOrigin.origin);
+  res.setHeader('Vary','Origin');
+  const token=String(req.params.token||''),key=`portfolio-upload:${hash(token)}`,ticket=store.get(key);
+  store.run('DELETE FROM kv WHERE key=?',key);
+  if(!ticket||Number(ticket.expires||0)<Date.now())throw new AppError('O link de upload expirou. Gere um novo link.',403);
+  const original=String(req.query.name||ticket.name||'arquivo').slice(0,180),ext=(original.toLowerCase().match(/\.([a-z0-9]{2,8})$/)?.[1]||'bin');
+  const publicExts=new Set(['png','jpg','jpeg','webp','gif','mp4','webm','glb','gltf']),sourceExts=new Set(['blend','obj','psd','fbx']);
+  if(!publicExts.has(ext)&&!sourceExts.has(ext))throw new AppError('Formato não suportado. Use GLB/GLTF, PNG/JPEG/WebP/GIF, MP4/WebM ou fontes BLEND/OBJ/PSD/FBX.',400);
+  if(!Buffer.isBuffer(req.body)||!req.body.length)throw new AppError('Arquivo vazio.',400);
+  const visibility=ticket.public&&publicExts.has(ext)?'public':'private',id=randomUUID(),filename=`${id}.${ext}`,dir=visibility==='public'?portfolioPublicDir:portfolioPrivateDir;
+  writeFileSync(join(dir,filename),req.body);
+  const asset={id,originalName:original,filename,ext,visibility,size:req.body.length,created:store.now(),publicUrl:visibility==='public'?`/portfolio-assets/${filename}`:''};
+  const assets=portfolioAssets();assets.unshift(asset);store.set('portfolio:assets',assets.slice(0,500));
+  res.json(asset);
+});
+
 const portfolioAssetUpload=express.raw({type:()=>true,limit:'80mb'});
 app.post('/api/portfolio/control/assets',portfolioControl,sameOrigin,portfolioAssetUpload,(req,res)=>{const original=String(req.query.name||'arquivo').slice(0,180),ext=(original.toLowerCase().match(/\.([a-z0-9]{2,8})$/)?.[1]||'bin');const publicExts=new Set(['png','jpg','jpeg','webp','gif','mp4','webm','glb','gltf']),sourceExts=new Set(['blend','obj','psd','fbx']);if(!publicExts.has(ext)&&!sourceExts.has(ext))throw new AppError('Formato não suportado. Use GLB/GLTF, PNG/JPEG/WebP/GIF, MP4/WebM ou fontes BLEND/OBJ/PSD/FBX.',400);if(!Buffer.isBuffer(req.body)||!req.body.length)throw new AppError('Arquivo vazio.',400);const requestedPublic=String(req.query.public||'0')==='1',visibility=requestedPublic&&publicExts.has(ext)?'public':'private',id=randomUUID(),filename=`${id}.${ext}`,dir=visibility==='public'?portfolioPublicDir:portfolioPrivateDir;writeFileSync(join(dir,filename),req.body);const asset={id,originalName:original,filename,ext,visibility,size:req.body.length,created:store.now(),publicUrl:visibility==='public'?`/portfolio-assets/${filename}`:''};const assets=portfolioAssets();assets.unshift(asset);store.set('portfolio:assets',assets.slice(0,500));res.json(asset)});
 app.use('/portfolio-assets',express.static(portfolioPublicDir,{index:false,maxAge:'1h',immutable:false}));
