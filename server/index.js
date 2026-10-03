@@ -259,7 +259,12 @@ const defaultPortfolioSite={
   discordInviteUrl:'',
   adminRoleIds:[]
 };
-const portfolioSite=()=>({...defaultPortfolioSite,...store.get('portfolio:site',{})});
+const portfolioSite=()=>{
+  const site={...defaultPortfolioSite,...store.get('portfolio:site',{})};
+  if(!site.brandTagline||site.brandTagline==='KINETIC LOOM')site.brandTagline=defaultPortfolioSite.brandTagline;
+  if(!site.logoUrl||site.logoUrl==='/media/studio-k-logo.webp')site.logoUrl=defaultPortfolioSite.logoUrl;
+  return site;
+};
 const portfolioItems=()=>{const v=store.get('portfolio:items',[]);return Array.isArray(v)?v:[]};
 const storedPortfolioProducts=()=>{const v=store.get('portfolio:products',[]);return Array.isArray(v)?v:[]};
 const portfolioProducts=()=>{const stored=storedPortfolioProducts();if(stored.length)return stored;return store.products().map(p=>({id:p.id,name:p.name,description:p.description||'',priceCents:p.priceCents||0,category:p.category||'Studio K',tags:[],coverUrl:p.image||'',modelUrl:'',featured:false,published:true,botProductId:p.id,created:p.created||''}))};
