@@ -48,4 +48,3 @@ Não houve publicação em produção. Não foram usados tokens Discord reais ne
 A documentação de seek descreve episódios de podcast e não garante seek de faixas musicais/playlist. A lista de métodos não oferece setVolume. Por isso um link de playlist, sozinho, não implementa a rádio musical sincronizada solicitada.
 
 PRs de rascunho: frontend https://github.com/estefanysimii-dev/studio-k-portfolio/pull/5 ; backend https://github.com/estefanysimii-dev/studio-k-backend/pull/3 . As atualizações de anúncios automáticos e links externos da main foram integradas antes da entrega.
-
