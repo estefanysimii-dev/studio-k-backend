@@ -41,6 +41,13 @@ function sameOrigin(req,res,next){
   if(!allowed.has(req.headers.origin))return res.status(403).json({error:'Origem não autorizada.'});next();
 }
 app.get('/healthz',(req,res)=>res.json({ok:true}));
+// Temporary diagnostic: read-only aggregate language counts. Never returns user IDs.
+app.get('/api/diagnostics/language-preferences',(req,res)=>{
+  const languageDistribution=store.all('SELECT language, COUNT(*) as count FROM user_preferences GROUP BY language ORDER BY count DESC');
+  const nonStandardLanguages=store.all("SELECT language, COUNT(*) as count FROM user_preferences WHERE language NOT IN ('pt','en','es','fr','de','it','ja','ko','zh-CN','ru') GROUP BY language");
+  const totalRows=Number(store.one('SELECT COUNT(*) as total FROM user_preferences').total);
+  res.json({timestamp:new Date().toISOString(),totalRows,languageDistribution:languageDistribution.map(r=>({language:r.language,count:Number(r.count)})),nonStandardLanguages:nonStandardLanguages.map(r=>({language:r.language,count:Number(r.count)})),status:nonStandardLanguages.length?'non_standard_found':'all_valid'});
+});
 app.get('/api/auth', (req,res)=>{const s=session(req);res.json({authenticated:!!s,csrf:s?.csrf||null,setup:!store.get('password'),setupKeyRequired,demo});});
 app.get('/api/oauth/discord/start',(req,res)=>{
   const v=store.settings().verification,roles=[...(v.roleIds||[]),...(v.roleId?[v.roleId]:[])].filter(Boolean);
