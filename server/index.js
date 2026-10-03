@@ -435,6 +435,52 @@ const maybeAutoAnnouncePortfolioProduct=async(portfolioProduct,reason='publish')
   }
 };
 
+let portfolioDropProcessing=false;
+const processPortfolioDrops=async()=>{
+  if(portfolioDropProcessing||!bot.status().connected)return;
+  portfolioDropProcessing=true;
+  try{
+    const now=Date.now(),drops=portfolioDrops();
+    let changed=false;
+    for(let index=0;index<drops.length;index++){
+      const drop=drops[index];
+      if(portfolioDropStatus(drop,now)!=='active'||!drop.announceDiscord||!drop.channelId||drop.announcedAt)continue;
+      const lastAttempt=Date.parse(drop.announceAttemptAt||'');
+      if(Number.isFinite(lastAttempt)&&now-lastAttempt<5*60000)continue;
+      drop.announceAttemptAt=store.now();changed=true;
+      const product=portfolioProducts().find(item=>item.id===drop.productId);
+      if(!product){
+        store.log('aviso',`Drop ${drop.title}: produto não encontrado para anúncio.`,'portfolio-scheduler',{dropId:drop.id});
+        continue;
+      }
+      try{
+        const endUnix=Math.floor(Date.parse(drop.endsAt)/1000);
+        const productUrl=new URL(`/products/${encodeURIComponent(product.id)}`,portfolioPublicOrigin).toString();
+        const description=[drop.description||product.description||'',drop.discountPercent?`**${drop.discountPercent}% OFF** durante o drop.`:'',Number.isFinite(endUnix)?`Termina <t:${endUnix}:R>.`:'' ].filter(Boolean).join('\n\n');
+        const result=await bot.sendMessage({
+          target:'channel',
+          targetId:drop.channelId,
+          content:'',
+          embed:{
+            title:`✨ DROP STUDIO K · ${drop.title}`,
+            description,
+            color:'#8B2CFF',
+            image:portfolioAbsoluteUrl(product.coverUrl||product.gifUrl||'')
+          },
+          buttons:[{label:'Ver produto',type:'url',url:productUrl}]
+        });
+        drop.announcedAt=store.now();
+        drop.announcementMessageId=result.id||'';
+        store.log('portfólio',`Drop anunciado automaticamente no Discord: ${drop.title}`,'portfolio-scheduler',{dropId:drop.id,messageId:result.id||'',channelId:drop.channelId});
+      }catch(error){
+        store.log('aviso',`Falha ao anunciar drop ${drop.title}: ${String(error?.message||error).slice(0,400)}`,'portfolio-scheduler',{dropId:drop.id});
+      }
+    }
+    if(changed)store.set('portfolio:drops',drops);
+  }finally{
+    portfolioDropProcessing=false;
+  }
+};
 const portfolioStatus=()=>{
   const cfg=store.settings().operationsLive||{};
   const openTickets=Number(store.one("SELECT COUNT(*) AS n FROM tickets WHERE status='open'")?.n||0);
