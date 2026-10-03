@@ -246,8 +246,8 @@ const portfolioCookieOptions={httpOnly:true,sameSite:'lax',secure:process.env.CO
 const portfolioOauthCookieOptions={httpOnly:true,sameSite:'lax',secure:process.env.COOKIE_SECURE==='true',path:'/api/oauth/discord',maxAge:10*60000};
 const defaultPortfolioSite={
   brandName:'Studio K',
-  brandTagline:'KINETIC LOOM',
-  logoUrl:'/media/studio-k-logo.webp',
+  brandTagline:'SUA IDENTIDADE. SUA CIDADE.',
+  logoUrl:'/studio-assets/studio-k-logo.webp',
   homeBackgroundUrl:'/media/studio-k-home.webp',
   controlBackgroundUrl:'/media/studio-k-control.webp',
   heroEyebrow:'DESIGN 3D · FIVEM · MODA DIGITAL',
@@ -264,6 +264,19 @@ const portfolioItems=()=>{const v=store.get('portfolio:items',[]);return Array.i
 const storedPortfolioProducts=()=>{const v=store.get('portfolio:products',[]);return Array.isArray(v)?v:[]};
 const portfolioProducts=()=>{const stored=storedPortfolioProducts();if(stored.length)return stored;return store.products().map(p=>({id:p.id,name:p.name,description:p.description||'',priceCents:p.priceCents||0,category:p.category||'Studio K',tags:[],coverUrl:p.image||'',modelUrl:'',featured:false,published:true,botProductId:p.id,created:p.created||''}))};
 const portfolioAssets=()=>{const v=store.get('portfolio:assets',[]);return Array.isArray(v)?v:[]};
+const portfolioStatus=()=>{
+  const cfg=store.settings().operationsLive||{};
+  const openTickets=Number(store.one("SELECT COUNT(*) AS n FROM tickets WHERE status='open'")?.n||0);
+  const pendingOrders=Number(store.one("SELECT COUNT(*) AS n FROM orders WHERE status='pending'")?.n||0);
+  return{
+    botOnline:!!bot.status().connected,
+    storeOpen:cfg.storeOpen!==false,
+    ticketsOpen:cfg.ticketsOpen!==false,
+    openTickets,
+    pendingOrders,
+    updatedAt:store.now()
+  };
+};
 const portfolioSession=req=>{
   const bearer=String(req.headers.authorization||'').match(/^Bearer\s+(.+)$/i)?.[1]||'';
   const raw=cookieValue(req,'studio_web_session')||bearer;
@@ -353,9 +366,9 @@ app.get('/api/portfolio/oauth/exchange',(req,res)=>{
 
 app.post('/api/portfolio/logout',(req,res)=>{const s=portfolioSession(req);if(s?.key)store.run('DELETE FROM kv WHERE key=?',s.key);res.clearCookie('studio_web_session',{path:'/'});res.json({ok:true})});
 app.get('/api/portfolio/feedbacks',async(req,res)=>res.json(await publicPortfolioFeedbacks(18)));
-app.get('/api/portfolio/public-state',async(req,res)=>{const web=portfolioSession(req),items=portfolioItems().filter(x=>x.published),products=portfolioProducts().filter(x=>x.published),feedbacks=await publicPortfolioFeedbacks(18);const canControl=web?await portfolioCanControl(req,web):false;const me=web?{authenticated:true,user:web.user,member:web.member,canControl}:{authenticated:false,canControl:false};res.json({site:portfolioSite(),items,products,feedbacks,me})});
+app.get('/api/portfolio/public-state',async(req,res)=>{const web=portfolioSession(req),items=portfolioItems().filter(x=>x.published),products=portfolioProducts().filter(x=>x.published),feedbacks=await publicPortfolioFeedbacks(18);const canControl=web?await portfolioCanControl(req,web):false;const me=web?{authenticated:true,user:web.user,member:web.member,canControl}:{authenticated:false,canControl:false};res.json({site:portfolioSite(),status:portfolioStatus(),items,products,feedbacks,me})});
 const portfolioControl=async(req,res,next)=>{const web=portfolioSession(req);if(!await portfolioCanControl(req,web))return res.status(403).json({error:'A Central de Controle é exclusiva para membros com cargo de Staff no Discord do Studio K.'});req.portfolioWeb=web;next()};
-app.get('/api/portfolio/control/state',portfolioControl,async(req,res)=>res.json({authorized:true,user:req.portfolioWeb?.user||{name:'Administrador Studio K'},site:portfolioSite(),items:portfolioItems(),products:portfolioProducts(),assets:portfolioAssets(),feedbacks:await publicPortfolioFeedbacks(50),discord:{oauthConfigured:!!(process.env.DISCORD_CLIENT_ID&&process.env.DISCORD_CLIENT_SECRET),redirectUri:portfolioRedirect,publicOrigin:portfolioPublicOrigin.origin,botConnected:!!bot.status().connected}}));
+app.get('/api/portfolio/control/state',portfolioControl,async(req,res)=>res.json({authorized:true,user:req.portfolioWeb?.user||{name:'Administrador Studio K'},site:portfolioSite(),status:portfolioStatus(),items:portfolioItems(),products:portfolioProducts(),assets:portfolioAssets(),feedbacks:await publicPortfolioFeedbacks(50),discord:{oauthConfigured:!!(process.env.DISCORD_CLIENT_ID&&process.env.DISCORD_CLIENT_SECRET),redirectUri:portfolioRedirect,publicOrigin:portfolioPublicOrigin.origin,botConnected:!!bot.status().connected}}));
 app.put('/api/portfolio/control/site',portfolioControl,portfolioSameOrigin,(req,res)=>{const current=portfolioSite(),next=portfolioSiteSchema.parse({...current,...req.body});store.set('portfolio:site',next);store.log('portfólio','Configurações do site atualizadas.','portfolio-control');res.json(next)});
 app.post('/api/portfolio/control/items',portfolioControl,portfolioSameOrigin,(req,res)=>{const item={id:randomUUID(),...portfolioItemSchema.parse(req.body),created:store.now(),updated:store.now()};const items=portfolioItems();if(item.featured)for(const x of items)x.featured=false;items.unshift(item);store.set('portfolio:items',items);res.json(item)});
 app.put('/api/portfolio/control/items/:id',portfolioControl,portfolioSameOrigin,(req,res)=>{const items=portfolioItems(),index=items.findIndex(x=>x.id===req.params.id);if(index<0)throw new AppError('Projeto não encontrado.',404);const next={...items[index],...portfolioItemSchema.parse(req.body),updated:store.now()};if(next.featured)for(const x of items)x.featured=false;items[index]=next;store.set('portfolio:items',items);res.json(next)});
