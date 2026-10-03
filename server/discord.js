@@ -523,8 +523,8 @@ ${normalized.previewAfter}
   }
   const hasStaffPermission=async(i,key='ticketManage')=>{
     if(i.memberPermissions?.has(PermissionFlagsBits.ManageGuild)||i.memberPermissions?.has(PermissionFlagsBits.Administrator))return true;
-    const settings=store.settings(),configured=[...(settings.permissions?.[key]||[])];
-    if(['ticketManage','ticketClose','ticketTransfer'].includes(key))configured.push(...staffRoleIds(settings));
+    const settings=store.settings(),explicit=[...(settings.permissions?.[key]||[])].filter(Boolean);
+    const configured=explicit.length?explicit:(['ticketManage','ticketClose','ticketTransfer'].includes(key)?staffRoleIds(settings):[]);
     const ids=[...new Set(configured.filter(Boolean))];if(!ids.length)return false;
     const guild=requireGuild(),m=i.member?.roles?.cache?i.member:await guild.members.fetch(i.user.id);
     return ids.some(id=>m.roles.cache.has(id));
@@ -1139,6 +1139,7 @@ ${normalized.previewAfter}
         return;
       }
       if(action.startsWith('ticket-category:')||action==='ticket-category'){
+        if(store.settings().operationsLive?.ticketsOpen===false)throw new AppError('Os tickets estão fechados no momento.');
         const index=action==='ticket-category'?Number(i.values?.[0]||0):Number(action.split(':')[1]),category=store.settings().tickets.categories[index];
         if(!category)throw new AppError('Categoria indisponível.');
         const t=await openTicket(i.user.id,category);
@@ -1214,6 +1215,7 @@ ${normalized.previewAfter}
         await localizedEdit(i,`Atendimento transferido para <@${to}>.`);return;
       }
       if(action.startsWith('reopen:')){
+        if(store.settings().operationsLive?.ticketsOpen===false)throw new AppError('Os tickets estão fechados no momento.');
         const oldId=action.split(':')[1],old=store.one("SELECT * FROM tickets WHERE id=? AND status='closed' AND user_id=?",oldId,i.user.id);if(!old)throw new AppError('Esse atendimento não pode ser reaberto.',404);
         if(!store.settings().tickets.allowReopen)throw new AppError('A reabertura de tickets está desativada.');
         const t=await openTicket(i.user.id,old.category,{reopenedFrom:old.id,priority:old.priority||'normal'});ticketAuditAppend(t.id,{action:'reopen',actor:i.user.id,target:i.user.id});await localizedEdit(i,{content:`Novo atendimento criado: <#${t.channel_id}>. Ele está relacionado ao ticket anterior ${old.id.slice(0,8)}.`,components:[]});return;
@@ -1222,7 +1224,7 @@ ${normalized.previewAfter}
         await localizedEdit(i,{content:await userProfileText(i.user.id),components:[row(button('📦 Meus pedidos','central-orders',2),button('🎫 Abrir atendimento','central-ticket',2),button('🌎 Idioma','central-language',2))]});return;
       }
       if(action==='central-store'){const products=store.products().filter(p=>p.active);await localizedEdit(i,products.length?{content:'**Loja Studio K**\nEscolha um produto:',components:[row({type:3,custom_id:'store-buy',placeholder:'Produto',options:products.slice(0,25).map(p=>({label:p.name.slice(0,100),description:`${money(p.priceCents)} · ${p.type==='service'?'Serviço':`${p.stock} em estoque`}`,value:p.id}))})]}:'Não há produtos disponíveis.');return;}
-      if(action==='central-ticket'){const settings=store.settings().tickets,open=Number(store.one("SELECT COUNT(*) AS n FROM tickets WHERE user_id=? AND status='open'",i.user.id)?.n||0),maxOpen=settings.maxOpen||TICKET_OPEN_LIMIT;if(open>=maxOpen)throw new AppError(`Você já possui ${maxOpen} ticket(s) aberto(s).`);const buttons=settings.categories.map((name,index)=>button(name.slice(0,80),`ticket-category:${index}`,2)),rows=[];for(let p=0;p<buttons.length;p+=5)rows.push(row(...buttons.slice(p,p+5)));await localizedEdit(i,{content:'Escolha a categoria do atendimento:',components:rows});return;}
+      if(action==='central-ticket'){if(store.settings().operationsLive?.ticketsOpen===false)throw new AppError('Os tickets estão fechados no momento.');const settings=store.settings().tickets,open=Number(store.one("SELECT COUNT(*) AS n FROM tickets WHERE user_id=? AND status='open'",i.user.id)?.n||0),maxOpen=settings.maxOpen||TICKET_OPEN_LIMIT;if(open>=maxOpen)throw new AppError(`Você já possui ${maxOpen} ticket(s) aberto(s).`);const buttons=settings.categories.map((name,index)=>button(name.slice(0,80),`ticket-category:${index}`,2)),rows=[];for(let p=0;p<buttons.length;p+=5)rows.push(row(...buttons.slice(p,p+5)));await localizedEdit(i,{content:'Escolha a categoria do atendimento:',components:rows});return;}
       if(action==='central-orders'){
         const rows=store.all('SELECT * FROM orders WHERE user_id=? ORDER BY created DESC LIMIT 5',i.user.id);if(!rows.length){await localizedEdit(i,'Você ainda não possui pedidos.');return;}
         const lines=rows.map(o=>{const p=JSON.parse(o.product);return`**${o.id.slice(0,8)}** · ${p.name} · ${orderStatusLabel(o.status)} · ${money(o.price)}`;});
