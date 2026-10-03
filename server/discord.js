@@ -848,7 +848,9 @@ ${normalized.previewAfter}
         await user.send({...localizedDelivery,allowedMentions:mentionPolicy(localizedDelivery),nonce:deliveryMessage.nonce,enforceNonce:true});
         store.run('UPDATE orders SET delivery_done=1 WHERE id=?',order.id);
       }
-      store.run("UPDATE orders SET status='delivered',delivery_done=1,delivered_at=?,error=NULL WHERE id=?",store.now(),order.id);await audit('entrega',`Pedido ${order.id.slice(0,8)} entregue.`);
+      store.run("UPDATE orders SET status='delivered',delivery_done=1,delivered_at=?,error=NULL WHERE id=?",store.now(),order.id);
+      try{await syncStudioIdRankRole(order.user_id);}catch(e){store.log('aviso',`Studio K ID rank sync após entrega: ${String(e.message).slice(0,300)}`);}
+      await audit('entrega',`Pedido ${order.id.slice(0,8)} entregue.`);
     }catch(e){store.run('UPDATE orders SET error=? WHERE id=?',String(e.message).slice(0,500),order.id);}
   }
   const currentWeek=()=>{
@@ -1181,6 +1183,7 @@ ${normalized.previewAfter}
         try{
           await publishFeedback({...request,meta:JSON.stringify(requestMeta)},rating,detailedComment,i.user);
           store.run("UPDATE feedback_requests SET status='submitted',rating=?,comment=?,meta=?,submitted_at=? WHERE id=?",rating,comment,JSON.stringify(requestMeta),store.now(),id);
+          try{await syncStudioIdRankRole(i.user.id);}catch(e){store.log('aviso',`Studio K ID rank sync após feedback: ${String(e.message).slice(0,300)}`);}
         }catch(e){
           store.run("UPDATE feedback_requests SET status='pending' WHERE id=? AND status='publishing'",id);
           throw e;
