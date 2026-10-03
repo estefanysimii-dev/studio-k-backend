@@ -637,6 +637,11 @@ const portfolioIdentityFor=(userId)=>{
   store.set(key,identity);
   return identity;
 };
+const portfolioProfilePrefsFor=(userId)=>{
+  const saved=store.get(`portfolio:profile-prefs:${userId}`,{})||{};
+  return{equippedTitleId:String(saved.equippedTitleId||'member').slice(0,80)};
+};
+const portfolioProfileRarity=(rarity)=>['common','rare','epic','legendary'].includes(rarity)?rarity:'common';
 const portfolioMemberProfile=(userId,member={})=>{
   const identity=portfolioIdentityFor(userId);
   const favorites=portfolioFavoritesFor(userId);
@@ -647,16 +652,77 @@ const portfolioMemberProfile=(userId,member={})=>{
   const lifetimeSpend=purchases.reduce((sum,row)=>sum+Number(row.price||0),0);
   const roleNames=(member?.roles||[]).map(role=>String(role?.name||'')).filter(Boolean);
   const purchaseText=purchases.map(row=>String(row.product||'')).join(' ').toLowerCase();
+  const isSupporter=roleNames.some(name=>/(supporter|vip|premium|apoiador|cliente)/i.test(name));
+  const isNeonLover=/neon|emissiv/.test(purchaseText);
   const xp=100+(member?.inGuild?100:0)+(purchases.length*250)+(feedbackCount*75)+(favoriteCount*15);
   const level=Math.max(1,Math.floor(xp/300)+1);
-  const badges=[];
-  if(Number(identity.sequence||0)<=250)badges.push({id:'early-member',label:'Early Member',icon:'✦'});
-  if(member?.inGuild)badges.push({id:'discord-member',label:'Discord Member',icon:'◆'});
-  if(roleNames.some(name=>/(supporter|vip|premium|apoiador|cliente)/i.test(name)))badges.push({id:'supporter',label:'Supporter',icon:'★'});
-  if(purchases.length>=1)badges.push({id:'first-purchase',label:'Primeira Compra',icon:'♡'});
-  if(purchases.length>=5)badges.push({id:'collector',label:`${purchases.length} Compras`,icon:'◇'});
-  if(/neon|emissiv/.test(purchaseText))badges.push({id:'neon-lover',label:'Neon Lover',icon:'✧'});
-  if(feedbackCount>=1)badges.push({id:'reviewer',label:'Reviewer',icon:'✓'});
+  const rank=level>=10
+    ?{id:'icon',label:'Studio Icon',icon:'✦',rarity:'legendary'}
+    :level>=6
+      ?{id:'insider',label:'Studio Insider',icon:'◆',rarity:'epic'}
+      :level>=3
+        ?{id:'creator',label:'Studio Creator',icon:'◇',rarity:'rare'}
+        :{id:'member',label:'Studio Member',icon:'•',rarity:'common'};
+  const badgeCatalog=[
+    {id:'early-member',label:'Early Member',icon:'✦',rarity:'legendary',description:'Entre os primeiros 250 Studio K IDs.',unlocked:Number(identity.sequence||0)<=250},
+    {id:'discord-member',label:'Discord Member',icon:'◆',rarity:'common',description:'Conta conectada à comunidade Studio K.',unlocked:!!member?.inGuild},
+    {id:'supporter',label:'Supporter',icon:'★',rarity:'epic',description:'Possui um cargo de apoiador, VIP ou cliente.',unlocked:isSupporter},
+    {id:'first-purchase',label:'Primeira Compra',icon:'♡',rarity:'common',description:'Concluiu a primeira compra no Studio K.',unlocked:purchases.length>=1},
+    {id:'collector',label:`${Math.max(5,purchases.length)} Compras`,icon:'◇',rarity:'rare',description:'Construiu uma coleção com pelo menos cinco compras.',unlocked:purchases.length>=5},
+    {id:'neon-lover',label:'Neon Lover',icon:'✧',rarity:'epic',description:'Adquiriu um item Neon ou emissivo.',unlocked:isNeonLover},
+    {id:'reviewer',label:'Reviewer',icon:'✓',rarity:'rare',description:'Enviou feedback para o Studio K.',unlocked:feedbackCount>=1},
+    {id:'level-five',label:'Level V',icon:'Ⅴ',rarity:'rare',description:'Alcançou o nível 5 do Studio K ID.',unlocked:level>=5},
+    {id:'studio-icon',label:'Studio Icon',icon:'K',rarity:'legendary',description:'Alcançou o nível 10 do ecossistema.',unlocked:level>=10}
+  ].map(badge=>({...badge,rarity:portfolioProfileRarity(badge.rarity)}));
+  const badges=badgeCatalog.filter(badge=>badge.unlocked).map(({unlocked,...badge})=>badge);
+  const titleCatalog=[
+    {id:'member',label:'Studio K Member',rarity:'common',description:'Título base de todo Studio K ID.',unlocked:true},
+    {id:'early-member',label:'Early Member',rarity:'legendary',description:'Reservado aos primeiros membros do ecossistema.',unlocked:Number(identity.sequence||0)<=250},
+    {id:'supporter',label:'Supporter',rarity:'epic',description:'Para quem possui um cargo de apoiador, VIP ou cliente.',unlocked:isSupporter},
+    {id:'collector',label:'Collector',rarity:'rare',description:'Desbloqueado ao concluir cinco compras.',unlocked:purchases.length>=5},
+    {id:'neon-lover',label:'Neon Lover',rarity:'epic',description:'Desbloqueado por uma compra Neon/emissiva.',unlocked:isNeonLover},
+    {id:'reviewer',label:'Studio Reviewer',rarity:'rare',description:'Desbloqueado após o primeiro feedback.',unlocked:feedbackCount>=1},
+    {id:'creator',label:'Studio Creator',rarity:'rare',description:'Desbloqueado no level 3.',unlocked:level>=3},
+    {id:'insider',label:'Studio Insider',rarity:'epic',description:'Desbloqueado no level 6.',unlocked:level>=6},
+    {id:'icon',label:'Studio Icon',rarity:'legendary',description:'Desbloqueado no level 10.',unlocked:level>=10}
+  ].map(title=>({...title,rarity:portfolioProfileRarity(title.rarity)}));
+  const prefs=portfolioProfilePrefsFor(userId);
+  const equippedTitle=titleCatalog.find(title=>title.id===prefs.equippedTitleId&&title.unlocked)||titleCatalog[0];
+  if(equippedTitle.id!==prefs.equippedTitleId)store.set(`portfolio:profile-prefs:${userId}`,{...prefs,equippedTitleId:equippedTitle.id});
+  const achievementCatalog=[
+    {id:'studio-id',label:'Identidade criada',description:'Seu Studio K ID entrou oficialmente no ecossistema.',icon:'K',rarity:'common',unlocked:true},
+    {id:'discord-connected',label:'Conectado à comunidade',description:'Vinculou o Studio K ID ao Discord.',icon:'◆',rarity:'common',unlocked:!!member?.inGuild},
+    {id:'first-favorite',label:'Primeira escolha',description:'Salvou o primeiro favorito.',icon:'♡',rarity:'common',unlocked:favoriteCount>=1},
+    {id:'first-purchase',label:'Primeira aquisição',description:'Concluiu a primeira compra.',icon:'✦',rarity:'rare',unlocked:purchases.length>=1},
+    {id:'collector',label:'Colecionador',description:'Concluiu cinco compras no Studio K.',icon:'◇',rarity:'epic',unlocked:purchases.length>=5},
+    {id:'reviewer',label:'Sua voz conta',description:'Enviou o primeiro feedback.',icon:'✓',rarity:'rare',unlocked:feedbackCount>=1},
+    {id:'neon-lover',label:'Energia Neon',description:'Adquiriu um produto Neon/emissivo.',icon:'✧',rarity:'epic',unlocked:isNeonLover},
+    {id:'level-five',label:'Ascensão',description:'Alcançou o level 5.',icon:'Ⅴ',rarity:'epic',unlocked:level>=5},
+    {id:'studio-icon',label:'Ícone Studio K',description:'Alcançou o level 10.',icon:'★',rarity:'legendary',unlocked:level>=10}
+  ].map(item=>({...item,rarity:portfolioProfileRarity(item.rarity)}));
+  const achievementHistory=store.get(`portfolio:achievements:${userId}`,{})||{};
+  let achievementsChanged=false;
+  for(const achievement of achievementCatalog){
+    if(achievement.unlocked&&!achievementHistory[achievement.id]){
+      achievementHistory[achievement.id]=store.now();
+      achievementsChanged=true;
+    }
+  }
+  if(achievementsChanged)store.set(`portfolio:achievements:${userId}`,achievementHistory);
+  const achievements=achievementCatalog.map(({unlocked,...achievement})=>({
+    ...achievement,
+    unlocked,
+    unlockedAt:unlocked?String(achievementHistory[achievement.id]||identity.joinedAt||store.now()):''
+  }));
+  const perks=[
+    {id:'ecosystem-sync',label:'Studio K Sync',description:'Identidade pronta para ser reconhecida por site, bot e ClothTool.',icon:'K',rarity:'common',unlocked:true,progress:1,target:1},
+    {id:'badge-showcase',label:'Badge Showcase',description:'Exibição expandida de badges no perfil.',icon:'✦',rarity:'common',unlocked:level>=2,progress:Math.min(level,2),target:2},
+    {id:'profile-frame',label:'Collector Frame',description:'Moldura especial para o Studio K ID após três compras.',icon:'◇',rarity:'rare',unlocked:purchases.length>=3,progress:Math.min(purchases.length,3),target:3},
+    {id:'neon-aura',label:'Neon Aura',description:'Efeito Neon especial no cartão do Studio K ID.',icon:'✧',rarity:'epic',unlocked:isNeonLover,progress:isNeonLover?1:0,target:1},
+    {id:'insider-mark',label:'Insider Mark',description:'Marca avançada de perfil para membros level 6+.',icon:'◆',rarity:'epic',unlocked:level>=6,progress:Math.min(level,6),target:6},
+    {id:'priority-support',label:'Priority Support',description:'Identifica apoiadores elegíveis para fluxos prioritários de suporte.',icon:'★',rarity:'epic',unlocked:isSupporter,progress:isSupporter?1:0,target:1},
+    {id:'icon-aura',label:'Icon Aura',description:'Tratamento visual máximo do Studio K ID.',icon:'K',rarity:'legendary',unlocked:level>=10,progress:Math.min(level,10),target:10}
+  ].map(perk=>({...perk,rarity:portfolioProfileRarity(perk.rarity)}));
   return{
     studioId:identity.studioId,
     joinedAt:identity.joinedAt,
@@ -664,8 +730,13 @@ const portfolioMemberProfile=(userId,member={})=>{
     xp,
     levelFloor:(level-1)*300,
     nextLevelXp:level*300,
+    rank,
+    equippedTitle:{id:equippedTitle.id,label:equippedTitle.label,rarity:equippedTitle.rarity},
+    titles:titleCatalog,
     discountPercent:Math.max(0,Number(portfolioSite().memberDiscountPercent||0)),
     badges,
+    achievements,
+    perks,
     favorites,
     stats:{
       purchases:purchases.length,
@@ -732,6 +803,46 @@ app.get('/api/portfolio/me/profile',(req,res)=>{
   const web=portfolioSession(req);
   if(!web?.user?.id)throw new AppError('Conecte sua conta do Discord para acessar seu perfil Studio K.',401);
   res.json({profile:portfolioMemberProfile(web.user.id,web.member||{}),favorites:portfolioFavoritesFor(web.user.id)});
+});
+app.put('/api/portfolio/me/profile/title',portfolioSameOrigin,(req,res)=>{
+  const web=portfolioSession(req);
+  if(!web?.user?.id)throw new AppError('Conecte sua conta do Discord para personalizar seu Studio K ID.',401);
+  const titleId=z.string().trim().min(1).max(80).parse(req.body?.titleId||'');
+  const profile=portfolioMemberProfile(web.user.id,web.member||{});
+  const title=(profile.titles||[]).find(item=>item.id===titleId);
+  if(!title)throw new AppError('Título Studio K não encontrado.',404);
+  if(!title.unlocked)throw new AppError('Este título ainda não foi desbloqueado.',403);
+  store.set(`portfolio:profile-prefs:${web.user.id}`,{...portfolioProfilePrefsFor(web.user.id),equippedTitleId:title.id});
+  const next=portfolioMemberProfile(web.user.id,web.member||{});
+  res.json({ok:true,equippedTitle:next.equippedTitle,profile:next});
+});
+app.get('/api/portfolio/me/ecosystem',(req,res)=>{
+  const web=portfolioSession(req);
+  if(!web?.user?.id)throw new AppError('Autenticação Studio K obrigatória.',401);
+  const profile=portfolioMemberProfile(web.user.id,web.member||{});
+  res.json({
+    schemaVersion:1,
+    subject:profile.studioId,
+    issuedAt:store.now(),
+    identity:{
+      studioId:profile.studioId,
+      discordId:web.user.id,
+      username:web.user.username||'',
+      displayName:web.user.name||web.user.username||profile.studioId,
+      avatar:web.user.avatar||''
+    },
+    progression:{
+      level:profile.level,
+      xp:profile.xp,
+      rank:profile.rank,
+      title:profile.equippedTitle
+    },
+    entitlements:{
+      discountPercent:profile.discountPercent,
+      badges:profile.badges,
+      perks:profile.perks.filter(perk=>perk.unlocked).map(({progress,target,...perk})=>perk)
+    }
+  });
 });
 app.put('/api/portfolio/me/favorites/:kind/:id',portfolioSameOrigin,(req,res)=>{
   const web=portfolioSession(req);
