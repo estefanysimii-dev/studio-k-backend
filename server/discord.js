@@ -1517,11 +1517,54 @@ ${normalized.previewAfter}
     await wait(500);const entry=await recentAudit(b.guild,AuditLogEvent.MemberBanRemove,{targetId:b.user.id,maxAge:3500}),actor=entry?.executorId||'Discord';
     const actorText=entry?.executorId?`<@${entry.executorId}>`:'Discord';void audit('membro desbanido',`${actorText} removeu o banimento de <@${b.user.id}>.${entry?.reason?` Motivo: ${entry.reason}`:''}`,actor,{targetId:b.user.id}).catch(()=>{});
   });
-  const channelAuditType={criado:AuditLogEvent.ChannelCreate,excluído:AuditLogEvent.ChannelDelete,alterado:AuditLogEvent.ChannelUpdate};
-  for(const [event,label] of [[Events.ChannelCreate,'criado'],[Events.ChannelDelete,'excluído'],[Events.ChannelUpdate,'alterado']])client.on(event,async(...args)=>{
+  const channelAuditType={criado:AuditLogEvent.ChannelCreate,excluído:AuditLogEvent.ChannelDelete};
+  const normalizeOverwrites=ch=>[...(ch?.permissionOverwrites?.cache?.values?.()||[])].map(o=>({
+    id:o.id,type:o.type,allow:o.allow?.bitfield?.toString?.()||String(o.allow||''),deny:o.deny?.bitfield?.toString?.()||String(o.deny||'')
+  })).sort((a,b)=>String(a.id).localeCompare(String(b.id)));
+  const channelChanges=(before,after)=>{
+    const changes=[];
+    const scalar=[
+      ['name','Nome'],['parentId','Categoria'],['topic','Tópico'],['nsfw','NSFW'],
+      ['rateLimitPerUser','Modo lento'],['bitrate','Bitrate'],['userLimit','Limite de usuários'],
+      ['rtcRegion','Região RTC'],['videoQualityMode','Qualidade de vídeo'],
+      ['defaultAutoArchiveDuration','Autoarquivamento padrão'],['defaultThreadRateLimitPerUser','Modo lento de threads']
+    ];
+    for(const [key,label] of scalar){
+      const a=before?.[key]??null,b=after?.[key]??null;
+      if(String(a)!==String(b))changes.push({key,label,before:a,after:b});
+    }
+    const beforePerm=JSON.stringify(normalizeOverwrites(before)),afterPerm=JSON.stringify(normalizeOverwrites(after));
+    if(beforePerm!==afterPerm)changes.push({key:'permissions',label:'Permissões',before:'alteradas',after:'alteradas'});
+    return changes;
+  };
+  const formatChannelChange=value=>{
+    if(value===null||value===undefined||value==='')return 'vazio';
+    if(typeof value==='boolean')return value?'ativado':'desativado';
+    return String(value).slice(0,160);
+  };
+
+  for(const [event,label] of [[Events.ChannelCreate,'criado'],[Events.ChannelDelete,'excluído']])client.on(event,async(...args)=>{
     const ch=args.at(-1);if(ch.guild?.id!==env.DISCORD_GUILD_ID||!store.settings().logs.channels)return;
     await wait(400);const entry=await recentAudit(ch.guild,channelAuditType[label],{targetId:ch.id,maxAge:3000}),actor=entry?.executorId||'Discord',actorText=entry?.executorId?`<@${entry.executorId}>`:'Discord';
-    void audit(`canal ${label}`,`${actorText} ${label==='criado'?'criou':label==='excluído'?'excluiu':'alterou'} o canal **#${ch.name}** (<#${ch.id}>).`,actor,{targetLabel:`#${ch.name}`,channelId:ch.id}).catch(()=>{});
+    void audit(`canal ${label}`,`${actorText} ${label==='criado'?'criou':'excluiu'} o canal **#${ch.name}** (<#${ch.id}>).`,actor,{targetLabel:`#${ch.name}`,channelId:ch.id}).catch(()=>{});
+  });
+  client.on(Events.ChannelUpdate,async(before,ch)=>{
+    if(ch.guild?.id!==env.DISCORD_GUILD_ID||!store.settings().logs.channels)return;
+    const changes=channelChanges(before,ch);
+    if(!changes.length)return;
+    await wait(500);
+    let entry=null;
+    if(changes.some(c=>c.key==='permissions')){
+      entry=await recentAudit(ch.guild,AuditLogEvent.ChannelOverwriteUpdate,{targetId:ch.id,maxAge:4000});
+      if(!entry)entry=await recentAudit(ch.guild,AuditLogEvent.ChannelOverwriteCreate,{targetId:ch.id,maxAge:4000});
+      if(!entry)entry=await recentAudit(ch.guild,AuditLogEvent.ChannelOverwriteDelete,{targetId:ch.id,maxAge:4000});
+    }
+    if(!entry)entry=await recentAudit(ch.guild,AuditLogEvent.ChannelUpdate,{targetId:ch.id,maxAge:4000});
+    const actor=entry?.executorId||'Discord',actorText=entry?.executorId?`<@${entry.executorId}>`:'Discord';
+    const detail=changes.map(c=>c.key==='permissions'?'- **Permissões:** alteradas':`- **${c.label}:** ${formatChannelChange(c.before)} → ${formatChannelChange(c.after)}`).join('\n');
+    void audit('canal alterado',`${actorText} alterou o canal **#${ch.name}** (<#${ch.id}>).\n${detail}`,actor,{
+      targetLabel:`#${ch.name}`,channelId:ch.id,changes:changes.map(c=>({field:c.key,before:c.before,after:c.after}))
+    }).catch(()=>{});
   });
   const roleAuditType={criado:AuditLogEvent.RoleCreate,excluído:AuditLogEvent.RoleDelete,alterado:AuditLogEvent.RoleUpdate};
   for(const [event,label] of [[Events.GuildRoleCreate,'criado'],[Events.GuildRoleDelete,'excluído'],[Events.GuildRoleUpdate,'alterado']])client.on(event,async(...args)=>{
