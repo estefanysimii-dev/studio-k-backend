@@ -492,6 +492,17 @@ const portfolioItemSchema=z.object({
   published:z.boolean().default(true)
 });
 const portfolioProductSchema=portfolioItemSchema.extend({priceCents:z.number().int().min(0).max(1000000000).default(0),botProductId:z.string().max(80).default('')});
+const portfolioDropSchema=z.object({
+  title:z.string().trim().min(2).max(140),
+  description:z.string().trim().max(1200).default(''),
+  productId:z.string().trim().min(1).max(160),
+  discountPercent:z.number().int().min(0).max(100).default(0),
+  startsAt:z.string().datetime(),
+  endsAt:z.string().datetime(),
+  channelId:z.union([z.literal(''),z.string().regex(/^\d{17,20}$/)]).default(''),
+  announceDiscord:z.boolean().default(true),
+  published:z.boolean().default(true)
+}).refine(drop=>Date.parse(drop.endsAt)>Date.parse(drop.startsAt),'O fim do drop precisa ser depois do início.');
 const portfolioAssistantCampaignSchema=z.object({
   id:z.string().trim().min(1).max(80),
   type:z.enum(['promotion','combo','news','bestseller','motivation','cute']).default('cute'),
