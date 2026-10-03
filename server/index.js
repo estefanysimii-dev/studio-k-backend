@@ -499,10 +499,23 @@ app.get('/api/portfolio/me/orders',(req,res)=>{
       deliveredAt:order.delivered_at,
       couponCode:order.coupon_code||'',
       discount:Number(order.discount||0),
-      error:order.error||''
+      error:order.error||'',
+      deliveryType:product.type||'service'
     };
   });
   res.json({orders});
+});
+app.get('/api/portfolio/me/orders/:id/delivery',(req,res)=>{
+  const web=portfolioSession(req);
+  if(!web?.user?.id)throw new AppError('Conecte sua conta do Discord para recuperar a entrega.',401);
+  const order=store.one('SELECT id,product,status FROM orders WHERE id=? AND user_id=?',req.params.id,web.user.id);
+  if(!order)throw new AppError('Pedido não encontrado.',404);
+  let product={};try{product=JSON.parse(order.product||'{}')}catch{}
+  if(product.type!=='digital')throw new AppError('Este pedido é um serviço e não possui arquivo/chave digital para recuperação.',400);
+  if(order.status!=='delivered'&&order.status!=='paid')throw new AppError('A entrega ainda não está disponível para este pedido.',409);
+  const unit=store.one('SELECT secret FROM stock WHERE order_id=?',order.id);
+  if(!unit?.secret)throw new AppError('Entrega digital não encontrada. Use o suporte do Studio K.',404);
+  res.json({delivery:store.decrypt(unit.secret),instructions:product.delivery||'',productName:product.name||'Produto Studio K'});
 });
 app.post('/api/portfolio/products/:id/order',portfolioSameOrigin,async(req,res)=>{
   const web=portfolioSession(req);
