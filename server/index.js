@@ -272,6 +272,9 @@ const defaultPortfolioSite={
   defaultAnnouncementChannelId:'',
   autoAnnounceProducts:false,
   adminRoleIds:[],
+  memberDiscountPercent:0,
+  memberBenefitTitle:'Benefícios exclusivos para membros',
+  memberBenefitDescription:'Conecte sua conta do Discord para acessar vantagens, novidades e condições especiais do Studio K.',
   assistant:defaultPortfolioAssistant
 };
 const portfolioSite=()=>{
@@ -501,7 +504,10 @@ const portfolioSiteSchema=z.object({
   discordInviteUrl:z.string().max(2000).default(''),
   defaultAnnouncementChannelId:z.union([z.literal(''),z.string().regex(/^\d{17,20}$/)]).default(''),
   autoAnnounceProducts:z.boolean().default(false),
-  adminRoleIds:z.array(z.string().regex(/^\d{17,20}$/)).max(30).default([])
+  adminRoleIds:z.array(z.string().regex(/^\d{17,20}$/)).max(30).default([]),
+  memberDiscountPercent:z.number().int().min(0).max(100).default(defaultPortfolioSite.memberDiscountPercent),
+  memberBenefitTitle:z.string().trim().max(120).default(defaultPortfolioSite.memberBenefitTitle),
+  memberBenefitDescription:z.string().trim().max(500).default(defaultPortfolioSite.memberBenefitDescription)
 }).superRefine((value,ctx)=>{
   if(value.autoAnnounceProducts&&!value.defaultAnnouncementChannelId){
     ctx.addIssue({code:'custom',path:['defaultAnnouncementChannelId'],message:'Selecione um canal padrão antes de ativar o anúncio automático.'});
