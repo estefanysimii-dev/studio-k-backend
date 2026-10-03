@@ -54,9 +54,40 @@ app.get('/api/oauth/discord/start',(req,res)=>{
   res.redirect(`https://discord.com/oauth2/authorize?${params}`);
 });
 app.get('/api/oauth/discord/callback',async(req,res)=>{
-  let accessToken='';
+  let accessToken='',portfolioFlow=false;
   try{
-    const expected=cookieValue(req,'studio_oauth_state'),given=String(req.query.state||''),code=String(req.query.code||''),language=String(cookieValue(req,'studio_oauth_lang')||'pt');
+    const given=String(req.query.state||''),code=String(req.query.code||'');
+    const portfolioState=given?store.get(`portfolio-oauth:${hash(given)}`):null;
+    if(portfolioState){
+      portfolioFlow=true;
+      const expected=cookieValue(req,'studio_portfolio_oauth_state');
+      res.clearCookie('studio_portfolio_oauth_state',{path:'/api/oauth/discord'});
+      store.run('DELETE FROM kv WHERE key=?',`portfolio-oauth:${hash(given)}`);
+      if(req.query.error)throw new AppError('A autorização do Discord foi cancelada.',400);
+      if(!expected||!timingSafeEqual(Buffer.from(hash(expected)),Buffer.from(hash(given))))throw new AppError('A autorização expirou ou não corresponde a esta solicitação.',403);
+      if(Number(portfolioState.expires||0)<Date.now())throw new AppError('A autorização expirou. Tente novamente.',403);
+      if(!code)throw new AppError('O Discord não retornou o código de autorização.',400);
+      if(!process.env.DISCORD_CLIENT_ID||!process.env.DISCORD_CLIENT_SECRET)throw new AppError('OAuth do Discord ainda não está configurado.',503);
+      const tokenResponse=await fetch('https://discord.com/api/v10/oauth2/token',{
+        method:'POST',
+        headers:{'Content-Type':'application/x-www-form-urlencoded',Authorization:`Basic ${Buffer.from(`${process.env.DISCORD_CLIENT_ID}:${process.env.DISCORD_CLIENT_SECRET}`).toString('base64')}`},
+        body:new URLSearchParams({grant_type:'authorization_code',code,redirect_uri:oauthRedirect})
+      });
+      const token=await tokenResponse.json().catch(()=>({}));
+      if(!tokenResponse.ok||!token.access_token)throw new AppError('Não foi possível concluir a autenticação com o Discord.',502);
+      accessToken=token.access_token;
+      const userResponse=await fetch('https://discord.com/api/v10/users/@me',{headers:{Authorization:`Bearer ${accessToken}`}});
+      const user=await userResponse.json().catch(()=>({}));
+      if(!userResponse.ok||!user.id)throw new AppError('Não foi possível identificar sua conta do Discord.',502);
+      const member=await portfolioMember(user.id),avatar=user.avatar?`https://cdn.discordapp.com/avatars/${user.id}/${user.avatar}.png?size=128`:(member.avatar||'');
+      const raw=randomBytes(32).toString('hex'),sessionData={user:{id:user.id,username:user.username||'',name:user.global_name||member.name||user.username||user.id,avatar},member,created:Date.now(),expires:Date.now()+30*86400000};
+      store.set(`portfolio-session:${hash(raw)}`,sessionData);
+      res.cookie('studio_web_session',raw,portfolioCookieOptions);
+      res.redirect(portfolioState.next||'/portfolio/#account');
+      return;
+    }
+
+    const expected=cookieValue(req,'studio_oauth_state'),language=String(cookieValue(req,'studio_oauth_lang')||'pt');
     res.clearCookie('studio_oauth_state',{path:'/api/oauth/discord'});
     res.clearCookie('studio_oauth_lang',{path:'/api/oauth/discord'});
     if(req.query.error)throw new AppError('A autorização foi cancelada ou recusada.',400);
@@ -90,9 +121,11 @@ app.get('/api/oauth/discord/callback',async(req,res)=>{
   }catch(e){
     res.status(e instanceof AppError?e.status:500);
     res.setHeader('X-Robots-Tag','noindex, nofollow, noarchive');
-    res.type('html').send(oauthPage('Não foi possível verificar',htmlEscape(e instanceof AppError?e.message:'Tente novamente pelo botão de verificação no Discord.')));
-  }finally{
-    // The short-lived access token is not persisted. The encrypted refresh token is retained only for member recovery authorized via guilds.join.
+    if(portfolioFlow){
+      res.type('html').send(`<!doctype html><meta charset="utf-8"><title>Studio K · Discord</title><style>body{margin:0;background:#06030b;color:#fff;font:15px/1.6 system-ui;display:grid;place-items:center;min-height:100vh}.c{width:min(560px,calc(100% - 36px));padding:28px;border:1px solid #7e39bd;border-radius:18px;background:#11091d}.c a{display:inline-block;margin-top:14px;padding:10px 14px;border-radius:10px;background:#8b2cff;color:#fff;text-decoration:none;font-weight:700}</style><div class="c"><h1>Não foi possível conectar</h1><p>${htmlEscape(e instanceof AppError?e.message:'Tente novamente.')}</p><a href="/portfolio/#account">Voltar ao Studio K</a></div>`);
+    }else{
+      res.type('html').send(oauthPage('Não foi possível verificar',htmlEscape(e instanceof AppError?e.message:'Tente novamente pelo botão de verificação no Discord.')));
+    }
   }
 });
 
@@ -200,9 +233,9 @@ app.get('/api/public/tickets/:id/transcript/:token',(req,res)=>{
 // --- Studio K Portfolio / Control integration ---
 const portfolioPublicDir=join(store.dir,'portfolio-public'),portfolioPrivateDir=join(store.dir,'portfolio-private');
 mkdirSync(portfolioPublicDir,{recursive:true});mkdirSync(portfolioPrivateDir,{recursive:true});
-const portfolioRedirect=new URL('/api/portfolio/oauth/callback',base).toString();
+const portfolioRedirect=oauthRedirect;
 const portfolioCookieOptions={httpOnly:true,sameSite:'lax',secure:process.env.COOKIE_SECURE==='true',path:'/',maxAge:30*86400000};
-const portfolioOauthCookieOptions={httpOnly:true,sameSite:'lax',secure:process.env.COOKIE_SECURE==='true',path:'/api/portfolio/oauth',maxAge:10*60000};
+const portfolioOauthCookieOptions={httpOnly:true,sameSite:'lax',secure:process.env.COOKIE_SECURE==='true',path:'/api/oauth/discord',maxAge:10*60000};
 const defaultPortfolioSite={heroSubtitle:'Roupas, texturas e experiências visuais criadas para transformar personagens e projetos no GTA V / FiveM.',discordInviteUrl:'',adminRoleIds:[]};
 const portfolioSite=()=>({...defaultPortfolioSite,...store.get('portfolio:site',{})});
 const portfolioItems=()=>{const v=store.get('portfolio:items',[]);return Array.isArray(v)?v:[]};
@@ -211,13 +244,13 @@ const portfolioProducts=()=>{const stored=storedPortfolioProducts();if(stored.le
 const portfolioAssets=()=>{const v=store.get('portfolio:assets',[]);return Array.isArray(v)?v:[]};
 const portfolioSession=req=>{const raw=cookieValue(req,'studio_web_session');if(!raw)return null;const key=`portfolio-session:${hash(raw)}`,data=store.get(key);if(!data||Number(data.expires||0)<Date.now()){if(data)store.run('DELETE FROM kv WHERE key=?',key);return null;}return{...data,key}};
 const portfolioAdminRoleIds=()=>[...new Set([...(portfolioSite().adminRoleIds||[]),...String(process.env.PORTFOLIO_ADMIN_ROLE_IDS||'').split(',').map(x=>x.trim()).filter(Boolean)])];
-const portfolioCanControl=(req,web=portfolioSession(req))=>{if(session(req))return true;if(!web?.user?.id)return false;if(process.env.PORTFOLIO_OWNER_ID&&web.user.id===process.env.PORTFOLIO_OWNER_ID)return true;const allowed=portfolioAdminRoleIds();if(!allowed.length)return false;return (web.member?.roles||[]).some(role=>allowed.includes(role.id))};
+const portfolioCanControl=(req,web=portfolioSession(req))=>{if(session(req))return true;if(!web?.user?.id)return false;if(process.env.PORTFOLIO_OWNER_ID&&web.user.id===process.env.PORTFOLIO_OWNER_ID)return true;if(web.member?.administrator||web.member?.manageGuild)return true;const allowed=portfolioAdminRoleIds();return allowed.length>0&&(web.member?.roles||[]).some(role=>allowed.includes(role.id))};
 const portfolioItemSchema=z.object({name:z.string().trim().min(1).max(140),description:z.string().max(3000).default(''),category:z.string().trim().max(80).default('Studio K'),tags:z.array(z.string().trim().min(1).max(40)).max(20).default([]),coverUrl:z.string().max(2000).default(''),modelUrl:z.string().max(2000).default(''),featured:z.boolean().default(false),published:z.boolean().default(true)});
 const portfolioProductSchema=portfolioItemSchema.extend({priceCents:z.number().int().min(0).max(1000000000).default(0),botProductId:z.string().max(80).default('')});
 const portfolioSiteSchema=z.object({heroSubtitle:z.string().max(900).default(defaultPortfolioSite.heroSubtitle),discordInviteUrl:z.string().max(2000).default(''),adminRoleIds:z.array(z.string().regex(/^\d{17,20}$/)).max(30).default([])});
 async function portfolioMember(userId){try{const m=bot.status().connected?await bot.memberProfile(userId):null;return m?{...m,inGuild:true}:{inGuild:false,roles:[]}}catch{return{inGuild:false,roles:[]}}}
 async function publicPortfolioFeedbacks(limit=18){const rows=store.all("SELECT id,type,source_id,user_id,rating,comment,meta,submitted_at FROM feedback_requests WHERE status='submitted' ORDER BY submitted_at DESC LIMIT ?",Math.max(1,Math.min(50,Number(limit)||18)));return Promise.all(rows.map(async row=>{let meta={};try{meta=JSON.parse(row.meta||'{}')}catch{}let profile=null;try{profile=await portfolioMember(row.user_id)}catch{}const source=row.type==='ticket'?'Atendimento':'Compra';const reference=row.type==='ticket'?(meta.ticket||`#${row.source_id.slice(0,8)}`):(meta.product||`#${row.source_id.slice(0,8)}`);return{id:row.id,rating:Number(row.rating||0),comment:String(row.comment||'').slice(0,1200),source,reference,name:profile?.name||'Cliente Studio K',avatar:profile?.avatar||'',submittedAt:row.submitted_at||'',meta:{service:meta.service||null,speed:meta.speed||null,resolution:meta.resolution||null}}}))}
-app.get('/api/portfolio/oauth/start',(req,res)=>{if(!process.env.DISCORD_CLIENT_ID||!process.env.DISCORD_CLIENT_SECRET)throw new AppError('OAuth do Discord ainda não está configurado no servidor.',503);const state=randomBytes(32).toString('base64url'),next=String(req.query.next||'/portfolio/#account');store.set(`portfolio-oauth:${hash(state)}`,{next:next.startsWith('/portfolio/')?next:'/portfolio/#account',expires:Date.now()+10*60000});res.cookie('studio_portfolio_oauth_state',state,portfolioOauthCookieOptions);const params=new URLSearchParams({response_type:'code',client_id:process.env.DISCORD_CLIENT_ID,scope:'identify',state,redirect_uri:portfolioRedirect,prompt:'consent'});res.redirect(`https://discord.com/oauth2/authorize?${params}`)});
+app.get('/api/portfolio/oauth/start',(req,res)=>{if(!process.env.DISCORD_CLIENT_ID||!process.env.DISCORD_CLIENT_SECRET)throw new AppError('OAuth do Discord ainda não está configurado no servidor.',503);const state=randomBytes(32).toString('base64url'),next=String(req.query.next||'/portfolio/#account');store.set(`portfolio-oauth:${hash(state)}`,{next:next.startsWith('/portfolio/')?next:'/portfolio/#account',expires:Date.now()+10*60000});res.cookie('studio_portfolio_oauth_state',state,portfolioOauthCookieOptions);const params=new URLSearchParams({response_type:'code',client_id:process.env.DISCORD_CLIENT_ID,scope:'identify',state,redirect_uri:oauthRedirect,prompt:'consent'});res.redirect(`https://discord.com/oauth2/authorize?${params}`)});
 app.get('/api/portfolio/oauth/callback',async(req,res)=>{try{const expected=cookieValue(req,'studio_portfolio_oauth_state'),given=String(req.query.state||''),code=String(req.query.code||'');res.clearCookie('studio_portfolio_oauth_state',{path:'/api/portfolio/oauth'});if(req.query.error)throw new AppError('A autorização do Discord foi cancelada.',400);if(!expected||!given||!timingSafeEqual(Buffer.from(hash(expected)),Buffer.from(hash(given))))throw new AppError('A autorização expirou ou não corresponde a esta solicitação.',403);const stateData=store.get(`portfolio-oauth:${hash(given)}`);store.run('DELETE FROM kv WHERE key=?',`portfolio-oauth:${hash(given)}`);if(!stateData||Number(stateData.expires||0)<Date.now())throw new AppError('A autorização expirou. Tente novamente.',403);const tokenResponse=await fetch('https://discord.com/api/v10/oauth2/token',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:new URLSearchParams({client_id:process.env.DISCORD_CLIENT_ID,client_secret:process.env.DISCORD_CLIENT_SECRET,grant_type:'authorization_code',code,redirect_uri:portfolioRedirect})});const token=await tokenResponse.json().catch(()=>({}));if(!tokenResponse.ok||!token.access_token)throw new AppError('Não foi possível concluir a autenticação com o Discord.',502);const userResponse=await fetch('https://discord.com/api/v10/users/@me',{headers:{Authorization:`Bearer ${token.access_token}`}});const discordUser=await userResponse.json().catch(()=>({}));if(!userResponse.ok||!discordUser.id)throw new AppError('Não foi possível identificar sua conta do Discord.',502);const member=await portfolioMember(discordUser.id),avatar=discordUser.avatar?`https://cdn.discordapp.com/avatars/${discordUser.id}/${discordUser.avatar}.png?size=128`:(member.avatar||'');const raw=randomBytes(32).toString('hex'),sessionData={user:{id:discordUser.id,username:discordUser.username||'',name:discordUser.global_name||member.name||discordUser.username||discordUser.id,avatar},member,created:Date.now(),expires:Date.now()+30*86400000};store.set(`portfolio-session:${hash(raw)}`,sessionData);res.cookie('studio_web_session',raw,portfolioCookieOptions);res.redirect(stateData.next||'/portfolio/#account')}catch(e){res.status(e instanceof AppError?e.status:500).type('html').send(`<meta charset="utf-8"><title>Studio K</title><style>body{background:#07040c;color:#fff;font:16px system-ui;display:grid;place-items:center;min-height:100vh}.c{max-width:560px;padding:28px;border:1px solid #5c2786;border-radius:18px;background:#11091d}.c a{color:#c67aff}</style><div class="c"><h1>Não foi possível conectar</h1><p>${htmlEscape(e instanceof AppError?e.message:'Tente novamente.')}</p><a href="/portfolio/#account">Voltar ao Studio K</a></div>`)}});
 app.post('/api/portfolio/logout',(req,res)=>{const s=portfolioSession(req);if(s?.key)store.run('DELETE FROM kv WHERE key=?',s.key);res.clearCookie('studio_web_session',{path:'/'});res.json({ok:true})});
 app.get('/api/portfolio/feedbacks',async(req,res)=>res.json(await publicPortfolioFeedbacks(18)));
