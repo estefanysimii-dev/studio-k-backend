@@ -2,6 +2,7 @@ import { Client, GatewayIntentBits, Partials, Events, ChannelType, PermissionFla
 import { randomUUID, randomBytes, createHash } from 'node:crypto';
 import { joinVoiceChannel, getVoiceConnection, VoiceConnectionStatus, entersState } from '@discordjs/voice';
 import { AppError } from './store.js';
+import { studioIdConfig, studioIdProfile } from './studio-id.js';
 export function expandText(value,variables={}) {
   return String(value||'').replace(/\{([A-Za-z][A-Za-z0-9_]*)\}/g,(match,key)=>Object.prototype.hasOwnProperty.call(variables,key)?String(variables[key]??''):match);
 }
@@ -567,6 +568,28 @@ ${normalized.previewAfter}
     const guild=requireGuild(),m=await guild.members.fetch(userId);
     return{id:m.id,name:m.displayName||m.user.globalName||m.user.username||m.id,username:m.user.username||'',joinedAt:m.joinedAt?.toISOString?.()||null,createdAt:m.user.createdAt?.toISOString?.()||null,roles:[...m.roles.cache.values()].filter(r=>r.id!==guild.id).map(r=>({id:r.id,name:r.name})),avatar:m.displayAvatarURL({size:128}),administrator:m.permissions.has(PermissionFlagsBits.Administrator),manageGuild:m.permissions.has(PermissionFlagsBits.ManageGuild)};
   }
+  async function studioIdProfileFor(userId){
+    const profile=await memberProfile(userId);
+    const site=store.get('portfolio:site',{})||{};
+    return studioIdProfile(store,userId,{...profile,inGuild:true},{discountPercent:Number(site.memberDiscountPercent||0)});
+  }
+  async function syncStudioIdRankRole(userId,profile=null){
+    const config=studioIdConfig(store);
+    if(!config.enabled||!config.discordRankSync?.enabled||!client.isReady())return{changed:false,rank:profile?.rank||null};
+    const currentProfile=profile||await studioIdProfileFor(userId);
+    const roleId=String(config.discordRankSync.roleIds?.[currentProfile.rank?.id]||'');
+    const configured=[...new Set(Object.values(config.discordRankSync.roleIds||{}).map(String).filter(id=>/^\d{17,20}$/.test(id)))];
+    if(!configured.length)return{changed:false,rank:currentProfile.rank};
+    const guild=requireGuild(),m=await guild.members.fetch(userId);
+    let changed=false;
+    for(const id of configured){
+      const shouldHave=id===roleId;
+      if(shouldHave&&!m.roles.cache.has(id)){await m.roles.add(id,`Studio K ID: rank ${currentProfile.rank?.label||currentProfile.rank?.id}`);changed=true;}
+      if(!shouldHave&&m.roles.cache.has(id)){await m.roles.remove(id,`Studio K ID: rank ${currentProfile.rank?.label||currentProfile.rank?.id}`);changed=true;}
+    }
+    if(changed)store.log('studio-k-id',`Rank do Studio K ID sincronizado: ${currentProfile.studioId} · ${currentProfile.rank?.label||currentProfile.rank?.id}`,userId);
+    return{changed,rank:currentProfile.rank};
+  }
   async function nextTicketName(category,guild){
     const slug=channelSlug(category),prefix=`${slug}-`;await guild.channels.fetch();
     let maxExisting=0;
@@ -1042,12 +1065,20 @@ ${normalized.previewAfter}
   const orderStatusLabel=status=>({pending:'Aguardando pagamento',paid:'Pagamento aprovado / processando entrega',delivered:'Entregue',cancelled:'Cancelado'}[status]||status);
   async function userProfileText(userId){
     const guild=requireGuild(),m=await guild.members.fetch(userId);
+    const profile=await studioIdProfileFor(userId);
+    try{await syncStudioIdRankRole(userId,profile);}catch(e){store.log('aviso',`Studio K ID não conseguiu sincronizar cargo de ${userId}: ${String(e.message).slice(0,300)}`);}
     const t=store.one("SELECT COUNT(*) AS total,SUM(CASE WHEN status='open' THEN 1 ELSE 0 END) AS open FROM tickets WHERE user_id=?",userId);
     const o=store.one("SELECT COUNT(*) AS total,SUM(CASE WHEN status IN ('paid','delivered') THEN 1 ELSE 0 END) AS completed FROM orders WHERE user_id=?",userId);
     const v=store.one('SELECT verified_at FROM verifications WHERE user_id=?',userId);
     const latest=store.one('SELECT category,status,state,updated FROM tickets WHERE user_id=? ORDER BY created DESC LIMIT 1',userId);
+    const badgeLine=profile.badges?.length?profile.badges.slice(0,6).map(b=>`${b.icon} ${b.label}`).join(' · '):'nenhum ainda';
     return[
       `**${m.displayName||m.user.username}** · <@${userId}>`,
+      `**Studio K ID:** \`${profile.studioId}\``,
+      `**${profile.rank?.icon||'•'} ${profile.rank?.label||'Studio Member'}** · Level **${profile.level}** · ${profile.xp} XP`,
+      `Título: **${profile.equippedTitle?.label||'Studio K Member'}**`,
+      `Próximo nível: **${Math.max(0,profile.nextLevelXp-profile.xp)} XP**`,
+      `Badges: ${badgeLine}`,
       `Entrou no servidor: ${m.joinedTimestamp?`<t:${Math.floor(m.joinedTimestamp/1000)}:D>`:'não disponível'}`,
       `Conta criada: <t:${Math.floor(m.user.createdTimestamp/1000)}:D>`,
       `Verificação: ${v?.verified_at?`<t:${Math.floor(Date.parse(v.verified_at)/1000)}:D>`:'não registrada'}`,
@@ -1306,8 +1337,19 @@ ${normalized.previewAfter}
         if(!store.settings().tickets.allowReopen)throw new AppError('A reabertura de tickets está desativada.');
         const t=await openTicket(i.user.id,old.category,{reopenedFrom:old.id,priority:old.priority||'normal'});ticketAuditAppend(t.id,{action:'reopen',actor:i.user.id,target:i.user.id});await localizedEdit(i,{content:`Novo atendimento criado: <#${t.channel_id}>. Ele está relacionado ao ticket anterior ${old.id.slice(0,8)}.`,components:[]});return;
       }
-      if(action==='central'||action==='central-profile'||action==='perfil'){
+      if(action==='central'||action==='central-profile'||action==='perfil'||action==='id'){
         await localizedEdit(i,{content:await userProfileText(i.user.id),components:[row(button('📦 Meus pedidos','central-orders',2),button('🎫 Abrir atendimento','central-ticket',2),button('🌎 Idioma','central-language',2))]});return;
+      }
+      if(action==='rank'){
+        const profile=await studioIdProfileFor(i.user.id);
+        try{await syncStudioIdRankRole(i.user.id,profile);}catch(e){store.log('aviso',`Studio K ID rank sync: ${String(e.message).slice(0,300)}`);}
+        await localizedEdit(i,[
+          `**${profile.rank?.icon||'•'} ${profile.rank?.label||'Studio Member'}**`,
+          `Studio K ID: \`${profile.studioId}\``,
+          `Level **${profile.level}** · **${profile.xp} XP**`,
+          `Título equipado: **${profile.equippedTitle?.label||'Studio K Member'}**`,
+          `${Math.max(0,profile.nextLevelXp-profile.xp)} XP para o próximo level.`
+        ].join('\n'));return;
       }
       if(action==='central-store'){if(store.settings().operationsLive?.storeOpen===false)throw new AppError('A loja está fechada no momento.');const products=store.products().filter(p=>p.active);await localizedEdit(i,products.length?{content:'**Loja Studio K**\nEscolha um produto:',components:[row({type:3,custom_id:'store-buy',placeholder:'Produto',options:products.slice(0,25).map(p=>({label:p.name.slice(0,100),description:`${money(p.priceCents)} · ${p.type==='service'?'Serviço':`${p.stock} em estoque`}`,value:p.id}))})]}:'Não há produtos disponíveis.');return;}
       if(action==='central-ticket'){if(store.settings().operationsLive?.ticketsOpen===false)throw new AppError('Os tickets estão fechados no momento.');const settings=store.settings().tickets,open=Number(store.one("SELECT COUNT(*) AS n FROM tickets WHERE user_id=? AND status='open'",i.user.id)?.n||0),maxOpen=settings.maxOpen||TICKET_OPEN_LIMIT;if(open>=maxOpen)throw new AppError(`Você já possui ${maxOpen} ticket(s) aberto(s).`);const buttons=settings.categories.map((name,index)=>button(name.slice(0,80),`ticket-category:${index}`,2)),rows=[];for(let p=0;p<buttons.length;p+=5)rows.push(row(...buttons.slice(p,p+5)));await localizedEdit(i,{content:'Escolha a categoria do atendimento:',components:rows});return;}
@@ -1581,10 +1623,10 @@ ${normalized.previewAfter}
   });
   client.on(Events.Error,e=>{error=e.message;store.log('erro','Falha na conexão com o Discord.');});
   client.once(Events.ClientReady,async()=>{console.log(`Discord conectado como ${client.user?.tag||client.user?.username||'Studio K'}.`);
-    try{const guild=requireGuild();const commands=[{name:'central',description:'Abra a Central Studio K'},{name:'perfil',description:'Veja sua conta, tickets e pedidos'},{name:'ajuda',description:'Pesquise ajuda e perguntas frequentes',options:[{name:'busca',description:'Assunto ou palavra-chave',type:3,required:false}]},{name:'loja',description:'Veja produtos e serviços disponíveis'},{name:'cupom',description:'Aplique um cupom na próxima compra',options:[{name:'codigo',description:'Código do cupom',type:3,required:true}]},{name:'pedido',description:'Consulte um pedido e recupere sua entrega',options:[{name:'id',description:'Código completo do pedido; deixe vazio para o mais recente',type:3,required:false}]},{name:'ticket',description:'Abra um atendimento privado'},{name:'verificar',description:'Aceite as regras e receba acesso'},{name:'notificacoes',description:'Escolha quais notificações deseja receber'},{name:'idioma',description:'Escolha o idioma das mensagens privadas do Studio K'},{name:'Traduzir mensagem',type:3}];await new REST({version:'10'}).setToken(env.DISCORD_TOKEN).put(Routes.applicationGuildCommands(env.DISCORD_CLIENT_ID||client.user.id,guild.id),{body:commands});const s=store.settings().brand;client.user.setPresence({status:s.status,activities:s.activity?[{name:s.activity,type:ActivityType[s.activityType]}]:[]});await refreshInviteCache(guild);for(const state of guild.voiceStates.cache.values())if(state.member&&!state.member.user.bot&&state.channelId)startVoiceForUser(state.id,store.now());try{await applyVoicePresence();}catch(e){store.log('aviso',`Presença em call: ${e.message}`);}store.log('conexão',`Conectado ao servidor ${guild.name}.`);error='';await tick();}catch(e){error=e.message;store.log('erro',e.message);}
+    try{const guild=requireGuild();const commands=[{name:'central',description:'Abra a Central Studio K'},{name:'perfil',description:'Veja sua conta, Studio K ID, tickets e pedidos'},{name:'id',description:'Veja seu Studio K ID'},{name:'rank',description:'Veja seu rank, level e XP'},{name:'ajuda',description:'Pesquise ajuda e perguntas frequentes',options:[{name:'busca',description:'Assunto ou palavra-chave',type:3,required:false}]},{name:'loja',description:'Veja produtos e serviços disponíveis'},{name:'cupom',description:'Aplique um cupom na próxima compra',options:[{name:'codigo',description:'Código do cupom',type:3,required:true}]},{name:'pedido',description:'Consulte um pedido e recupere sua entrega',options:[{name:'id',description:'Código completo do pedido; deixe vazio para o mais recente',type:3,required:false}]},{name:'ticket',description:'Abra um atendimento privado'},{name:'verificar',description:'Aceite as regras e receba acesso'},{name:'notificacoes',description:'Escolha quais notificações deseja receber'},{name:'idioma',description:'Escolha o idioma das mensagens privadas do Studio K'},{name:'Traduzir mensagem',type:3}];await new REST({version:'10'}).setToken(env.DISCORD_TOKEN).put(Routes.applicationGuildCommands(env.DISCORD_CLIENT_ID||client.user.id,guild.id),{body:commands});const s=store.settings().brand;client.user.setPresence({status:s.status,activities:s.activity?[{name:s.activity,type:ActivityType[s.activityType]}]:[]});await refreshInviteCache(guild);for(const state of guild.voiceStates.cache.values())if(state.member&&!state.member.user.bot&&state.channelId)startVoiceForUser(state.id,store.now());try{await applyVoicePresence();}catch(e){store.log('aviso',`Presença em call: ${e.message}`);}store.log('conexão',`Conectado ao servidor ${guild.name}.`);error='';await tick();}catch(e){error=e.message;store.log('erro',e.message);}
   });
   const timer=setInterval(()=>void tick(),30000);timer.unref();
-  return {status,client,channel,member,memberProfile,assignRole,verifyOAuthUser,sendMessage,openTicket,closeTicket,publishPanel,publishConfiguredMessage,publishProduct,createGiveaway,evaluateGiveaway,updateSalesLive,updateOverviewLive,updateLivePanels,createEvent,applyBrand,applyVoicePresence,makeBackup,tick,
+  return {status,client,channel,member,memberProfile,studioIdProfileFor,syncStudioIdRankRole,assignRole,verifyOAuthUser,sendMessage,openTicket,closeTicket,publishPanel,publishConfiguredMessage,publishProduct,createGiveaway,evaluateGiveaway,updateSalesLive,updateOverviewLive,updateLivePanels,createEvent,applyBrand,applyVoicePresence,makeBackup,tick,
     async metadata(){
       const g=requireGuild();
       await Promise.all([g.channels.fetch(),g.roles.fetch(),g.emojis.fetch(),g.members.fetch()]);
