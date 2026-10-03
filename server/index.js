@@ -514,6 +514,21 @@ const portfolioSiteSchema=z.object({
   }
 });
 async function portfolioMember(userId){try{const m=bot.status().connected?await bot.memberProfile(userId):null;return m?{...m,inGuild:true}:{inGuild:false,roles:[]}}catch{return{inGuild:false,roles:[]}}}
+const portfolioFavoritesFor=(userId)=>{
+  const saved=store.get(`portfolio:favorites:${userId}`,{items:[],products:[]})||{};
+  const normalize=list=>[...new Set((Array.isArray(list)?list:[]).map(value=>String(value||'').trim()).filter(Boolean))].slice(0,500);
+  return{items:normalize(saved.items),products:normalize(saved.products)};
+};
+const portfolioIdentityFor=(userId)=>{
+  const key=`portfolio:member:${userId}`;
+  let identity=store.get(key,null);
+  if(identity?.studioId)return identity;
+  const sequence=Math.max(1,Number(store.get('portfolio:member-sequence',0)||0)+1);
+  store.set('portfolio:member-sequence',sequence);
+  identity={studioId:`SK-${String(sequence).padStart(5,'0')}`,sequence,joinedAt:store.now()};
+  store.set(key,identity);
+  return identity;
+};
 async function publicPortfolioFeedbacks(limit=500){const rows=store.all("SELECT id,type,source_id,user_id,rating,comment,meta,submitted_at FROM feedback_requests WHERE status='submitted' ORDER BY submitted_at DESC LIMIT ?",Math.max(1,Math.min(1000,Number(limit)||500)));return Promise.all(rows.map(async row=>{let meta={};try{meta=JSON.parse(row.meta||'{}')}catch{}let profile=null;try{profile=await portfolioMember(row.user_id)}catch{}const source=row.type==='ticket'?'Atendimento':'Compra';const reference=row.type==='ticket'?(meta.ticket||`#${row.source_id.slice(0,8)}`):(meta.product||`#${row.source_id.slice(0,8)}`);return{id:row.id,rating:Number(row.rating||0),comment:String(row.comment||'').slice(0,1200),source,reference,name:profile?.name||'Cliente Studio K',avatar:profile?.avatar||'',submittedAt:row.submitted_at||'',meta:{service:meta.service||null,speed:meta.speed||null,resolution:meta.resolution||null}}}))}
 app.get('/api/portfolio/oauth/start',(req,res)=>{
   if(!process.env.DISCORD_CLIENT_ID||!process.env.DISCORD_CLIENT_SECRET)throw new AppError('OAuth do Discord ainda não está configurado no servidor.',503);
