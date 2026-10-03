@@ -79,7 +79,7 @@ app.get('/api/oauth/discord/callback',async(req,res)=>{
       const tokenResponse=await fetch('https://discord.com/api/v10/oauth2/token',{
         method:'POST',
         headers:{'Content-Type':'application/x-www-form-urlencoded',Authorization:`Basic ${Buffer.from(`${process.env.DISCORD_CLIENT_ID}:${process.env.DISCORD_CLIENT_SECRET}`).toString('base64')}`},
-        body:new URLSearchParams({grant_type:'authorization_code',code,redirect_uri:oauthRedirect})
+        body:new URLSearchParams({grant_type:'authorization_code',code,redirect_uri:portfolioRedirect})
       });
       const token=await tokenResponse.json().catch(()=>({}));
       if(!tokenResponse.ok||!token.access_token)throw new AppError('Não foi possível concluir a autenticação com o Discord.',502);
@@ -242,7 +242,8 @@ app.get('/api/public/tickets/:id/transcript/:token',(req,res)=>{
 // --- Studio K Portfolio / Control integration ---
 const portfolioPublicDir=join(store.dir,'portfolio-public'),portfolioPrivateDir=join(store.dir,'portfolio-private');
 mkdirSync(portfolioPublicDir,{recursive:true});mkdirSync(portfolioPrivateDir,{recursive:true});
-const portfolioRedirect=oauthRedirect;
+const portfolioBackendOrigin=new URL(process.env.PORTFOLIO_BACKEND_URL||base.origin);
+const portfolioRedirect=new URL('/api/oauth/discord/callback',portfolioBackendOrigin).toString();
 const portfolioPublicOrigin=new URL(process.env.PORTFOLIO_PUBLIC_URL||base.origin);
 const portfolioCookieOptions={httpOnly:true,sameSite:'lax',secure:process.env.COOKIE_SECURE==='true',path:'/',maxAge:30*86400000};
 const portfolioOauthCookieOptions={httpOnly:true,sameSite:'lax',secure:process.env.COOKIE_SECURE==='true',path:'/api/oauth/discord',maxAge:10*60000};
@@ -481,14 +482,14 @@ async function publicPortfolioFeedbacks(limit=18){const rows=store.all("SELECT i
 app.get('/api/portfolio/oauth/start',(req,res)=>{
   if(!process.env.DISCORD_CLIENT_ID||!process.env.DISCORD_CLIENT_SECRET)throw new AppError('OAuth do Discord ainda não está configurado no servidor.',503);
   const next=String(req.query.next||'/account'),safeNext=(next.startsWith('/')&&!next.startsWith('//'))?next:'/account';
-  const bridge=new URL('/api/portfolio/oauth/bridge',base);bridge.searchParams.set('next',safeNext);res.redirect(bridge.toString());
+  const bridge=new URL('/api/portfolio/oauth/bridge',portfolioBackendOrigin);bridge.searchParams.set('next',safeNext);res.redirect(bridge.toString());
 });
 app.get('/api/portfolio/oauth/bridge',(req,res)=>{
   if(!process.env.DISCORD_CLIENT_ID||!process.env.DISCORD_CLIENT_SECRET)throw new AppError('OAuth do Discord ainda não está configurado no servidor.',503);
   const next=String(req.query.next||'/account'),safeNext=(next.startsWith('/')&&!next.startsWith('//'))?next:'/account',state=randomBytes(32).toString('base64url');
   store.set(`portfolio-oauth:${hash(state)}`,{next:safeNext,expires:Date.now()+10*60000});
   res.cookie('studio_portfolio_oauth_state',state,portfolioOauthCookieOptions);
-  const params=new URLSearchParams({response_type:'code',client_id:process.env.DISCORD_CLIENT_ID,scope:'identify',state,redirect_uri:oauthRedirect,prompt:'consent'});
+  const params=new URLSearchParams({response_type:'code',client_id:process.env.DISCORD_CLIENT_ID,scope:'identify',state,redirect_uri:portfolioRedirect,prompt:'consent'});
   res.redirect(`https://discord.com/oauth2/authorize?${params}`);
 });
 app.get('/api/portfolio/oauth/complete',(req,res)=>{
@@ -654,7 +655,7 @@ app.post('/api/portfolio/control/products/:id/announce',portfolioControl,portfol
 app.post('/api/portfolio/control/upload-ticket',portfolioControl,portfolioSameOrigin,(req,res)=>{
   const name=String(req.body?.name||'arquivo').slice(0,180),requestedPublic=req.body?.public===true,token=randomBytes(32).toString('base64url');
   store.set(`portfolio-upload:${hash(token)}`,{userId:req.portfolioWeb?.user?.id||'',name,public:requestedPublic,expires:Date.now()+5*60000});
-  const uploadUrl=new URL(`/api/portfolio/upload/${encodeURIComponent(token)}`,base);
+  const uploadUrl=new URL(`/api/portfolio/upload/${encodeURIComponent(token)}`,portfolioBackendOrigin);
   res.json({token,uploadUrl:uploadUrl.toString(),expiresIn:300});
 });
 app.post('/api/portfolio/control/assets/:id/process',portfolioControl,portfolioSameOrigin,async(req,res)=>{
