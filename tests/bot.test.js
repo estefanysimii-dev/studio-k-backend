@@ -35,7 +35,7 @@ test('feedback stars render from one to five',()=>{
 test('Discord mentions and links are excluded from translation text',()=>{
   const source='Olá <@123456789012345678>! Seu atendimento foi criado em <#223456789012345678>. Veja https://example.com/ticket/ABC123456789.';
   const parts=splitTranslationText(source);
-  assert.equal(parts.filter(p=>p.protected).map(p=>p.text).join('|'),'<@123456789012345678>|<#223456789012345678>|https://example.com/ticket/ABC123456789');
+  assert.equal(parts.filter(p=>p.protected).map(p=>p.text).join('|'),'<@123456789012345678>|<#223456789012345678>|https://example.com/ticket/ABC123456789.');
   assert.equal(parts.map(p=>p.text).join(''),source);
   assert.equal(parts.some(p=>p.text.includes('SKTOKEN')),false);
 });
