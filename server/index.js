@@ -1041,4 +1041,7 @@ if(demo&&!store.get('demoSeeded')){
 }
 const server=app.listen(port,host,()=>console.log(`Studio K ${demo?'[DEMONSTRAÇÃO]':''} · ${base.origin}`));
 void bot.start();
-for(const signal of ['SIGTERM','SIGINT'])process.on(signal,async()=>{await bot.stop();server.close(()=>{store.db.close();process.exit(0);});});
+const portfolioDropTimer=setInterval(()=>void processPortfolioDrops(),30000);
+portfolioDropTimer.unref();
+setTimeout(()=>void processPortfolioDrops(),5000).unref();
+for(const signal of ['SIGTERM','SIGINT'])process.on(signal,async()=>{clearInterval(portfolioDropTimer);await bot.stop();server.close(()=>{store.db.close();process.exit(0);});});
