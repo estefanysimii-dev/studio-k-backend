@@ -361,3 +361,111 @@ dialog::backdrop{
 }
 /* /Studio K premium visual system v2 */
 
+
+/* Studio K sidebar live status */
+.sidebar-live{
+  margin:18px 0 0;
+  padding:15px;
+  background:
+    radial-gradient(circle at 10% 0%, rgba(139,44,255,.20), transparent 42%),
+    linear-gradient(180deg, rgba(18,11,30,.96), rgba(8,5,14,.95));
+  border:1px solid rgba(177,96,255,.30);
+  border-radius:14px;
+  box-shadow:0 14px 40px rgba(0,0,0,.22), inset 0 1px 0 rgba(255,255,255,.025);
+}
+.sidebar-live-head{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:8px;
+  margin-bottom:10px;
+}
+.sidebar-live-head>span:first-child{
+  color:#f0d8ff;
+  font-size:10px;
+  font-weight:900;
+  letter-spacing:.12em;
+  text-transform:uppercase;
+  text-shadow:0 0 10px rgba(184,100,255,.22),0 1px 2px rgba(0,0,0,.8);
+}
+.sidebar-live-pulse{
+  width:8px;
+  height:8px;
+  border-radius:50%;
+  background:#8f52ed;
+  box-shadow:0 0 0 0 rgba(143,82,237,.6);
+  animation:studioKLivePulse 2.4s ease-out infinite;
+}
+.sidebar-live-row{
+  min-height:30px;
+  font-size:12px;
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:8px;
+  border-top:1px solid rgba(255,255,255,.04);
+}
+.sidebar-live-row>span{
+  color:#f2eef7;
+  font-size:12px;
+  font-weight:800;
+  line-height:1.35;
+}
+.sidebar-live-row strong{
+  font-size:12px;
+  font-weight:900;
+  line-height:1.35;
+}
+.sidebar-live-row strong.online{
+  color:#7cffb0;
+  text-shadow:0 0 10px rgba(72,231,124,.18),0 1px 2px rgba(0,0,0,.7);
+}
+.sidebar-live-row strong.offline{
+  color:#ff9eb0;
+  text-shadow:0 1px 2px rgba(0,0,0,.7);
+}
+.sidebar-live-totals{
+  display:grid;
+  grid-template-columns:1fr 1fr;
+  gap:10px;
+  margin-top:12px;
+}
+.sidebar-live-totals>div{
+  padding:11px 10px;
+  border-radius:12px;
+  background:rgba(255,255,255,.04);
+  border:1px solid rgba(177,96,255,.20);
+}
+.sidebar-live-totals strong{
+  display:block;
+  font:900 18px/1 "Sora",Arial,sans-serif;
+  color:#fff;
+  text-shadow:0 0 10px rgba(190,130,255,.15),0 1px 2px rgba(0,0,0,.7);
+}
+.sidebar-live-totals span{
+  display:block;
+  margin-top:6px;
+  color:#ddd5e6;
+  font-size:8.5px;
+  font-weight:800;
+  line-height:1.35;
+  text-transform:uppercase;
+  letter-spacing:.04em;
+}
+@keyframes studioKLivePulse{
+  0%{box-shadow:0 0 0 0 rgba(143,82,237,.55)}
+  70%{box-shadow:0 0 0 8px rgba(143,82,237,0)}
+  100%{box-shadow:0 0 0 0 rgba(143,82,237,0)}
+}
+@media(max-width:1200px){
+  .sidebar-live{padding:12px}
+  .sidebar-live-row>span,.sidebar-live-row strong{font-size:11px}
+  .sidebar-live-totals strong{font-size:17px}
+}
+@media(max-width:800px){
+  .sidebar-live{margin-top:16px}
+}
+@media(prefers-reduced-motion:reduce){
+  .sidebar-live-pulse{animation:none!important}
+}
+
