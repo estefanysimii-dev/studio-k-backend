@@ -61,7 +61,13 @@ export const SUPPORTED_LANGUAGES=[
   {code:'zh-CN',label:'简体中文',emoji:'🇨🇳'},
   {code:'ru',label:'Русский',emoji:'🇷🇺'}
 ];
-export const normalizeLanguage=value=>SUPPORTED_LANGUAGES.some(l=>l.code===String(value||''))?String(value):'pt';
+export const normalizeLanguage=value=>{
+  const raw=String(value||'').trim(),lower=raw.toLowerCase().replace('_','-');
+  if(['pt','pt-br','pt-pt','português','portugues','portuguese'].includes(lower))return 'pt';
+  if(lower==='zh-cn'||lower==='zh-hans')return 'zh-CN';
+  const exact=SUPPORTED_LANGUAGES.find(l=>l.code.toLowerCase()===lower);
+  return exact?.code||'pt';
+};
 export const TICKET_OPEN_LIMIT=2;
 export const canOpenTicket=openCount=>Number(openCount)<TICKET_OPEN_LIMIT;
 export const feedbackStars=rating=>'⭐'.repeat(Math.max(1,Math.min(5,Number(rating)||1)))+'☆'.repeat(5-Math.max(1,Math.min(5,Number(rating)||1)));
@@ -99,30 +105,40 @@ export function createBot(store,env=process.env){
   const libreTranslateUrl=()=>String(env.LIBRETRANSLATE_URL||'http://libretranslate.railway.internal:5000').replace(/\/$/,'');
   const libreLanguage=code=>normalizeLanguage(code)==='zh-CN'?'zh-Hans':normalizeLanguage(code);
   const translationReady=()=>!!(store.settings().translator?.enabled&&libreTranslateUrl());
-  const protectTranslationText=value=>{
-    const tokens=[];
-    const text=String(value||'').replace(/```[\s\S]*?```|`[^`\n]+`|<(?:@!?|@&|#)\d+>|<t:\d+(?::[tTdDfFR])?>|<a?:[A-Za-z0-9_]+:\d+>|https?:\/\/[^\s)]+|[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}|[A-Za-z0-9_-]{12,}/gi,match=>{
-      const key=`__SKTOKEN_${tokens.length}__`;tokens.push(match);return key;
-    });
-    return{text,tokens};
+  const protectedTranslationPattern=/```[\s\S]*?```|`[^`\n]+`|<(?:@!?|@&|#)\d+>|<t:\d+(?::[tTdDfFR])?>|<a?:[A-Za-z0-9_]+:\d+>|https?:\/\/[^\s)]+|[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}|[A-Za-z0-9_-]{12,}/gi;
+  export const splitTranslationText=value=>{
+    const source=String(value||''),parts=[];let last=0;
+    protectedTranslationPattern.lastIndex=0;
+    for(const match of source.matchAll(protectedTranslationPattern)){
+      if(match.index>last)parts.push({text:source.slice(last,match.index),protected:false});
+      parts.push({text:match[0],protected:true});
+      last=match.index+match[0].length;
+    }
+    if(last<source.length)parts.push({text:source.slice(last),protected:false});
+    return parts.length?parts:[{text:source,protected:false}];
   };
-  const restoreTranslationText=(value,tokens=[])=>String(value||'').replace(/__SKTOKEN_(\d+)__/g,(m,n)=>tokens[Number(n)]??m);
   const decodeTranslation=value=>String(value||'').replace(/&quot;/g,'"').replace(/&#39;|&#x27;/g,"'").replace(/&lt;/g,'<').replace(/&gt;/g,'>').replace(/&amp;/g,'&');
   async function translateTexts(values,target){
     const language=normalizeLanguage(target),source=values.map(v=>String(v||''));
     if(language==='pt'||!source.some(Boolean))return source;
     if(!translationReady())throw new AppError('O tradutor ainda não foi configurado no servidor.',503);
-    const protectedValues=source.map(protectTranslationText),cacheKey='translate:'+createHash('sha256').update(language+'\n'+JSON.stringify(source)).digest('hex');
+    const cacheKey='translate:v2:'+createHash('sha256').update(language+'\n'+JSON.stringify(source)).digest('hex');
     const cached=store.get(cacheKey);
     if(cached?.values&&Date.now()-Number(cached.created||0)<7*86400000)return cached.values;
+
+    const split=source.map(splitTranslationText),translatable=[];
+    for(const parts of split)for(const part of parts)if(!part.protected&&part.text.trim())translatable.push(part);
+    if(!translatable.length)return source;
+
     const response=await fetch(`${libreTranslateUrl()}/translate`,{
       method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({q:protectedValues.map(v=>v.text),source:'auto',target:libreLanguage(language),format:'text'})
+      body:JSON.stringify({q:translatable.map(part=>part.text),source:'auto',target:libreLanguage(language),format:'text'})
     });
     const data=await response.json().catch(()=>({}));
     const translatedRaw=Array.isArray(data?.translatedText)?data.translatedText:(typeof data?.translatedText==='string'?[data.translatedText]:[]);
-    if(!response.ok||translatedRaw.length!==protectedValues.length)throw new AppError(data?.error||'Não foi possível traduzir esta mensagem agora.',502);
-    const translated=translatedRaw.map((value,index)=>restoreTranslationText(decodeTranslation(value),protectedValues[index].tokens));
+    if(!response.ok||translatedRaw.length!==translatable.length)throw new AppError(data?.error||'Não foi possível traduzir esta mensagem agora.',502);
+    translatable.forEach((part,index)=>part.text=decodeTranslation(translatedRaw[index]));
+    const translated=split.map(parts=>parts.map(part=>part.text).join(''));
     store.set(cacheKey,{values:translated,created:Date.now()});
     return translated;
   }
@@ -1145,7 +1161,7 @@ ${normalized.previewAfter}
         const t=await openTicket(i.user.id,category);
         const open=Number(store.one("SELECT COUNT(*) AS n FROM tickets WHERE user_id=? AND status='open'",i.user.id)?.n||0),maxOpen=store.settings().tickets.maxOpen||TICKET_OPEN_LIMIT;
         const queue=store.settings().tickets.queueEnabled?`\nPosição aproximada na fila: **${t.queuePosition}**.`:'';
-        await localizedEdit(i,{content:`Olá <@${i.user.id}>! Seu atendimento: <#${t.channel_id}>\nVocê está com **${open}/${maxOpen}** ticket(s) aberto(s).${queue}`,components:[],allowedMentions:{parse:[],users:[i.user.id]}});
+        await localizedEdit(i,{content:`Olá <@${i.user.id}>! Seu atendimento foi criado em <#${t.channel_id}>.\nVocê está com **${open}/${maxOpen}** ticket(s) aberto(s).${queue}`,components:[],allowedMentions:{parse:[],users:[i.user.id]}});
         return;
       }
       if(action.startsWith('claim:')){if(!await isStaff(i))throw new AppError('Somente a equipe pode assumir tickets.',403);const id=action.split(':')[1],changed=store.run("UPDATE tickets SET claimed_by=?,state='in_progress',updated=? WHERE id=? AND status='open' AND claimed_by IS NULL",i.user.id,store.now(),id);if(changed.changes){const t=store.one('SELECT * FROM tickets WHERE id=?',id),c=await channel(t.channel_id),style=store.settings().messageStyles.ticketClaim,customer=await memberVariables(t.user_id,c.guild),staffMember=await member(i.user.id);const variables={...customer,staff:`<@${i.user.id}>`,staffUsername:staffMember.displayName||staffMember.user.globalName||staffMember.user.username||i.user.id,ticket:c.name,category:t.category,channel:`<#${c.id}>`,server:c.guild.name};const claimPayload=styledPayload(style,variables,env.DISCORD_GUILD_ID);await c.send({...claimPayload,allowedMentions:mentionPolicy(claimPayload,[i.user.id,t.user_id])});ticketAuditAppend(t.id,{action:'claim',actor:i.user.id,target:t.user_id});store.recordStaffAction(i.user.id,'claim',t.id,t.user_id);await refreshTicketControls(t.id);}await localizedEdit(i,changed.changes?'Atendimento atribuído a você.':'Esse atendimento já está atribuído ou encerrado.');return;}
