@@ -275,8 +275,18 @@ const portfolioSession=req=>{
   }
   return{...data,key,raw};
 };
-const portfolioAdminRoleIds=()=>[...new Set([...(portfolioSite().adminRoleIds||[]),...String(process.env.PORTFOLIO_ADMIN_ROLE_IDS||'').split(',').map(x=>x.trim()).filter(Boolean)])];
-const portfolioCanControl=(req,web=portfolioSession(req))=>{if(session(req))return true;if(!web?.user?.id)return false;if(process.env.PORTFOLIO_OWNER_ID&&web.user.id===process.env.PORTFOLIO_OWNER_ID)return true;if(web.member?.administrator||web.member?.manageGuild)return true;const allowed=portfolioAdminRoleIds();return allowed.length>0&&(web.member?.roles||[]).some(role=>allowed.includes(role.id))};
+const portfolioStaffRoleIds=()=>{
+  const groups=store.settings().roleGroups||{};
+  return [...new Set([...(groups.staff||[]),...(groups.highStaff||[])].filter(Boolean))];
+};
+const portfolioCanControl=async(req,web=portfolioSession(req))=>{
+  if(!web?.user?.id)return false;
+  const allowed=portfolioStaffRoleIds();
+  if(!allowed.length)return false;
+  const member=await portfolioMember(web.user.id);
+  web.member=member;
+  return !!member?.inGuild&&(member.roles||[]).some(role=>allowed.includes(role.id));
+};
 const portfolioItemSchema=z.object({
   name:z.string().trim().min(1).max(140),
   description:z.string().max(3000).default(''),
@@ -343,8 +353,8 @@ app.get('/api/portfolio/oauth/exchange',(req,res)=>{
 
 app.post('/api/portfolio/logout',(req,res)=>{const s=portfolioSession(req);if(s?.key)store.run('DELETE FROM kv WHERE key=?',s.key);res.clearCookie('studio_web_session',{path:'/'});res.json({ok:true})});
 app.get('/api/portfolio/feedbacks',async(req,res)=>res.json(await publicPortfolioFeedbacks(18)));
-app.get('/api/portfolio/public-state',async(req,res)=>{const web=portfolioSession(req),items=portfolioItems().filter(x=>x.published),products=portfolioProducts().filter(x=>x.published),feedbacks=await publicPortfolioFeedbacks(18);const me=web?{authenticated:true,user:web.user,member:web.member,canControl:portfolioCanControl(req,web)}:{authenticated:false,canControl:false};res.json({site:portfolioSite(),items,products,feedbacks,me})});
-const portfolioControl=async(req,res,next)=>{const web=portfolioSession(req);if(!portfolioCanControl(req,web))return res.status(403).json({error:'Sua conta não possui acesso à Central do Portfólio.'});req.portfolioWeb=web;next()};
+app.get('/api/portfolio/public-state',async(req,res)=>{const web=portfolioSession(req),items=portfolioItems().filter(x=>x.published),products=portfolioProducts().filter(x=>x.published),feedbacks=await publicPortfolioFeedbacks(18);const canControl=web?await portfolioCanControl(req,web):false;const me=web?{authenticated:true,user:web.user,member:web.member,canControl}:{authenticated:false,canControl:false};res.json({site:portfolioSite(),items,products,feedbacks,me})});
+const portfolioControl=async(req,res,next)=>{const web=portfolioSession(req);if(!await portfolioCanControl(req,web))return res.status(403).json({error:'A Central de Controle é exclusiva para membros com cargo de Staff no Discord do Studio K.'});req.portfolioWeb=web;next()};
 app.get('/api/portfolio/control/state',portfolioControl,async(req,res)=>res.json({authorized:true,user:req.portfolioWeb?.user||{name:'Administrador Studio K'},site:portfolioSite(),items:portfolioItems(),products:portfolioProducts(),assets:portfolioAssets(),feedbacks:await publicPortfolioFeedbacks(50),discord:{oauthConfigured:!!(process.env.DISCORD_CLIENT_ID&&process.env.DISCORD_CLIENT_SECRET),redirectUri:portfolioRedirect,publicOrigin:portfolioPublicOrigin.origin,botConnected:!!bot.status().connected}}));
 app.put('/api/portfolio/control/site',portfolioControl,portfolioSameOrigin,(req,res)=>{const current=portfolioSite(),next=portfolioSiteSchema.parse({...current,...req.body});store.set('portfolio:site',next);store.log('portfólio','Configurações do site atualizadas.','portfolio-control');res.json(next)});
 app.post('/api/portfolio/control/items',portfolioControl,portfolioSameOrigin,(req,res)=>{const item={id:randomUUID(),...portfolioItemSchema.parse(req.body),created:store.now(),updated:store.now()};const items=portfolioItems();if(item.featured)for(const x of items)x.featured=false;items.unshift(item);store.set('portfolio:items',items);res.json(item)});
