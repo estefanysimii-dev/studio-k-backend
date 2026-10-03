@@ -807,6 +807,35 @@ app.post('/api/portfolio/control/products/:id/announce',portfolioControl,portfol
   res.json({ok:true,botProductId:linked.botProductId,messageId:result.id});
 });
 
+app.post('/api/portfolio/control/drops',portfolioControl,portfolioSameOrigin,(req,res)=>{
+  const data=portfolioDropSchema.parse(req.body);
+  const product=portfolioProducts().find(item=>item.id===data.productId);
+  if(!product)throw new AppError('Produto do drop não encontrado.',404);
+  const drop={id:randomUUID(),...data,created:store.now(),updated:store.now(),announcedAt:'',announcementMessageId:'',announceAttemptAt:''};
+  const drops=portfolioDrops();drops.unshift(drop);store.set('portfolio:drops',drops.slice(0,300));
+  store.log('portfólio',`Drop agendado: ${drop.title}`,'portfolio-control',{dropId:drop.id,productId:drop.productId});
+  res.json({...drop,status:portfolioDropStatus(drop)});
+});
+app.put('/api/portfolio/control/drops/:id',portfolioControl,portfolioSameOrigin,(req,res)=>{
+  const drops=portfolioDrops(),index=drops.findIndex(drop=>drop.id===req.params.id);
+  if(index<0)throw new AppError('Drop não encontrado.',404);
+  const data=portfolioDropSchema.parse(req.body);
+  if(!portfolioProducts().some(item=>item.id===data.productId))throw new AppError('Produto do drop não encontrado.',404);
+  const previous=drops[index];
+  const scheduleChanged=previous.startsAt!==data.startsAt||previous.productId!==data.productId||previous.channelId!==data.channelId||previous.announceDiscord!==data.announceDiscord;
+  const next={...previous,...data,updated:store.now(),...(scheduleChanged?{announcedAt:'',announcementMessageId:'',announceAttemptAt:''}:{})};
+  drops[index]=next;store.set('portfolio:drops',drops);
+  store.log('portfólio',`Drop atualizado: ${next.title}`,'portfolio-control',{dropId:next.id,productId:next.productId});
+  res.json({...next,status:portfolioDropStatus(next)});
+});
+app.delete('/api/portfolio/control/drops/:id',portfolioControl,portfolioSameOrigin,(req,res)=>{
+  const drops=portfolioDrops(),exists=drops.some(drop=>drop.id===req.params.id);
+  if(!exists)throw new AppError('Drop não encontrado.',404);
+  store.set('portfolio:drops',drops.filter(drop=>drop.id!==req.params.id));
+  store.log('portfólio',`Drop removido: ${req.params.id}`,'portfolio-control',{dropId:req.params.id});
+  res.json({ok:true});
+});
+
 app.post('/api/portfolio/control/upload-ticket',portfolioControl,portfolioSameOrigin,(req,res)=>{
   const name=String(req.body?.name||'arquivo').slice(0,180),requestedPublic=req.body?.public===true,token=randomBytes(32).toString('base64url');
   store.set(`portfolio-upload:${hash(token)}`,{userId:req.portfolioWeb?.user?.id||'',name,public:requestedPublic,expires:Date.now()+5*60000});
