@@ -495,7 +495,7 @@ const portfolioAnalyticsSummary=(days=30)=>{
   const since=new Date(Date.now()-windowDays*86400000).toISOString();
   const count=event=>Number(store.one('SELECT COUNT(*) AS n FROM portfolio_events WHERE event=? AND created>=?',event,since)?.n||0);
   const pageViews=count('page_view'),productViews=count('product_view'),portfolioViews=count('portfolio_view'),favoriteAdds=count('favorite_add'),checkoutStarts=count('checkout_start'),ordersCreated=count('order_created');
-  const uniqueVisitors=Number(store.one('SELECT COUNT(DISTINCT session_id) AS n FROM portfolio_events WHERE created>=?',since)?.n||0);
+  const uniqueVisitors=Number(store.one("SELECT COUNT(DISTINCT session_id) AS n FROM portfolio_events WHERE event='page_view' AND created>=?",since)?.n||0);
   const paid=store.one("SELECT COUNT(*) AS n,COALESCE(SUM(price),0) AS revenue FROM orders WHERE status IN ('paid','delivered') AND created>=?",since)||{};
   const paidOrders=Number(paid.n||0),revenue=Number(paid.revenue||0);
   const topRows=store.all("SELECT item_id, SUM(CASE WHEN event='product_view' THEN 1 ELSE 0 END) AS views, SUM(CASE WHEN event='favorite_add' THEN 1 ELSE 0 END) AS favorites, SUM(CASE WHEN event='checkout_start' THEN 1 ELSE 0 END) AS checkouts, SUM(CASE WHEN event='order_created' THEN 1 ELSE 0 END) AS orders FROM portfolio_events WHERE item_kind='product' AND item_id IS NOT NULL AND created>=? GROUP BY item_id ORDER BY views DESC,favorites DESC LIMIT 20",since);
@@ -747,6 +747,7 @@ app.put('/api/portfolio/me/favorites/:kind/:id',portfolioSameOrigin,(req,res)=>{
   if(shouldFavorite)list.add(itemId);else list.delete(itemId);
   favorites[kind]=[...list].slice(0,500);
   store.set(`portfolio:favorites:${web.user.id}`,favorites);
+  recordPortfolioEvent(shouldFavorite?'favorite_add':'favorite_remove',{sessionId:`member:${web.user.id}`,userId:web.user.id,itemKind:kind==='products'?'product':'portfolio',itemId,path:req.get('referer')||''});
   res.json({ok:true,favorite:shouldFavorite,favorites,profile:portfolioMemberProfile(web.user.id,web.member||{})});
 });
 app.get('/api/portfolio/me/orders',(req,res)=>{
@@ -810,6 +811,7 @@ app.post('/api/portfolio/products/:id/order',portfolioSameOrigin,async(req,res)=
       order=store.one('SELECT * FROM orders WHERE id=?',order.id);
     }
   }
+  recordPortfolioEvent('order_created',{sessionId:`member:${web.user.id}`,userId:web.user.id,itemKind:'product',itemId:product.id,path:`/products/${product.id}`,meta:{orderId:order.id,price:Number(order.price||0)}});
   const sales=store.settings().sales||{};
   res.json({
     id:order.id,
