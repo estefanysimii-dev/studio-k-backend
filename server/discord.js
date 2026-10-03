@@ -935,6 +935,41 @@ ${normalized.previewAfter}
     const signature=`${vars.botStatus}:${cfg.storeOpen}:${cfg.ticketsOpen}:${openTickets}:${pendingOrders}:${cfg.channelId}`;
     return upsertLiveMessage('operations-live-message',cfg,settings.messageStyles.operationsLive,vars,signature,force);
   }
+  async function updateOverviewLive(force=false){
+    const settings=store.settings(),cfg=settings.overviewLive;if(!cfg?.enabled||!cfg.channelId||!client.isReady())return null;
+    const guild=requireGuild();
+    const totals=store.one("SELECT COUNT(*) AS orders,COALESCE(SUM(CASE WHEN status IN ('paid','delivered') THEN price ELSE 0 END),0) AS revenue,SUM(CASE WHEN status='pending' THEN 1 ELSE 0 END) AS pending FROM orders")||{};
+    const counts=store.one("SELECT COUNT(*) AS openTickets,SUM(CASE WHEN state='waiting_staff' THEN 1 ELSE 0 END) AS waitingStaff,SUM(CASE WHEN state='in_progress' THEN 1 ELSE 0 END) AS inProgress,SUM(CASE WHEN state='waiting_customer' THEN 1 ELSE 0 END) AS waitingCustomer,SUM(CASE WHEN state='escalated' THEN 1 ELSE 0 END) AS escalated,SUM(CASE WHEN priority='urgent' THEN 1 ELSE 0 END) AS urgentTickets,SUM(CASE WHEN claimed_by IS NULL THEN 1 ELSE 0 END) AS unassignedTickets FROM tickets WHERE status='open'")||{};
+    const activeTickets=store.all("SELECT id,channel_id,category,state,priority,claimed_by,created FROM tickets WHERE status='open' ORDER BY CASE priority WHEN 'urgent' THEN 4 WHEN 'high' THEN 3 WHEN 'normal' THEN 2 ELSE 1 END DESC, created ASC LIMIT 8");
+    const memberName=id=>{
+      if(!id)return 'Não atribuído';
+      const m=guild.members.cache.get(id);
+      return String(m?.displayName||m?.user?.globalName||m?.user?.username||('staff-'+String(id).slice(-4))).replace(/[\n\r]/g,' ').slice(0,40);
+    };
+    const ticketLines=activeTickets.map(t=>'• <#'+t.channel_id+'> · **'+String(t.category||'Atendimento').slice(0,35)+'** · '+ticketStateLabel(t.state)+' · '+ticketPriorityLabel(t.priority)+' · '+memberName(t.claimed_by));
+    const extra=Math.max(0,Number(counts.openTickets||0)-activeTickets.length);
+    const ticketList=(ticketLines.join('\n')+(extra?'\n… e mais **'+extra+'** ticket(s) aberto(s).':'')).slice(0,1800)||'Nenhum ticket aberto no momento.';
+    const staffRows=store.all("SELECT claimed_by,COUNT(*) AS n FROM tickets WHERE status='open' AND claimed_by IS NOT NULL GROUP BY claimed_by ORDER BY n DESC,claimed_by ASC LIMIT 8");
+    const staffSummary=staffRows.length?staffRows.map(r=>'• **'+memberName(r.claimed_by)+'** — '+r.n+' ticket(s)').join('\n'):'Nenhum atendimento atribuído no momento.';
+    const openAlerts=Number(store.one("SELECT COUNT(*) AS n FROM alerts WHERE status='open'")?.n||0);
+    const vars={
+      members:String(guild.memberCount||0),
+      revenue:money(Number(totals.revenue||0)),
+      orders:String(Number(totals.orders||0)),
+      pendingOrders:String(Number(totals.pending||0)),
+      openTickets:String(Number(counts.openTickets||0)),
+      waitingStaff:String(Number(counts.waitingStaff||0)),
+      inProgress:String(Number(counts.inProgress||0)),
+      waitingCustomer:String(Number(counts.waitingCustomer||0)),
+      escalated:String(Number(counts.escalated||0)),
+      urgentTickets:String(Number(counts.urgentTickets||0)),
+      unassignedTickets:String(Number(counts.unassignedTickets||0)),
+      openAlerts:String(openAlerts),
+      ticketList,staffSummary,updated:updatedRelative()
+    };
+    const signature=[cfg.channelId,guild.memberCount,totals.orders,totals.revenue,totals.pending,counts.openTickets,counts.waitingStaff,counts.inProgress,counts.waitingCustomer,counts.escalated,counts.urgentTickets,counts.unassignedTickets,openAlerts,activeTickets.map(t=>[t.id,t.state,t.priority,t.claimed_by].join(':')).join('|'),staffRows.map(r=>r.claimed_by+':'+r.n).join('|')].join(':');
+    return upsertLiveMessage('overview-live-message',cfg,settings.messageStyles.overviewLive,vars,signature,force);
+  }
   const currentMonth=()=>{
     const now=new Date(),start=new Date(Date.UTC(now.getUTCFullYear(),now.getUTCMonth(),1)),end=new Date(Date.UTC(now.getUTCFullYear(),now.getUTCMonth()+1,1));
     return{start,end,key:start.toISOString().slice(0,7),label:new Intl.DateTimeFormat('pt-BR',{month:'long',year:'numeric',timeZone:'UTC'}).format(start)};
@@ -954,7 +989,7 @@ ${normalized.previewAfter}
     return upsertLiveMessage('invite-ranking-live-message',cfg,settings.messageStyles.inviteRankingLive,vars,signature,force);
   }
   async function updateLivePanels(force=false){
-    const tasks=[updateSalesLive(force),updateCommunityLive(force),updateGiveawaysLive(force),updateOperationsLive(force),updateInviteRankingLive(force)];
+    const tasks=[updateSalesLive(force),updateCommunityLive(force),updateGiveawaysLive(force),updateOperationsLive(force),updateOverviewLive(force),updateInviteRankingLive(force)];
     const results=await Promise.allSettled(tasks);
     results.forEach((r,i)=>{if(r.status==='rejected')store.log('erro',`Painel ao vivo ${i+1}: ${r.reason?.message||r.reason}`);});
     return results;
@@ -1499,7 +1534,7 @@ ${normalized.previewAfter}
     try{const guild=requireGuild();const commands=[{name:'central',description:'Abra a Central Studio K'},{name:'perfil',description:'Veja sua conta, tickets e pedidos'},{name:'ajuda',description:'Pesquise ajuda e perguntas frequentes',options:[{name:'busca',description:'Assunto ou palavra-chave',type:3,required:false}]},{name:'loja',description:'Veja produtos e serviços disponíveis'},{name:'cupom',description:'Aplique um cupom na próxima compra',options:[{name:'codigo',description:'Código do cupom',type:3,required:true}]},{name:'pedido',description:'Consulte um pedido e recupere sua entrega',options:[{name:'id',description:'Código completo do pedido; deixe vazio para o mais recente',type:3,required:false}]},{name:'ticket',description:'Abra um atendimento privado'},{name:'verificar',description:'Aceite as regras e receba acesso'},{name:'notificacoes',description:'Escolha quais notificações deseja receber'},{name:'idioma',description:'Escolha o idioma das mensagens privadas do Studio K'},{name:'Traduzir mensagem',type:3}];await new REST({version:'10'}).setToken(env.DISCORD_TOKEN).put(Routes.applicationGuildCommands(env.DISCORD_CLIENT_ID||client.user.id,guild.id),{body:commands});const s=store.settings().brand;client.user.setPresence({status:s.status,activities:s.activity?[{name:s.activity,type:ActivityType[s.activityType]}]:[]});await refreshInviteCache(guild);for(const state of guild.voiceStates.cache.values())if(state.member&&!state.member.user.bot&&state.channelId)startVoiceForUser(state.id,store.now());try{await applyVoicePresence();}catch(e){store.log('aviso',`Presença em call: ${e.message}`);}store.log('conexão',`Conectado ao servidor ${guild.name}.`);error='';await tick();}catch(e){error=e.message;store.log('erro',e.message);}
   });
   const timer=setInterval(()=>void tick(),30000);timer.unref();
-  return {status,client,channel,member,memberProfile,assignRole,verifyOAuthUser,sendMessage,openTicket,closeTicket,publishPanel,publishConfiguredMessage,publishProduct,createGiveaway,evaluateGiveaway,updateSalesLive,updateLivePanels,createEvent,applyBrand,applyVoicePresence,makeBackup,tick,
+  return {status,client,channel,member,memberProfile,assignRole,verifyOAuthUser,sendMessage,openTicket,closeTicket,publishPanel,publishConfiguredMessage,publishProduct,createGiveaway,evaluateGiveaway,updateSalesLive,updateOverviewLive,updateLivePanels,createEvent,applyBrand,applyVoicePresence,makeBackup,tick,
     async metadata(){
       const g=requireGuild();
       await Promise.all([g.channels.fetch(),g.roles.fetch(),g.emojis.fetch(),g.members.fetch()]);
