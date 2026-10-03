@@ -68,6 +68,21 @@ export function openStore(directory) {
     );
     CREATE UNIQUE INDEX IF NOT EXISTS feedback_source_unique ON feedback_requests(type,source_id);
     CREATE INDEX IF NOT EXISTS feedback_user_status ON feedback_requests(user_id,status);
+    CREATE TABLE IF NOT EXISTS portfolio_events(
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      session_id TEXT NOT NULL,
+      user_id TEXT,
+      event TEXT NOT NULL,
+      item_kind TEXT,
+      item_id TEXT,
+      path TEXT NOT NULL DEFAULT '',
+      meta TEXT NOT NULL DEFAULT '{}',
+      created TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS portfolio_events_created ON portfolio_events(created);
+    CREATE INDEX IF NOT EXISTS portfolio_events_event ON portfolio_events(event,created);
+    CREATE INDEX IF NOT EXISTS portfolio_events_item ON portfolio_events(item_kind,item_id,event,created);
+    CREATE INDEX IF NOT EXISTS portfolio_events_session ON portfolio_events(session_id,created);
   `);
   if(!db.prepare('PRAGMA table_info(orders)').all().some(c=>c.name==='approved_at'))db.exec('ALTER TABLE orders ADD COLUMN approved_at TEXT');
   if(!db.prepare('PRAGMA table_info(logs)').all().some(c=>c.name==='meta'))db.exec("ALTER TABLE logs ADD COLUMN meta TEXT NOT NULL DEFAULT '{}'");
