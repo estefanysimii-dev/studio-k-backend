@@ -16,6 +16,13 @@ test('HTTP access, CSRF, persistence, sales and disconnected Discord behavior',a
   t.after(async()=>{child.kill();await new Promise(r=>child.exitCode!==null?r():child.once('exit',r));rmSync(dir,{recursive:true,force:true});});
   let ready=false;for(let i=0;i<100;i++){try{const r=await fetch(origin+'/api/auth');if(r.ok){ready=true;break;}}catch{}await delay(50);}assert.ok(ready,output);
   const request=(path,method='GET',body,headers={})=>fetch(origin+'/api'+path,{method,headers:{'Content-Type':'application/json',...headers},...(body===undefined?{}:{body:JSON.stringify(body)})});
+  const radioResponse=await request('/portfolio/radio');
+  assert.equal(radioResponse.status,200);
+  assert.equal(radioResponse.headers.get('cache-control'),'no-store');
+  const radioClock=await radioResponse.json();
+  assert.equal(radioClock.radio.enabled,false);
+  assert.ok(Math.abs(radioClock.serverNowMs-Date.now())<2000);
+  assert.equal((await request('/portfolio/control/site','PUT',{radio:{enabled:true}},{Origin:origin})).status,403);
   assert.equal((await request('/state')).status,401);
   assert.equal((await request('/setup','POST',{password:'local-test-password'},{Origin:'https://foreign.example'})).status,403);
   const setup=await request('/setup','POST',{password:'local-test-password'},{Origin:origin});assert.equal(setup.status,200);const csrf=(await setup.json()).csrf,cookie=setup.headers.get('set-cookie').split(';')[0],headers={Origin:origin,Cookie:cookie,'X-CSRF-Token':csrf};
