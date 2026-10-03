@@ -290,6 +290,21 @@ const portfolioItems=()=>{const v=store.get('portfolio:items',[]);return Array.i
 const storedPortfolioProducts=()=>{const v=store.get('portfolio:products',[]);return Array.isArray(v)?v:[]};
 const portfolioProducts=()=>{const stored=storedPortfolioProducts();if(stored.length)return stored;return store.products().map(p=>({id:p.id,name:p.name,description:p.description||'',priceCents:p.priceCents||0,category:p.category||'Studio K',tags:[],coverUrl:p.image||'',modelUrl:'',featured:false,published:true,botProductId:p.id,created:p.created||''}))};
 const portfolioAssets=()=>{const v=store.get('portfolio:assets',[]);return Array.isArray(v)?v:[]};
+const portfolioDrops=()=>{const v=store.get('portfolio:drops',[]);return Array.isArray(v)?v:[]};
+const portfolioDropStatus=(drop,at=Date.now())=>{
+  const start=Date.parse(drop.startsAt||''),end=Date.parse(drop.endsAt||'');
+  if(drop.published===false)return 'draft';
+  if(Number.isFinite(end)&&end<=at)return 'ended';
+  if(Number.isFinite(start)&&start>at)return 'scheduled';
+  return 'active';
+};
+const publicPortfolioDrops=()=>portfolioDrops()
+  .map(drop=>({...drop,status:portfolioDropStatus(drop)}))
+  .filter(drop=>drop.status!=='draft')
+  .sort((a,b)=>Date.parse(a.startsAt||'')-Date.parse(b.startsAt||''));
+const activeDropForProduct=(productId,at=Date.now())=>portfolioDrops().find(drop=>
+  drop.published!==false&&drop.productId===productId&&Date.parse(drop.startsAt||'')<=at&&Date.parse(drop.endsAt||'')>at
+)||null;
 const portfolioAbsoluteUrl=value=>{
   const raw=String(value||'').trim();
   if(!raw)return '';
