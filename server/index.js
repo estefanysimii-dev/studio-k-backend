@@ -2,9 +2,10 @@ import express from 'express';
 import helmet from 'helmet';
 import rateLimit from 'express-rate-limit';
 import { randomBytes, randomUUID, scryptSync, timingSafeEqual, createHash } from 'node:crypto';
-import { readdirSync, readFileSync, mkdirSync, writeFileSync } from 'node:fs';
+import { readdirSync, readFileSync, mkdirSync, writeFileSync, statSync } from 'node:fs';
 import { join, resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { spawn } from 'node:child_process';
 import { z } from 'zod';
 import { openStore, AppError } from './store.js';
 import { createBot } from './discord.js';
@@ -269,6 +270,115 @@ const portfolioItems=()=>{const v=store.get('portfolio:items',[]);return Array.i
 const storedPortfolioProducts=()=>{const v=store.get('portfolio:products',[]);return Array.isArray(v)?v:[]};
 const portfolioProducts=()=>{const stored=storedPortfolioProducts();if(stored.length)return stored;return store.products().map(p=>({id:p.id,name:p.name,description:p.description||'',priceCents:p.priceCents||0,category:p.category||'Studio K',tags:[],coverUrl:p.image||'',modelUrl:'',featured:false,published:true,botProductId:p.id,created:p.created||''}))};
 const portfolioAssets=()=>{const v=store.get('portfolio:assets',[]);return Array.isArray(v)?v:[]};
+const portfolioAbsoluteUrl=value=>{
+  const raw=String(value||'').trim();
+  if(!raw)return '';
+  try{return new URL(raw,portfolioPublicOrigin).toString()}catch{return raw}
+};
+const runPortfolioProcess=(command,args,timeoutMs=240000)=>new Promise((resolveProcess,rejectProcess)=>{
+  const child=spawn(command,args,{stdio:['ignore','pipe','pipe']});
+  let stdout='',stderr='',settled=false;
+  const append=(current,chunk)=>{const next=current+String(chunk||'');return next.length>12000?next.slice(-12000):next};
+  child.stdout?.on('data',chunk=>{stdout=append(stdout,chunk)});
+  child.stderr?.on('data',chunk=>{stderr=append(stderr,chunk)});
+  const timer=setTimeout(()=>{
+    if(settled)return;
+    settled=true;
+    child.kill('SIGKILL');
+    rejectProcess(new AppError('O processamento do arquivo excedeu o tempo limite.',504));
+  },timeoutMs);
+  child.on('error',error=>{
+    if(settled)return;
+    settled=true;clearTimeout(timer);
+    rejectProcess(new AppError(`Não foi possível iniciar o processador: ${error.message}`,503));
+  });
+  child.on('close',code=>{
+    if(settled)return;
+    settled=true;clearTimeout(timer);
+    if(code===0)return resolveProcess({stdout,stderr});
+    rejectProcess(new AppError((stderr||stdout||`Processador finalizou com código ${code}`).slice(-1500),422));
+  });
+});
+const registerPortfolioAsset=(asset)=>{
+  const assets=portfolioAssets();
+  assets.unshift(asset);
+  store.set('portfolio:assets',assets.slice(0,500));
+  return asset;
+};
+const processPortfolioAsset=async(sourceId)=>{
+  const source=portfolioAssets().find(asset=>asset.id===sourceId);
+  if(!source)throw new AppError('Arquivo-fonte não encontrado.',404);
+  const ext=String(source.ext||'').toLowerCase();
+  if(!['blend','obj','fbx','psd'].includes(ext))throw new AppError('Este formato não precisa de conversão automática.',400);
+  const sourceDir=source.visibility==='public'?portfolioPublicDir:portfolioPrivateDir;
+  const input=join(sourceDir,source.filename);
+  const outputId=randomUUID();
+  const now=store.now();
+  if(ext==='psd'){
+    const filename=`${outputId}.png`,output=join(portfolioPublicDir,filename);
+    await runPortfolioProcess('convert',[`${input}[0]`,'-background','none','-flatten','-resize','2400x2400>','-strip',output],120000);
+    const preview=registerPortfolioAsset({
+      id:outputId,
+      originalName:String(source.originalName||'arquivo.psd').replace(/\.psd$/i,'-preview.png'),
+      filename,
+      ext:'png',
+      visibility:'public',
+      size:statSync(output).size,
+      created:now,
+      publicUrl:`/portfolio-assets/${filename}`,
+      sourceAssetId:source.id,
+      generated:true
+    });
+    return{kind:'preview',source,asset:preview,publicUrl:preview.publicUrl};
+  }
+  const filename=`${outputId}.glb`,output=join(portfolioPublicDir,filename);
+  await runPortfolioProcess('blender',[
+    '-b','--factory-startup','--disable-autoexec',
+    '--python',join(root,'server','convert3d.py'),
+    '--',input,output,ext
+  ],300000);
+  const converted=registerPortfolioAsset({
+    id:outputId,
+    originalName:String(source.originalName||`modelo.${ext}`).replace(/\.(blend|obj|fbx)$/i,'.glb'),
+    filename,
+    ext:'glb',
+    visibility:'public',
+    size:statSync(output).size,
+    created:now,
+    publicUrl:`/portfolio-assets/${filename}`,
+    sourceAssetId:source.id,
+    generated:true
+  });
+  return{kind:'model',source,asset:converted,publicUrl:converted.publicUrl};
+};
+const syncPortfolioProductToBot=(portfolioProduct)=>{
+  if(!portfolioProduct)throw new AppError('Produto não encontrado.',404);
+  if(Number(portfolioProduct.priceCents||0)<1)throw new AppError('Defina um preço maior que zero antes de sincronizar este produto com o bot.',400);
+  const image=portfolioAbsoluteUrl(portfolioProduct.coverUrl||portfolioProduct.gifUrl||'');
+  const data=productSchema.parse({
+    name:portfolioProduct.name,
+    description:portfolioProduct.description||'',
+    priceCents:Number(portfolioProduct.priceCents||0),
+    type:'service',
+    roleId:'',
+    active:portfolioProduct.published!==false,
+    image:image&&image.startsWith('https://')?image:'',
+    delivery:'',
+    category:portfolioProduct.category||'Studio K'
+  });
+  let botProductId=String(portfolioProduct.botProductId||'');
+  const exists=botProductId&&store.one('SELECT id FROM products WHERE id=?',botProductId);
+  if(exists)store.run('UPDATE products SET data=? WHERE id=?',JSON.stringify(data),botProductId);
+  else{
+    botProductId=randomUUID();
+    store.run('INSERT INTO products VALUES(?,?,?)',botProductId,JSON.stringify(data),store.now());
+  }
+  const products=storedPortfolioProducts();
+  const pos=products.findIndex(item=>item.id===portfolioProduct.id);
+  const linked={...portfolioProduct,botProductId,updated:store.now()};
+  if(pos>=0){products[pos]=linked;store.set('portfolio:products',products)}
+  return linked;
+};
 const portfolioStatus=()=>{
   const cfg=store.settings().operationsLive||{};
   const openTickets=Number(store.one("SELECT COUNT(*) AS n FROM tickets WHERE status='open'")?.n||0);
@@ -372,8 +482,78 @@ app.get('/api/portfolio/oauth/exchange',(req,res)=>{
 app.post('/api/portfolio/logout',(req,res)=>{const s=portfolioSession(req);if(s?.key)store.run('DELETE FROM kv WHERE key=?',s.key);res.clearCookie('studio_web_session',{path:'/'});res.json({ok:true})});
 app.get('/api/portfolio/feedbacks',async(req,res)=>res.json(await publicPortfolioFeedbacks(18)));
 app.get('/api/portfolio/public-state',async(req,res)=>{const web=portfolioSession(req),items=portfolioItems().filter(x=>x.published),products=portfolioProducts().filter(x=>x.published),feedbacks=await publicPortfolioFeedbacks(18);const canControl=web?await portfolioCanControl(req,web):false;const me=web?{authenticated:true,user:web.user,member:web.member,canControl}:{authenticated:false,canControl:false};res.json({site:portfolioSite(),status:portfolioStatus(),items,products,feedbacks,me})});
+app.get('/api/portfolio/me/orders',(req,res)=>{
+  const web=portfolioSession(req);
+  if(!web?.user?.id)throw new AppError('Conecte sua conta do Discord para ver seus pedidos.',401);
+  const orders=store.all('SELECT id,product_id,product,price,status,created,expires,approved_at,delivered_at,coupon_code,discount,error FROM orders WHERE user_id=? ORDER BY created DESC LIMIT 100',web.user.id).map(order=>{
+    let product={};try{product=JSON.parse(order.product||'{}')}catch{}
+    return{
+      id:order.id,
+      productId:order.product_id,
+      productName:product.name||'Produto Studio K',
+      price:Number(order.price||0),
+      status:order.status,
+      created:order.created,
+      expires:order.expires,
+      approvedAt:order.approved_at,
+      deliveredAt:order.delivered_at,
+      couponCode:order.coupon_code||'',
+      discount:Number(order.discount||0),
+      error:order.error||''
+    };
+  });
+  res.json({orders});
+});
+app.post('/api/portfolio/products/:id/order',portfolioSameOrigin,async(req,res)=>{
+  const web=portfolioSession(req);
+  if(!web?.user?.id)throw new AppError('Conecte sua conta do Discord antes de iniciar uma compra.',401);
+  const product=portfolioProducts().find(item=>item.id===req.params.id&&item.published!==false);
+  if(!product)throw new AppError('Produto não encontrado.',404);
+  if(!product.botProductId)throw new AppError('Este produto ainda não está sincronizado com o bot do Studio K.',409);
+  if(!demo)await bot.member(web.user.id);
+  const couponCode=String(req.body?.couponCode||'').trim().slice(0,40);
+  const order=store.createOrder(product.botProductId,web.user.id,couponCode);
+  const sales=store.settings().sales||{};
+  res.json({
+    id:order.id,
+    status:order.status,
+    price:Number(order.price||0),
+    expires:order.expires,
+    productName:product.name,
+    payment:{
+      pixKey:sales.pixKey||'',
+      recipient:sales.recipient||'',
+      instructions:sales.instructions||''
+    }
+  });
+});
 const portfolioControl=async(req,res,next)=>{const web=portfolioSession(req);if(!await portfolioCanControl(req,web))return res.status(403).json({error:'A Central de Controle é exclusiva para membros com cargo de Staff no Discord do Studio K.'});req.portfolioWeb=web;next()};
-app.get('/api/portfolio/control/state',portfolioControl,async(req,res)=>res.json({authorized:true,user:req.portfolioWeb?.user||{name:'Administrador Studio K'},site:portfolioSite(),status:portfolioStatus(),items:portfolioItems(),products:portfolioProducts(),assets:portfolioAssets(),feedbacks:await publicPortfolioFeedbacks(50),discord:{oauthConfigured:!!(process.env.DISCORD_CLIENT_ID&&process.env.DISCORD_CLIENT_SECRET),redirectUri:portfolioRedirect,publicOrigin:portfolioPublicOrigin.origin,botConnected:!!bot.status().connected}}));
+app.get('/api/portfolio/control/state',portfolioControl,async(req,res)=>{
+  let channels=[];
+  if(bot.status().connected){
+    try{
+      const meta=await bot.metadata();
+      channels=(meta.channels||[]).map(channel=>({id:channel.id,name:channel.name,type:channel.type})).slice(0,250);
+    }catch{}
+  }
+  res.json({
+    authorized:true,
+    user:req.portfolioWeb?.user||{name:'Administrador Studio K'},
+    site:portfolioSite(),
+    status:portfolioStatus(),
+    items:portfolioItems(),
+    products:portfolioProducts(),
+    assets:portfolioAssets(),
+    feedbacks:await publicPortfolioFeedbacks(50),
+    discord:{
+      oauthConfigured:!!(process.env.DISCORD_CLIENT_ID&&process.env.DISCORD_CLIENT_SECRET),
+      redirectUri:portfolioRedirect,
+      publicOrigin:portfolioPublicOrigin.origin,
+      botConnected:!!bot.status().connected,
+      channels
+    }
+  });
+});
 app.put('/api/portfolio/control/site',portfolioControl,portfolioSameOrigin,(req,res)=>{const current=portfolioSite(),next=portfolioSiteSchema.parse({...current,...req.body});store.set('portfolio:site',next);store.log('portfólio','Configurações do site atualizadas.','portfolio-control');res.json(next)});
 app.post('/api/portfolio/control/items',portfolioControl,portfolioSameOrigin,(req,res)=>{const item={id:randomUUID(),...portfolioItemSchema.parse(req.body),created:store.now(),updated:store.now()};const items=portfolioItems();if(item.featured)for(const x of items)x.featured=false;items.unshift(item);store.set('portfolio:items',items);res.json(item)});
 app.put('/api/portfolio/control/items/:id',portfolioControl,portfolioSameOrigin,(req,res)=>{const items=portfolioItems(),index=items.findIndex(x=>x.id===req.params.id);if(index<0)throw new AppError('Projeto não encontrado.',404);const next={...items[index],...portfolioItemSchema.parse(req.body),updated:store.now()};if(next.featured)for(const x of items)x.featured=false;items[index]=next;store.set('portfolio:items',items);res.json(next)});
@@ -381,12 +561,34 @@ app.delete('/api/portfolio/control/items/:id',portfolioControl,portfolioSameOrig
 app.post('/api/portfolio/control/products',portfolioControl,portfolioSameOrigin,(req,res)=>{const item={id:randomUUID(),...portfolioProductSchema.parse(req.body),created:store.now(),updated:store.now()};const products=storedPortfolioProducts();if(item.featured)for(const x of products)x.featured=false;products.unshift(item);store.set('portfolio:products',products);res.json(item)});
 app.put('/api/portfolio/control/products/:id',portfolioControl,portfolioSameOrigin,(req,res)=>{let products=storedPortfolioProducts();if(!products.length)products=portfolioProducts();const index=products.findIndex(x=>x.id===req.params.id);if(index<0)throw new AppError('Produto não encontrado.',404);const next={...products[index],...portfolioProductSchema.parse(req.body),updated:store.now()};if(next.featured)for(const x of products)x.featured=false;products[index]=next;store.set('portfolio:products',products);res.json(next)});
 app.delete('/api/portfolio/control/products/:id',portfolioControl,portfolioSameOrigin,(req,res)=>{store.set('portfolio:products',storedPortfolioProducts().filter(x=>x.id!==req.params.id));res.json({ok:true})});
+app.post('/api/portfolio/control/products/:id/sync-bot',portfolioControl,portfolioSameOrigin,(req,res)=>{
+  const product=portfolioProducts().find(item=>item.id===req.params.id);
+  if(!product)throw new AppError('Produto não encontrado.',404);
+  const linked=syncPortfolioProductToBot(product);
+  store.log('portfólio',`Produto sincronizado com o bot: ${linked.name}`,'portfolio-control');
+  res.json({ok:true,product:linked,botProductId:linked.botProductId});
+});
+app.post('/api/portfolio/control/products/:id/announce',portfolioControl,portfolioSameOrigin,async(req,res)=>{
+  if(!bot.status().connected)throw new AppError('O bot precisa estar conectado para publicar no Discord.',503);
+  const channelId=id.parse(req.body?.channelId);
+  const product=portfolioProducts().find(item=>item.id===req.params.id);
+  if(!product)throw new AppError('Produto não encontrado.',404);
+  const linked=syncPortfolioProductToBot(product);
+  const result=await bot.publishProduct(linked.botProductId,channelId);
+  store.log('portfólio',`Produto anunciado no Discord: ${linked.name}`,'portfolio-control');
+  res.json({ok:true,botProductId:linked.botProductId,messageId:result.id});
+});
 
 app.post('/api/portfolio/control/upload-ticket',portfolioControl,portfolioSameOrigin,(req,res)=>{
   const name=String(req.body?.name||'arquivo').slice(0,180),requestedPublic=req.body?.public===true,token=randomBytes(32).toString('base64url');
   store.set(`portfolio-upload:${hash(token)}`,{userId:req.portfolioWeb?.user?.id||'',name,public:requestedPublic,expires:Date.now()+5*60000});
   const uploadUrl=new URL(`/api/portfolio/upload/${encodeURIComponent(token)}`,base);
   res.json({token,uploadUrl:uploadUrl.toString(),expiresIn:300});
+});
+app.post('/api/portfolio/control/assets/:id/process',portfolioControl,portfolioSameOrigin,async(req,res)=>{
+  const result=await processPortfolioAsset(req.params.id);
+  store.log('portfólio',`Arquivo processado automaticamente: ${result.source.originalName}`,'portfolio-control');
+  res.json(result);
 });
 const portfolioDirectAssetUpload=express.raw({type:()=>true,limit:'80mb'});
 app.options('/api/portfolio/upload/:token',(req,res)=>{
