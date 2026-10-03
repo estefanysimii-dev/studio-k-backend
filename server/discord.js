@@ -63,10 +63,16 @@ export const SUPPORTED_LANGUAGES=[
 ];
 export const normalizeLanguage=value=>{
   const raw=String(value||'').trim(),lower=raw.toLowerCase().replace('_','-');
-  if(['pt','pt-br','pt-pt','português','portugues','portuguese'].includes(lower))return 'pt';
-  if(lower==='zh-cn'||lower==='zh-hans')return 'zh-CN';
+  if(['pt','pt-br','pt-pt','português','portugues','portuguese'].includes(lower)||lower.startsWith('pt-'))return 'pt';
+  if(lower==='zh-cn'||lower==='zh-hans'||lower.startsWith('zh-cn')||lower.startsWith('zh-sg'))return 'zh-CN';
   const exact=SUPPORTED_LANGUAGES.find(l=>l.code.toLowerCase()===lower);
-  return exact?.code||'pt';
+  if(exact)return exact.code;
+  const prefix=lower.split('-')[0],byPrefix=SUPPORTED_LANGUAGES.find(l=>l.code.toLowerCase()===prefix);
+  return byPrefix?.code||'pt';
+};
+export const resolvePreferredLanguage=(storedLanguage='',explicit=false,interactionLocale='')=>{
+  if(explicit&&storedLanguage)return normalizeLanguage(storedLanguage);
+  return normalizeLanguage(interactionLocale||'pt');
 };
 const protectedTranslationPattern=/```[\s\S]*?```|`[^`\n]+`|<(?:@!?|@&|#)\d+>|<t:\d+(?::[tTdDfFR])?>|<a?:[A-Za-z0-9_]+:\d+>|https?:\/\/[^\s)]+|[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}|[A-Za-z0-9_-]{12,}/gi;
 export const splitTranslationText=value=>{
@@ -112,8 +118,16 @@ export function createBot(store,env=process.env){
   const languageSelect=(customId,current='')=>({type:3,custom_id:customId,placeholder:'Escolha seu idioma',min_values:1,max_values:1,options:SUPPORTED_LANGUAGES.map(l=>({label:l.label,value:l.code,emoji:{name:l.emoji},...(l.code===current?{default:true}:{})}))});
   const languageLabel=code=>SUPPORTED_LANGUAGES.find(l=>l.code===normalizeLanguage(code))?.label||'Português (Brasil)';
   const languagePreference=userId=>store.one('SELECT language FROM user_preferences WHERE user_id=?',userId)||null;
-  const preferredLanguage=userId=>normalizeLanguage(languagePreference(userId)?.language||'pt');
-  const saveLanguage=(userId,language)=>{const value=normalizeLanguage(language);store.run('INSERT INTO user_preferences(user_id,language,updated_at) VALUES(?,?,?) ON CONFLICT(user_id) DO UPDATE SET language=excluded.language,updated_at=excluded.updated_at',userId,value,store.now());return value;};
+  const preferredLanguage=(userId,interactionLocale='')=>{
+    const pref=languagePreference(userId),explicit=!!store.get(`language-explicit:${userId}`,false);
+    return resolvePreferredLanguage(pref?.language||'',explicit,interactionLocale);
+  };
+  const saveLanguage=(userId,language)=>{
+    const value=normalizeLanguage(language);
+    store.run('INSERT INTO user_preferences(user_id,language,updated_at) VALUES(?,?,?) ON CONFLICT(user_id) DO UPDATE SET language=excluded.language,updated_at=excluded.updated_at',userId,value,store.now());
+    store.set(`language-explicit:${userId}`,{value,updatedAt:store.now()});
+    return value;
+  };
   const libreTranslateUrl=()=>String(env.LIBRETRANSLATE_URL||'http://libretranslate.railway.internal:5000').replace(/\/$/,'');
   const libreLanguage=code=>normalizeLanguage(code)==='zh-CN'?'zh-Hans':normalizeLanguage(code);
   const translationReady=()=>!!(store.settings().translator?.enabled&&libreTranslateUrl());
@@ -157,16 +171,16 @@ export function createBot(store,env=process.env){
     slots.forEach((slot,index)=>slot.obj[slot.key]=values[index]);
     return clone;
   }
-  async function localizeFor(userId,data){
+  async function localizeFor(userId,data,interactionLocale=''){
     if(!translationReady())return data;
-    const language=preferredLanguage(userId);if(language==='pt')return data;
+    const language=preferredLanguage(userId,interactionLocale);if(language==='pt')return data;
     try{
       if(typeof data==='string')return (await translateTexts([data],language))[0];
       return await translatePayload(data,language);
     }catch(e){store.log('aviso',`Tradução privada para ${userId}: ${String(e.message).slice(0,300)}`);return data;}
   }
-  const localizedReply=async(i,data)=>i.reply(await localizeFor(i.user.id,data));
-  const localizedEdit=async(i,data)=>i.editReply(await localizeFor(i.user.id,data));
+  const localizedReply=async(i,data)=>i.reply(await localizeFor(i.user.id,data,i.locale||''));
+  const localizedEdit=async(i,data)=>i.editReply(await localizeFor(i.user.id,data,i.locale||''));
   const withTranslator=payload=>{
     if(!translationReady()||!payload?.embeds?.length)return payload;
     const components=(payload.components||[]).map(r=>({...r,components:[...(r.components||[])]}));
@@ -1246,7 +1260,7 @@ ${normalized.previewAfter}
         const lines=rows.map(o=>{const p=JSON.parse(o.product);return`**${o.id.slice(0,8)}** · ${p.name} · ${orderStatusLabel(o.status)} · ${money(o.price)}`;});
         await localizedEdit(i,{content:'**Seus pedidos recentes**\n'+lines.join('\n'),components:[row(button('Abrir suporte','central-ticket',2))]});return;
       }
-      if(action==='central-language'){const current=languagePreference(i.user.id)?.language||'';await localizedEdit(i,{content:'Escolha seu idioma:',components:[row(languageSelect('set-language',current))]});return;}
+      if(action==='central-language'){const current=preferredLanguage(i.user.id,i.locale||'');await localizedEdit(i,{content:'Escolha seu idioma:',components:[row(languageSelect('set-language',current))]});return;}
       if(action==='central-giveaways'){
         const gs=store.all("SELECT * FROM giveaways WHERE status='active' ORDER BY created DESC LIMIT 10");if(!gs.length){await localizedEdit(i,'Não há sorteios ativos no momento.');return;}
         const lines=gs.map(g=>{const d=JSON.parse(g.data);return`🎁 **${d.title}** · termina <t:${Math.floor(Date.parse(d.endsAt)/1000)}:R>`;});await localizedEdit(i,lines.join('\n'));return;
@@ -1257,7 +1271,7 @@ ${normalized.previewAfter}
         store.set(`coupon-user:${i.user.id}`,{code,expires:Date.now()+60*60000});await localizedEdit(i,`Cupom **${code}** aplicado. Ele será usado na sua próxima compra dentro de 1 hora.`);return;
       }
       if(action==='idioma'){
-        const current=languagePreference(i.user.id)?.language||'';
+        const current=preferredLanguage(i.user.id,i.locale||'');
         await localizedEdit(i,{content:'Escolha o idioma que o Studio K deve usar para você:',components:[row(languageSelect('set-language',current))]});
         return;
       }
@@ -1279,12 +1293,12 @@ ${normalized.previewAfter}
         return;
       }
       if(action==='verify'||action==='verificar'){
-        const current=languagePreference(i.user.id)?.language||'';
+        const current=preferredLanguage(i.user.id,i.locale||'');
         await localizedEdit(i,{content:'Escolha o idioma que o Studio K deve usar nas suas mensagens privadas:',components:[row(languageSelect('verify-language',current))]});
         return;
       }
       if(action==='verify-browser'){
-        const current=languagePreference(i.user.id)?.language||'';
+        const current=preferredLanguage(i.user.id,i.locale||'');
         await localizedEdit(i,{content:'Escolha seu idioma antes de continuar pelo navegador:',components:[row(languageSelect('verify-browser-language',current))]});
         return;
       }
