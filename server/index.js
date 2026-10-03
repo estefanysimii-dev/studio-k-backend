@@ -705,6 +705,15 @@ app.post('/api/portfolio/products/:id/order',portfolioSameOrigin,async(req,res)=
   if(!demo)await bot.member(web.user.id);
   const couponCode=String(req.body?.couponCode||'').trim().slice(0,40);
   let order=store.createOrder(product.botProductId,web.user.id,couponCode);
+  const activeDrop=activeDropForProduct(product.id);
+  const dropDiscountPercent=Math.max(0,Math.min(100,Number(activeDrop?.discountPercent||0)));
+  if(dropDiscountPercent>0&&Number(order.price||0)>0){
+    const dropDiscount=Math.floor(Number(order.price||0)*dropDiscountPercent/100);
+    if(dropDiscount>0){
+      store.run('UPDATE orders SET price=?,discount=COALESCE(discount,0)+? WHERE id=?',Math.max(0,Number(order.price||0)-dropDiscount),dropDiscount,order.id);
+      order=store.one('SELECT * FROM orders WHERE id=?',order.id);
+    }
+  }
   const memberDiscountPercent=Math.max(0,Math.min(100,Number(portfolioSite().memberDiscountPercent||0)));
   if(memberDiscountPercent>0&&Number(order.price||0)>0){
     const memberDiscount=Math.floor(Number(order.price||0)*memberDiscountPercent/100);
