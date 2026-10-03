@@ -153,7 +153,13 @@ export function openStore(directory) {
   function cancelOrder(orderId,actor='sistema'){return transaction(()=>{
     const row=one('SELECT * FROM orders WHERE id=?',orderId);if(!row)throw new AppError('Pedido não encontrado.',404);
     if(row.status!=='pending')throw new AppError('Só pedidos pendentes podem ser cancelados.');
-    run("UPDATE orders SET status='cancelled' WHERE id=?",orderId);run('UPDATE stock SET order_id=NULL WHERE order_id=?',orderId);log('venda',`Pedido ${orderId.slice(0,8)} cancelado; estoque liberado.`,actor);
+    run("UPDATE orders SET status='cancelled' WHERE id=?",orderId);
+    run('UPDATE stock SET order_id=NULL WHERE order_id=?',orderId);
+    if(row.coupon_code){
+      run('UPDATE coupons SET uses=CASE WHEN uses>0 THEN uses-1 ELSE 0 END WHERE code=?',row.coupon_code);
+      run('DELETE FROM coupon_uses WHERE order_id=?',orderId);
+    }
+    log('venda',`Pedido ${orderId.slice(0,8)} cancelado; estoque${row.coupon_code?' e uso do cupom':''} liberado.`,actor,{targetId:row.user_id,orderId,coupon:row.coupon_code||''});
   });}
   function drawGiveaway(giveawayId,eligible){return transaction(()=>{
     const row=one('SELECT * FROM giveaways WHERE id=?',giveawayId);if(!row)throw new AppError('Sorteio não encontrado.',404);
