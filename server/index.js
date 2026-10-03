@@ -819,12 +819,16 @@ app.post('/api/portfolio/products/:id/order',portfolioSameOrigin,async(req,res)=
 });
 const portfolioControl=async(req,res,next)=>{const web=portfolioSession(req);if(!await portfolioCanControl(req,web))return res.status(403).json({error:'A Central de Controle é exclusiva para membros com cargo de Staff no Discord do Studio K.'});req.portfolioWeb=web;next()};
 app.get('/api/portfolio/control/state',portfolioControl,async(req,res)=>{
-  let channels=[];
+  let channels=[],roles=[];
   if(bot.status().connected){
     try{
       const meta=await bot.metadata();
       channels=(meta.announcementChannels||[])
         .map(channel=>({id:channel.id,name:channel.name,type:channel.type}))
+        .sort((a,b)=>String(a.name||'').localeCompare(String(b.name||''),'pt-BR'))
+        .slice(0,250);
+      roles=(meta.roles||[])
+        .map(role=>({id:role.id,name:role.name}))
         .sort((a,b)=>String(a.name||'').localeCompare(String(b.name||''),'pt-BR'))
         .slice(0,250);
     }catch{}
@@ -847,7 +851,7 @@ app.get('/api/portfolio/control/state',portfolioControl,async(req,res)=>{
       publicOrigin:portfolioPublicOrigin.origin,
       botConnected:!!bot.status().connected,
       channels,
-      roles:bot.status().connected?((await bot.metadata()).roles||[]):[]
+      roles
     }
   });
 });
