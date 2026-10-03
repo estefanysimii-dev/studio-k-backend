@@ -7,6 +7,15 @@ import { radioSchema, defaultRadio, normalizeRadio, radioSnapshot } from '../ser
 import { openStore } from '../server/store.js';
 
 const tracks=[{title:'A',url:'https://audio.example/a.mp3',duration:100},{title:'B',url:'https://audio.example/b.mp3',duration:200}];
+test('shuffle supports the full library and matches the shared reference timeline',()=>{
+  const config={...defaultRadio,source:'schedule',epochMs:100000,shuffle:true,tracks:[10,20,30].map((duration,i)=>({title:String(i),url:'https://audio.example/'+i+'.mp3',duration}))};
+  assert.deepEqual([0,10000,20000,30000,60000].map(t=>radioSnapshot(config,100000+t).live),[
+    {index:0,positionSeconds:0},{index:2,positionSeconds:0},{index:2,positionSeconds:10},{index:2,positionSeconds:20},{index:0,positionSeconds:0}
+  ]);
+  assert.equal(radioSchema.safeParse({...config,enabled:true,tracks:Array.from({length:229},(_,i)=>({...tracks[0],title:String(i)}))}).success,true);
+  assert.equal(normalizeRadio({...config,shuffle:false},config,999000).epochMs,999000);
+  assert.equal(normalizeRadio({...config,name:'Nova rádio'},config,999000).epochMs,100000);
+});
 test('scheduled listeners share an epoch and resume at live position across loop boundaries',()=>{
   const radio=normalizeRadio({...defaultRadio,enabled:true,source:'schedule',tracks},defaultRadio,100000);
   assert.deepEqual(radioSnapshot(radio,250000).live,{index:1,positionSeconds:50});
