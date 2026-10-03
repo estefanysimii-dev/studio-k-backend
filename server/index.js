@@ -529,6 +529,47 @@ const portfolioIdentityFor=(userId)=>{
   store.set(key,identity);
   return identity;
 };
+const portfolioMemberProfile=(userId,member={})=>{
+  const identity=portfolioIdentityFor(userId);
+  const favorites=portfolioFavoritesFor(userId);
+  const purchases=store.all("SELECT product_id,product,price FROM orders WHERE user_id=? AND status IN ('paid','delivered')",userId);
+  const feedbackCount=Number(store.one("SELECT COUNT(*) AS n FROM feedback_requests WHERE user_id=? AND status='submitted'",userId)?.n||0);
+  const ticketStats=store.one("SELECT COUNT(*) AS total,SUM(CASE WHEN status='open' THEN 1 ELSE 0 END) AS open FROM tickets WHERE user_id=?",userId)||{};
+  const favoriteCount=favorites.items.length+favorites.products.length;
+  const lifetimeSpend=purchases.reduce((sum,row)=>sum+Number(row.price||0),0);
+  const roleNames=(member?.roles||[]).map(role=>String(role?.name||'')).filter(Boolean);
+  const purchaseText=purchases.map(row=>String(row.product||'')).join(' ').toLowerCase();
+  const xp=100+(member?.inGuild?100:0)+(purchases.length*250)+(feedbackCount*75)+(favoriteCount*15);
+  const level=Math.max(1,Math.floor(xp/300)+1);
+  const badges=[];
+  if(Number(identity.sequence||0)<=250)badges.push({id:'early-member',label:'Early Member',icon:'✦'});
+  if(member?.inGuild)badges.push({id:'discord-member',label:'Discord Member',icon:'◆'});
+  if(roleNames.some(name=>/(supporter|vip|premium|apoiador|cliente)/i.test(name)))badges.push({id:'supporter',label:'Supporter',icon:'★'});
+  if(purchases.length>=1)badges.push({id:'first-purchase',label:'Primeira Compra',icon:'♡'});
+  if(purchases.length>=5)badges.push({id:'collector',label:`${purchases.length} Compras`,icon:'◇'});
+  if(/neon|emissiv/.test(purchaseText))badges.push({id:'neon-lover',label:'Neon Lover',icon:'✧'});
+  if(feedbackCount>=1)badges.push({id:'reviewer',label:'Reviewer',icon:'✓'});
+  return{
+    studioId:identity.studioId,
+    joinedAt:identity.joinedAt,
+    level,
+    xp,
+    levelFloor:(level-1)*300,
+    nextLevelXp:level*300,
+    discountPercent:Math.max(0,Number(portfolioSite().memberDiscountPercent||0)),
+    badges,
+    favorites,
+    stats:{
+      purchases:purchases.length,
+      lifetimeSpend,
+      feedbacks:feedbackCount,
+      favorites:favoriteCount,
+      tickets:Number(ticketStats.total||0),
+      openTickets:Number(ticketStats.open||0)
+    },
+    purchasedProductIds:[...new Set(purchases.map(row=>String(row.product_id||'')).filter(Boolean))]
+  };
+};
 async function publicPortfolioFeedbacks(limit=500){const rows=store.all("SELECT id,type,source_id,user_id,rating,comment,meta,submitted_at FROM feedback_requests WHERE status='submitted' ORDER BY submitted_at DESC LIMIT ?",Math.max(1,Math.min(1000,Number(limit)||500)));return Promise.all(rows.map(async row=>{let meta={};try{meta=JSON.parse(row.meta||'{}')}catch{}let profile=null;try{profile=await portfolioMember(row.user_id)}catch{}const source=row.type==='ticket'?'Atendimento':'Compra';const reference=row.type==='ticket'?(meta.ticket||`#${row.source_id.slice(0,8)}`):(meta.product||`#${row.source_id.slice(0,8)}`);return{id:row.id,rating:Number(row.rating||0),comment:String(row.comment||'').slice(0,1200),source,reference,name:profile?.name||'Cliente Studio K',avatar:profile?.avatar||'',submittedAt:row.submitted_at||'',meta:{service:meta.service||null,speed:meta.speed||null,resolution:meta.resolution||null}}}))}
 app.get('/api/portfolio/oauth/start',(req,res)=>{
   if(!process.env.DISCORD_CLIENT_ID||!process.env.DISCORD_CLIENT_SECRET)throw new AppError('OAuth do Discord ainda não está configurado no servidor.',503);
