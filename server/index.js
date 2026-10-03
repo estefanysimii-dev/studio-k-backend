@@ -725,7 +725,17 @@ app.post('/api/portfolio/analytics/event',portfolioSameOrigin,(req,res)=>{
   recordPortfolioEvent(body.event,{sessionId:body.sessionId,userId:web?.user?.id||'',itemKind:body.itemKind,itemId:body.itemId,path:body.path,meta:body.meta});
   res.status(204).end();
 });
-app.get('/api/portfolio/public-state',async(req,res)=>{const web=portfolioSession(req),items=portfolioItems().filter(x=>x.published),products=portfolioProducts().filter(x=>x.published),feedbacks=await publicPortfolioFeedbacks(500);const canControl=web?await portfolioCanControl(req,web):false;const me=web?{authenticated:true,user:web.user,member:web.member,canControl,profile:portfolioMemberProfile(web.user.id,web.member||{}),favorites:portfolioFavoritesFor(web.user.id)}:{authenticated:false,canControl:false};res.json({site:portfolioSite(),status:portfolioStatus(),items,products,drops:publicPortfolioDrops(),feedbacks,me})});
+app.get('/api/portfolio/public-state',async(req,res)=>{
+  const web=portfolioSession(req),items=portfolioItems().filter(x=>x.published),products=portfolioProducts().filter(x=>x.published),feedbacks=await publicPortfolioFeedbacks(500);
+  const canControl=web?await portfolioCanControl(req,web):false;
+  let me={authenticated:false,canControl:false};
+  if(web){
+    const profile=portfolioMemberProfile(web.user.id,web.member||{});
+    me={authenticated:true,user:web.user,member:web.member,canControl,profile,favorites:portfolioFavoritesFor(web.user.id)};
+    if(bot.status().connected)void bot.syncStudioIdRankRole(web.user.id,profile).catch(error=>store.log('aviso',`Studio K ID rank sync: ${String(error.message).slice(0,300)}`));
+  }
+  res.json({site:portfolioSite(),status:portfolioStatus(),items,products,drops:publicPortfolioDrops(),feedbacks,me});
+});
 app.get('/api/portfolio/me/profile',(req,res)=>{
   const web=portfolioSession(req);
   if(!web?.user?.id)throw new AppError('Conecte sua conta do Discord para acessar seu perfil Studio K.',401);
