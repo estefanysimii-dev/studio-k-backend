@@ -481,6 +481,35 @@ const processPortfolioDrops=async()=>{
     portfolioDropProcessing=false;
   }
 };
+const recordPortfolioEvent=(event,{sessionId='server',userId='',itemKind='',itemId='',path='',meta={}}={})=>{
+  const safeSession=String(sessionId||'server').replace(/[^A-Za-z0-9._:-]/g,'').slice(0,96)||'server';
+  const safeUser=/^\d{17,20}$/.test(String(userId||''))?String(userId):null;
+  const safeKind=['product','portfolio','page'].includes(String(itemKind||''))?String(itemKind):null;
+  const safeId=String(itemId||'').slice(0,160)||null;
+  const safePath=String(path||'').slice(0,500);
+  const safeMeta=JSON.stringify(meta&&typeof meta==='object'?meta:{}).slice(0,2000);
+  store.run('INSERT INTO portfolio_events(session_id,user_id,event,item_kind,item_id,path,meta,created) VALUES(?,?,?,?,?,?,?,?)',safeSession,safeUser,String(event).slice(0,40),safeKind,safeId,safePath,safeMeta,store.now());
+};
+const portfolioAnalyticsSummary=(days=30)=>{
+  const windowDays=Math.max(1,Math.min(365,Number(days)||30));
+  const since=new Date(Date.now()-windowDays*86400000).toISOString();
+  const count=event=>Number(store.one('SELECT COUNT(*) AS n FROM portfolio_events WHERE event=? AND created>=?',event,since)?.n||0);
+  const pageViews=count('page_view'),productViews=count('product_view'),portfolioViews=count('portfolio_view'),favoriteAdds=count('favorite_add'),checkoutStarts=count('checkout_start'),ordersCreated=count('order_created');
+  const uniqueVisitors=Number(store.one('SELECT COUNT(DISTINCT session_id) AS n FROM portfolio_events WHERE created>=?',since)?.n||0);
+  const paid=store.one("SELECT COUNT(*) AS n,COALESCE(SUM(price),0) AS revenue FROM orders WHERE status IN ('paid','delivered') AND created>=?",since)||{};
+  const paidOrders=Number(paid.n||0),revenue=Number(paid.revenue||0);
+  const topRows=store.all("SELECT item_id, SUM(CASE WHEN event='product_view' THEN 1 ELSE 0 END) AS views, SUM(CASE WHEN event='favorite_add' THEN 1 ELSE 0 END) AS favorites, SUM(CASE WHEN event='checkout_start' THEN 1 ELSE 0 END) AS checkouts, SUM(CASE WHEN event='order_created' THEN 1 ELSE 0 END) AS orders FROM portfolio_events WHERE item_kind='product' AND item_id IS NOT NULL AND created>=? GROUP BY item_id ORDER BY views DESC,favorites DESC LIMIT 20",since);
+  const products=portfolioProducts();
+  const topProducts=topRows.map(row=>{const product=products.find(item=>item.id===row.item_id);return{id:row.item_id,name:product?.name||'Produto removido',views:Number(row.views||0),favorites:Number(row.favorites||0),checkouts:Number(row.checkouts||0),orders:Number(row.orders||0)};});
+  const daily=store.all("SELECT substr(created,1,10) AS day, SUM(CASE WHEN event='page_view' THEN 1 ELSE 0 END) AS pageViews, SUM(CASE WHEN event='product_view' THEN 1 ELSE 0 END) AS productViews, SUM(CASE WHEN event='checkout_start' THEN 1 ELSE 0 END) AS checkouts, SUM(CASE WHEN event='order_created' THEN 1 ELSE 0 END) AS orders FROM portfolio_events WHERE created>=? GROUP BY substr(created,1,10) ORDER BY day",since).map(row=>({day:row.day,pageViews:Number(row.pageViews||0),productViews:Number(row.productViews||0),checkouts:Number(row.checkouts||0),orders:Number(row.orders||0)}));
+  return{
+    days:windowDays,pageViews,uniqueVisitors,productViews,portfolioViews,favoriteAdds,checkoutStarts,ordersCreated,paidOrders,revenue,
+    checkoutAbandonment:checkoutStarts?Math.max(0,Math.min(100,Math.round((checkoutStarts-ordersCreated)/checkoutStarts*100))):0,
+    checkoutConversion:checkoutStarts?Math.max(0,Math.min(100,Math.round(paidOrders/checkoutStarts*100))):0,
+    viewToOrder:productViews?Math.max(0,Math.min(100,Math.round(ordersCreated/productViews*100))):0,
+    topProducts,daily
+  };
+};
 const portfolioStatus=()=>{
   const cfg=store.settings().operationsLive||{};
   const openTickets=Number(store.one("SELECT COUNT(*) AS n FROM tickets WHERE status='open'")?.n||0);
