@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { openStore } from '../server/store.js';
-import { createBot, canOpenTicket, feedbackStars, youtubeVideoId, youtubeChannelRef, SUPPORTED_LANGUAGES, normalizeLanguage, splitTranslationText } from '../server/discord.js';
+import { createBot, canOpenTicket, feedbackStars, youtubeVideoId, youtubeChannelRef, SUPPORTED_LANGUAGES, normalizeLanguage, splitTranslationText, resolvePreferredLanguage } from '../server/discord.js';
 import { productSchema } from '../server/schema.js';
 function fixture(t){const dir=mkdtempSync(join(tmpdir(),'studio-k-bot-')),s=openStore(dir);const cfg=s.settings();cfg.backups.enabled=false;s.set('settings',cfg);const env={DISCORD_GUILD_ID:'111111111111111111'},bot=createBot(s,env);const sent=[];let failDM=false;const fakeMember={send:async payload=>{if(failDM)throw new Error('DMs bloqueadas');sent.push(payload);return{id:'999999999999999999'};}};bot.client.isReady=()=>true;bot.client.guilds.cache.set(env.DISCORD_GUILD_ID,{members:{fetch:async()=>fakeMember}});t.after(async()=>{await bot.stop();s.db.close();rmSync(dir,{recursive:true,force:true});});return{s,bot,sent,fail(value){failDM=value;}};}
 test('optional DM requires opt-in and respects opt-out',async t=>{const {s,bot,sent}=fixture(t),uid='222222222222222222';await assert.rejects(()=>bot.sendMessage({target:'dm',targetId:uid,content:'Olá'}),/notificacoes/);s.run('INSERT INTO optins VALUES(?,?)',uid,s.now());await bot.sendMessage({target:'dm',targetId:uid,content:'Olá'});assert.equal(sent.length,1);assert.deepEqual(sent[0].allowedMentions,{parse:[],users:[],roles:[],repliedUser:false});s.run('DELETE FROM optins WHERE user_id=?',uid);await assert.rejects(()=>bot.sendMessage({target:'dm',targetId:uid,content:'Outra'}),/notificacoes/);});
@@ -44,6 +44,12 @@ test('Portuguese language aliases normalize to pt',()=>{
   assert.equal(normalizeLanguage('pt-BR'),'pt');
   assert.equal(normalizeLanguage('pt_BR'),'pt');
   assert.equal(normalizeLanguage('Português'),'pt');
+});
+test('legacy language preferences do not override the current Discord locale',()=>{
+  assert.equal(resolvePreferredLanguage('en',false,'pt-BR'),'pt');
+  assert.equal(resolvePreferredLanguage('en',false,'en-US'),'en');
+  assert.equal(resolvePreferredLanguage('en',true,'pt-BR'),'en');
+  assert.equal(resolvePreferredLanguage('pt',true,'en-US'),'pt');
 });
 test('supported languages normalize safely',()=>{
   assert.ok(SUPPORTED_LANGUAGES.some(l=>l.code==='pt'));
