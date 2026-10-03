@@ -780,10 +780,17 @@ ${normalized.previewAfter}
   }
   async function publishProduct(productId,channelId){
     const p=store.products().find(p=>p.id===productId);if(!p)throw new AppError('Produto não encontrado.',404);
+    const target=await channel(channelId);
+    if(![ChannelType.GuildText,ChannelType.GuildAnnouncement].includes(target.type))throw new AppError('Escolha um canal de texto ou anúncios para publicar produtos.',400);
+    const me=requireGuild().members.me;
+    const permissions=me?target.permissionsFor(me):null;
+    const required=[PermissionFlagsBits.ViewChannel,PermissionFlagsBits.SendMessages,PermissionFlagsBits.EmbedLinks];
+    if(!permissions||!permissions.has(required))throw new AppError('O bot precisa das permissões Ver canal, Enviar mensagens e Inserir links neste canal.',403);
     const availability=p.type==='service'?'Sob demanda':`${p.stock} unidade(s)`;
     const payload=styledPayload(store.settings().messageStyles.product,{product:p.name,description:p.description||'Peça pelo botão abaixo.',price:money(p.priceCents),availability,category:p.category});
     if(p.image&&payload.embeds[0]&&!payload.embeds[0].image)payload.embeds[0].image={url:p.image};
-    const m=await(await channel(channelId)).send({...payload,components:[...(payload.components||[]),row(button('Comprar com Pix',`buy:${p.id}`))],allowedMentions:mentionPolicy(payload)});return{id:m.id};
+    const m=await target.send({...payload,components:[...(payload.components||[]),row(button('Comprar com Pix',`buy:${p.id}`))],allowedMentions:mentionPolicy(payload)});
+    return{id:m.id,channelId:target.id};
   }
   async function orderText(order){
     const s=store.settings().sales,p=JSON.parse(order.product),discount=Number(order.discount||0);
@@ -1583,6 +1590,14 @@ ${normalized.previewAfter}
       await Promise.all([g.channels.fetch(),g.roles.fetch(),g.emojis.fetch(),g.members.fetch()]);
       return{
         channels:[...g.channels.cache.values()].filter(Boolean).map(c=>({id:c.id,name:c.name,type:c.type})),
+        announcementChannels:[...g.channels.cache.values()]
+          .filter(c=>{
+            if(!c||![ChannelType.GuildText,ChannelType.GuildAnnouncement].includes(c.type))return false;
+            const me=g.members.me;
+            const permissions=me?c.permissionsFor(me):null;
+            return !!permissions&&permissions.has([PermissionFlagsBits.ViewChannel,PermissionFlagsBits.SendMessages,PermissionFlagsBits.EmbedLinks]);
+          })
+          .map(c=>({id:c.id,name:c.name,type:c.type})),
         roles:[...g.roles.cache.values()].filter(r=>!r.managed&&r.id!==g.id).map(r=>({id:r.id,name:r.name})),
         members:[...g.members.cache.values()].filter(m=>!m.user?.bot).slice(0,1000).map(m=>({id:m.id,name:m.displayName||m.user?.username||m.id,username:m.user?.username||''})),
         emojis:[...g.emojis.cache.values()].map(e=>({id:e.id,name:e.name||'emoji',animated:!!e.animated,url:e.imageURL({extension:e.animated?'gif':'png',size:64})}))

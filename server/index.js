@@ -258,6 +258,8 @@ const defaultPortfolioSite={
   primaryCtaLabel:'Explorar Portfólio',
   secondaryCtaLabel:'Entrar no Discord',
   discordInviteUrl:'',
+  defaultAnnouncementChannelId:'',
+  autoAnnounceProducts:false,
   adminRoleIds:[]
 };
 const portfolioSite=()=>{
@@ -379,6 +381,27 @@ const syncPortfolioProductToBot=(portfolioProduct)=>{
   if(pos>=0){products[pos]=linked;store.set('portfolio:products',products)}
   return linked;
 };
+const maybeAutoAnnouncePortfolioProduct=async(portfolioProduct,reason='publish')=>{
+  const cfg=portfolioSite();
+  if(!cfg.autoAnnounceProducts||!cfg.defaultAnnouncementChannelId)return{attempted:false,ok:false};
+  if(!portfolioProduct?.published)return{attempted:false,ok:false};
+  if(!bot.status().connected){
+    const error='O bot está offline; o produto foi salvo, mas o anúncio automático não pôde ser enviado.';
+    store.log('aviso',error,'portfolio-control');
+    return{attempted:true,ok:false,error};
+  }
+  try{
+    const linked=syncPortfolioProductToBot(portfolioProduct);
+    const result=await bot.publishProduct(linked.botProductId,cfg.defaultAnnouncementChannelId);
+    store.log('portfólio',`Produto anunciado automaticamente no Discord (${reason}): ${linked.name}`,'portfolio-control');
+    return{attempted:true,ok:true,messageId:result.id,botProductId:linked.botProductId,channelId:cfg.defaultAnnouncementChannelId};
+  }catch(error){
+    const message=String(error?.message||error||'Falha desconhecida').slice(0,500);
+    store.log('aviso',`Anúncio automático falhou para ${portfolioProduct?.name||'produto'}: ${message}`,'portfolio-control');
+    return{attempted:true,ok:false,error:message,channelId:cfg.defaultAnnouncementChannelId};
+  }
+};
+
 const portfolioStatus=()=>{
   const cfg=store.settings().operationsLive||{};
   const openTickets=Number(store.one("SELECT COUNT(*) AS n FROM tickets WHERE status='open'")?.n||0);
@@ -442,7 +465,13 @@ const portfolioSiteSchema=z.object({
   primaryCtaLabel:z.string().max(80).default(defaultPortfolioSite.primaryCtaLabel),
   secondaryCtaLabel:z.string().max(80).default(defaultPortfolioSite.secondaryCtaLabel),
   discordInviteUrl:z.string().max(2000).default(''),
+  defaultAnnouncementChannelId:z.union([z.literal(''),z.string().regex(/^\d{17,20}$/)]).default(''),
+  autoAnnounceProducts:z.boolean().default(false),
   adminRoleIds:z.array(z.string().regex(/^\d{17,20}$/)).max(30).default([])
+}).superRefine((value,ctx)=>{
+  if(value.autoAnnounceProducts&&!value.defaultAnnouncementChannelId){
+    ctx.addIssue({code:'custom',path:['defaultAnnouncementChannelId'],message:'Selecione um canal padrão antes de ativar o anúncio automático.'});
+  }
 });
 async function portfolioMember(userId){try{const m=bot.status().connected?await bot.memberProfile(userId):null;return m?{...m,inGuild:true}:{inGuild:false,roles:[]}}catch{return{inGuild:false,roles:[]}}}
 async function publicPortfolioFeedbacks(limit=18){const rows=store.all("SELECT id,type,source_id,user_id,rating,comment,meta,submitted_at FROM feedback_requests WHERE status='submitted' ORDER BY submitted_at DESC LIMIT ?",Math.max(1,Math.min(50,Number(limit)||18)));return Promise.all(rows.map(async row=>{let meta={};try{meta=JSON.parse(row.meta||'{}')}catch{}let profile=null;try{profile=await portfolioMember(row.user_id)}catch{}const source=row.type==='ticket'?'Atendimento':'Compra';const reference=row.type==='ticket'?(meta.ticket||`#${row.source_id.slice(0,8)}`):(meta.product||`#${row.source_id.slice(0,8)}`);return{id:row.id,rating:Number(row.rating||0),comment:String(row.comment||'').slice(0,1200),source,reference,name:profile?.name||'Cliente Studio K',avatar:profile?.avatar||'',submittedAt:row.submitted_at||'',meta:{service:meta.service||null,speed:meta.speed||null,resolution:meta.resolution||null}}}))}
@@ -546,7 +575,10 @@ app.get('/api/portfolio/control/state',portfolioControl,async(req,res)=>{
   if(bot.status().connected){
     try{
       const meta=await bot.metadata();
-      channels=(meta.channels||[]).map(channel=>({id:channel.id,name:channel.name,type:channel.type})).slice(0,250);
+      channels=(meta.announcementChannels||[])
+        .map(channel=>({id:channel.id,name:channel.name,type:channel.type}))
+        .sort((a,b)=>String(a.name||'').localeCompare(String(b.name||''),'pt-BR'))
+        .slice(0,250);
     }catch{}
   }
   res.json({
@@ -571,8 +603,31 @@ app.put('/api/portfolio/control/site',portfolioControl,portfolioSameOrigin,(req,
 app.post('/api/portfolio/control/items',portfolioControl,portfolioSameOrigin,(req,res)=>{const item={id:randomUUID(),...portfolioItemSchema.parse(req.body),created:store.now(),updated:store.now()};const items=portfolioItems();if(item.featured)for(const x of items)x.featured=false;items.unshift(item);store.set('portfolio:items',items);res.json(item)});
 app.put('/api/portfolio/control/items/:id',portfolioControl,portfolioSameOrigin,(req,res)=>{const items=portfolioItems(),index=items.findIndex(x=>x.id===req.params.id);if(index<0)throw new AppError('Projeto não encontrado.',404);const next={...items[index],...portfolioItemSchema.parse(req.body),updated:store.now()};if(next.featured)for(const x of items)x.featured=false;items[index]=next;store.set('portfolio:items',items);res.json(next)});
 app.delete('/api/portfolio/control/items/:id',portfolioControl,portfolioSameOrigin,(req,res)=>{store.set('portfolio:items',portfolioItems().filter(x=>x.id!==req.params.id));res.json({ok:true})});
-app.post('/api/portfolio/control/products',portfolioControl,portfolioSameOrigin,(req,res)=>{const item={id:randomUUID(),...portfolioProductSchema.parse(req.body),created:store.now(),updated:store.now()};const products=storedPortfolioProducts();if(item.featured)for(const x of products)x.featured=false;products.unshift(item);store.set('portfolio:products',products);res.json(item)});
-app.put('/api/portfolio/control/products/:id',portfolioControl,portfolioSameOrigin,(req,res)=>{let products=storedPortfolioProducts();if(!products.length)products=portfolioProducts();const index=products.findIndex(x=>x.id===req.params.id);if(index<0)throw new AppError('Produto não encontrado.',404);const next={...products[index],...portfolioProductSchema.parse(req.body),updated:store.now()};if(next.featured)for(const x of products)x.featured=false;products[index]=next;store.set('portfolio:products',products);res.json(next)});
+app.post('/api/portfolio/control/products',portfolioControl,portfolioSameOrigin,async(req,res)=>{
+  const item={id:randomUUID(),...portfolioProductSchema.parse(req.body),created:store.now(),updated:store.now()};
+  const products=storedPortfolioProducts();
+  if(item.featured)for(const x of products)x.featured=false;
+  products.unshift(item);
+  store.set('portfolio:products',products);
+  const announcement=item.published?await maybeAutoAnnouncePortfolioProduct(item,'novo produto'):{attempted:false,ok:false};
+  const saved=portfolioProducts().find(product=>product.id===item.id)||item;
+  res.json({...saved,_announcement:announcement});
+});
+app.put('/api/portfolio/control/products/:id',portfolioControl,portfolioSameOrigin,async(req,res)=>{
+  let products=storedPortfolioProducts();
+  if(!products.length)products=portfolioProducts();
+  const productIndex=products.findIndex(x=>x.id===req.params.id);
+  if(productIndex<0)throw new AppError('Produto não encontrado.',404);
+  const previous=products[productIndex];
+  const next={...previous,...portfolioProductSchema.parse(req.body),updated:store.now()};
+  if(next.featured)for(const x of products)x.featured=false;
+  products[productIndex]=next;
+  store.set('portfolio:products',products);
+  const becamePublished=previous.published===false&&next.published===true;
+  const announcement=becamePublished?await maybeAutoAnnouncePortfolioProduct(next,'produto publicado'):{attempted:false,ok:false};
+  const saved=portfolioProducts().find(product=>product.id===next.id)||next;
+  res.json({...saved,_announcement:announcement});
+});
 app.delete('/api/portfolio/control/products/:id',portfolioControl,portfolioSameOrigin,(req,res)=>{store.set('portfolio:products',storedPortfolioProducts().filter(x=>x.id!==req.params.id));res.json({ok:true})});
 app.post('/api/portfolio/control/products/:id/sync-bot',portfolioControl,portfolioSameOrigin,(req,res)=>{
   const product=portfolioProducts().find(item=>item.id===req.params.id);
