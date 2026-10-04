@@ -1056,7 +1056,7 @@ app.get('/api/portfolio/control/state',portfolioControl,async(req,res)=>{
   });
 });
 app.get('/api/portfolio/radio',(req,res)=>{res.set('Cache-Control','no-store');res.json(radioSnapshot(portfolioSite().radio));});
-app.put('/api/portfolio/control/site',portfolioControl,portfolioSameOrigin,(req,res)=>{const current=portfolioSite(),next=portfolioSiteSchema.parse({...current,...req.body});next.radio=normalizeRadio(next.radio,current.radio);store.set('portfolio:site',next);store.log('portfólio','Configurações do site atualizadas.','portfolio-control');res.json(next)});
+app.put('/api/portfolio/control/site',portfolioControl,portfolioSameOrigin,(req,res)=>{const current=portfolioSite(),next=portfolioSiteSchema.parse({...current,...req.body});next.radio=normalizeRadio(next.radio,current.radio);store.set('portfolio:site',next);recordVersion(store,{entityType:'site',entityId:'main',before:current,after:next,actor:req.portfolioWeb?.user?.id||'portfolio-control',action:'update'});store.log('portfólio','Configurações do site atualizadas.','portfolio-control');res.json(next)});
 app.put('/api/portfolio/control/studio-id',portfolioControl,portfolioSameOrigin,(req,res)=>{
   const next=saveStudioIdConfig(store,req.body||{});
   store.log('portfólio','Configurações do Studio K ID atualizadas.','portfolio-control');
@@ -1088,16 +1088,26 @@ app.post('/api/portfolio/control/versions/:id/restore',portfolioControl,portfoli
   const version=versionsFor(store).find(x=>x.id===req.params.id);if(!version)throw new AppError('Versão não encontrada.',404);
   if(!version.before)throw new AppError('Esta versão não possui estado anterior para restaurar.',409);
   if(['bundles','collections','missions','banners','roleBenefits','schedules','gallery','lookbooks'].includes(version.entityType)){
-    const kind=version.entityType==='roleBenefits'?'roleBenefits':version.entityType;
-    const restored=upsertCommerce(store,kind,version.before);
+    const restored=upsertCommerce(store,version.entityType,version.before);
     recordVersion(store,{entityType:version.entityType,entityId:version.entityId,before:version.after,after:restored,actor:req.portfolioWeb?.user?.id||'portfolio-control',action:'restore'});
     return res.json(restored);
+  }
+  if(version.entityType==='site'){
+    const current=portfolioSite();store.set('portfolio:site',portfolioSiteSchema.parse(version.before));
+    recordVersion(store,{entityType:'site',entityId:'main',before:current,after:version.before,actor:req.portfolioWeb?.user?.id||'portfolio-control',action:'restore'});
+    return res.json(version.before);
+  }
+  if(version.entityType==='product'||version.entityType==='item'){
+    const key=version.entityType==='product'?'portfolio:products':'portfolio:items',current=version.entityType==='product'?storedPortfolioProducts():portfolioItems(),index=current.findIndex(x=>x.id===version.entityId);
+    if(index>=0)current[index]=version.before;else current.unshift(version.before);store.set(key,current);
+    recordVersion(store,{entityType:version.entityType,entityId:version.entityId,before:version.after,after:version.before,actor:req.portfolioWeb?.user?.id||'portfolio-control',action:'restore'});
+    return res.json(version.before);
   }
   throw new AppError('Restauração automática ainda não é suportada para este tipo.',409);
 });
 app.post('/api/portfolio/control/items',portfolioControl,portfolioSameOrigin,(req,res)=>{const item={id:randomUUID(),...portfolioItemSchema.parse(req.body),created:store.now(),updated:store.now()};const items=portfolioItems();if(item.featured)for(const x of items)x.featured=false;items.unshift(item);store.set('portfolio:items',items);recordVersion(store,{entityType:'item',entityId:item.id,before:null,after:item,actor:req.portfolioWeb?.user?.id||'portfolio-control',action:'create'});res.json(item)});
-app.put('/api/portfolio/control/items/:id',portfolioControl,portfolioSameOrigin,(req,res)=>{const items=portfolioItems(),index=items.findIndex(x=>x.id===req.params.id);if(index<0)throw new AppError('Projeto não encontrado.',404);const next={...items[index],...portfolioItemSchema.parse(req.body),updated:store.now()};if(next.featured)for(const x of items)x.featured=false;items[index]=next;store.set('portfolio:items',items);res.json(next)});
-app.delete('/api/portfolio/control/items/:id',portfolioControl,portfolioSameOrigin,(req,res)=>{store.set('portfolio:items',portfolioItems().filter(x=>x.id!==req.params.id));res.json({ok:true})});
+app.put('/api/portfolio/control/items/:id',portfolioControl,portfolioSameOrigin,(req,res)=>{const items=portfolioItems(),index=items.findIndex(x=>x.id===req.params.id);if(index<0)throw new AppError('Projeto não encontrado.',404);const previous=items[index],next={...previous,...portfolioItemSchema.parse(req.body),updated:store.now()};if(next.featured)for(const x of items)x.featured=false;items[index]=next;store.set('portfolio:items',items);recordVersion(store,{entityType:'item',entityId:next.id,before:previous,after:next,actor:req.portfolioWeb?.user?.id||'portfolio-control',action:'update'});res.json(next)});
+app.delete('/api/portfolio/control/items/:id',portfolioControl,portfolioSameOrigin,(req,res)=>{const items=portfolioItems(),previous=items.find(x=>x.id===req.params.id)||null;store.set('portfolio:items',items.filter(x=>x.id!==req.params.id));if(previous)recordVersion(store,{entityType:'item',entityId:req.params.id,before:previous,after:null,actor:req.portfolioWeb?.user?.id||'portfolio-control',action:'delete'});res.json({ok:true})});
 app.post('/api/portfolio/control/products',portfolioControl,portfolioSameOrigin,async(req,res)=>{
   const item={id:randomUUID(),...portfolioProductSchema.parse(req.body),created:store.now(),updated:store.now()};
   const products=storedPortfolioProducts();
@@ -1135,7 +1145,7 @@ app.put('/api/portfolio/control/products/:id',portfolioControl,portfolioSameOrig
   const saved=portfolioProducts().find(product=>product.id===next.id)||next;
   res.json({...saved,_announcement:announcement});
 });
-app.delete('/api/portfolio/control/products/:id',portfolioControl,portfolioSameOrigin,(req,res)=>{store.set('portfolio:products',storedPortfolioProducts().filter(x=>x.id!==req.params.id));res.json({ok:true})});
+app.delete('/api/portfolio/control/products/:id',portfolioControl,portfolioSameOrigin,(req,res)=>{const products=storedPortfolioProducts(),previous=products.find(x=>x.id===req.params.id)||null;store.set('portfolio:products',products.filter(x=>x.id!==req.params.id));if(previous)recordVersion(store,{entityType:'product',entityId:req.params.id,before:previous,after:null,actor:req.portfolioWeb?.user?.id||'portfolio-control',action:'delete'});res.json({ok:true})});
 app.post('/api/portfolio/control/products/:id/sync-bot',portfolioControl,portfolioSameOrigin,(req,res)=>{
   const product=portfolioProducts().find(item=>item.id===req.params.id);
   if(!product)throw new AppError('Produto não encontrado.',404);
