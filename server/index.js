@@ -13,7 +13,7 @@ import { defaultRadio, radioSchema, normalizeRadio, radioSnapshot } from './radi
 import { settingsSchema, productSchema, messageSchema, templateSchema, giveawaySchema, eventSchema, id } from './schema.js';
 import { studioIdConfig, saveStudioIdConfig, studioIdConfigSchema, studioIdentityFor, studioFavoritesFor, studioProfilePrefsFor, studioIdProfile } from './studio-id.js';
 import {
-  commerceAdminState,commercePublicState,upsertCommerce,deleteCommerce,setLeaderboardConfig,
+  commerceAdminState,commercePublicState,upsertCommerce,deleteCommerce,setLeaderboardConfig,setFeedbackAutomationConfig,
   cartFor,setCart,notificationsFor,addNotification,markNotification,quoteCart,missionProgress,claimMission,
   recommendationsFor,globalSearch,leaderboard,activityFeed,recordVersion,versionsFor,runSchedules,productAvailability,roleBenefitFor
 } from './commerce.js';
@@ -1105,6 +1105,11 @@ app.delete('/api/portfolio/control/commerce/:kind/:id',portfolioControl,portfoli
   res.json(result);
 });
 app.put('/api/portfolio/control/leaderboard',portfolioControl,portfolioSameOrigin,(req,res)=>res.json(setLeaderboardConfig(store,req.body||{})));
+app.put('/api/portfolio/control/feedback-automation',portfolioControl,portfolioSameOrigin,(req,res)=>{
+  const next=setFeedbackAutomationConfig(store,req.body||{});
+  recordVersion(store,{entityType:'feedbackAutomation',entityId:'main',before:null,after:next,actor:req.portfolioWeb?.user?.id||'portfolio-control',action:'update'});
+  res.json(next);
+});
 app.get('/api/portfolio/control/versions',portfolioControl,(req,res)=>res.json(versionsFor(store).slice(0,500)));
 app.post('/api/portfolio/control/versions/:id/restore',portfolioControl,portfolioSameOrigin,(req,res)=>{
   const version=versionsFor(store).find(x=>x.id===req.params.id);if(!version)throw new AppError('Versão não encontrada.',404);
