@@ -55,7 +55,8 @@ export const bannerSchema=z.object({
   text:z.string().trim().max(600).default(''),
   imageUrl:httpsOrPath,
   href:z.string().trim().max(2000).default(''),
-  placement:z.enum(['all','home','products','portfolio','popup']).default('all'),
+  placement:z.enum(['all','home','products','portfolio','popup','specific']).default('all'),
+  pages:z.array(z.string().trim().min(1).max(240)).max(30).default([]),
   active:z.boolean().default(true),
   startsAt:isoOrEmpty,
   endsAt:isoOrEmpty
