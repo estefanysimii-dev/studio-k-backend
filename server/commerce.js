@@ -320,19 +320,44 @@ export function claimMission(store,userId,member,missionId){
 export function recommendationsFor(store,userId,products,currentProductId='',limit=6){
   const fav=store.get(`portfolio:favorites:${userId}`,{products:[]})||{},favorites=new Set(fav.products||[]);
   const purchased=new Set(store.all("SELECT product_id FROM orders WHERE user_id=? AND status IN ('paid','delivered')",userId).map(r=>r.product_id));
-  const current=products.find(p=>p.id===currentProductId),views=store.all("SELECT item_id,COUNT(*) AS n FROM portfolio_events WHERE event='product_view' AND item_kind='product' GROUP BY item_id");
+  const current=products.find(p=>p.id===currentProductId);
+  const since24=new Date(Date.now()-24*3600000).toISOString();
+  const views=store.all("SELECT item_id,COUNT(*) AS n FROM portfolio_events WHERE event='product_view' AND item_kind='product' AND created>=? GROUP BY item_id",since24);
   const viewMap=new Map(views.map(r=>[r.item_id,Number(r.n||0)]));
+  const userViews=userId?store.all("SELECT item_id,COUNT(*) AS n FROM portfolio_events WHERE user_id=? AND event='product_view' AND item_kind='product' GROUP BY item_id",userId):[];
+  const userViewMap=new Map(userViews.map(r=>[r.item_id,Number(r.n||0)]));
+  const interactedIds=new Set([...favorites,...purchased,...userViewMap.keys()]);
+  const affinityCategories=new Map(),affinityTags=new Map();
+  for(const item of products){
+    if(!interactedIds.has(item.id))continue;
+    const weight=(favorites.has(item.id)?3:0)+(purchased.has(item.id)?4:0)+Math.min(5,userViewMap.get(item.id)||0);
+    if(item.category)affinityCategories.set(item.category,(affinityCategories.get(item.category)||0)+weight);
+    for(const tag of item.tags||[])affinityTags.set(tag,(affinityTags.get(tag)||0)+weight);
+  }
   return products.filter(p=>p.published!==false&&p.id!==currentProductId).map(p=>{
-    let score=Math.min(30,viewMap.get(p.id)||0);
-    if(favorites.has(p.id))score+=35;
-    if(purchased.has(p.id))score-=80;
+    let score=Math.min(35,(viewMap.get(p.id)||0)*3);
+    const ownViews=Math.min(8,userViewMap.get(p.id)||0);
+    if(ownViews)score+=ownViews*6;
+    if(favorites.has(p.id))score+=45;
+    if(purchased.has(p.id))score-=100;
+    score+=Math.min(45,(affinityCategories.get(p.category)||0)*4);
+    score+=Math.min(55,(p.tags||[]).reduce((sum,tag)=>sum+(affinityTags.get(tag)||0),0)*3);
     if(current){
       if(p.category&&p.category===current.category)score+=35;
       const overlap=(p.tags||[]).filter(t=>(current.tags||[]).includes(t)).length;score+=overlap*18;
       const together=store.one("SELECT COUNT(*) AS n FROM orders a JOIN orders b ON a.user_id=b.user_id WHERE a.product_id=? AND b.product_id=? AND a.status IN ('paid','delivered') AND b.status IN ('paid','delivered')",current.id,p.id)?.n||0;
       score+=Math.min(50,Number(together)*15);
     }
-    return{productId:p.id,score,reason:current&&p.category===current.category?'Mesma categoria':favorites.has(p.id)?'Você favoritou':'Em alta'};
+    const reason=current&&p.category===current.category
+      ?'Combina com este produto'
+      :favorites.has(p.id)
+        ?'Você favoritou'
+        :ownViews
+          ?'Você viu recentemente'
+          :(affinityCategories.get(p.category)||0)>0
+            ?'Combina com seu estilo'
+            :'Em alta hoje';
+    return{productId:p.id,score,reason};
   }).sort((a,b)=>b.score-a.score).slice(0,limit);
 }
 
