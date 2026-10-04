@@ -46,6 +46,11 @@ test('Commerce Suite applies role benefits, progressive combos and notifications
   assert.equal(quote.total,5760);
   assert.equal(quote.appliedBundles[0].name,'Combo Neon');
 
+  // A faixa progressiva de 3 itens deve substituir a faixa de 2 itens.
+  setCart(store,userId,[{productId:'polo',quantity:2},{productId:'manguito',quantity:1}]);
+  const tierQuote=quoteCart(store,userId,member,products,'',5);
+  assert.equal(tierQuote.bundleDiscount,816);
+
   addNotification(store,userId,{type:'test',title:'Olá',text:'Teste',href:'/account'});
   let notifications=notificationsFor(store,userId);
   assert.equal(notifications.length,1);
@@ -92,4 +97,39 @@ test('Recommendations rank related products and limited stock reaches zero', (t)
   const availability=productAvailability(store,{botProductId:'bot-limit',stockMode:'limited',stockLimit:2});
   assert.equal(availability.remaining,0);
   assert.equal(availability.available,false);
+});
+
+
+test('Cart quote applies active drops and automatic combo gifts', (t) => {
+  const dir=mkdtempSync(join(tmpdir(),'studio-k-drop-gift-'));
+  const store=openStore(dir);
+  t.after(()=>{store.db.close();rmSync(dir,{recursive:true,force:true});});
+
+  const products=[
+    {id:'a',name:'Produto A',priceCents:5000,published:true,category:'Neon',tags:[],stockMode:'unlimited'},
+    {id:'b',name:'Produto B',priceCents:3000,published:true,category:'Neon',tags:[],stockMode:'unlimited'},
+    {id:'gift',name:'Brinde',priceCents:2000,published:true,category:'Extra',tags:[],stockMode:'unlimited'}
+  ];
+  const now=Date.now();
+  store.set('portfolio:drops',[{
+    id:'drop-a',title:'Drop A',productId:'a',discountPercent:20,
+    startsAt:new Date(now-60000).toISOString(),endsAt:new Date(now+3600000).toISOString(),published:true
+  }]);
+  upsertCommerce(store,'bundles',{
+    name:'A+B com brinde',description:'',productIds:['a','b'],minItems:2,
+    discountType:'percent',discountValue:10,tiers:[],giftProductId:'gift',active:true
+  });
+  const userId='555555555555555555';
+  setCart(store,userId,[{productId:'a',quantity:1},{productId:'b',quantity:1}]);
+  const quote=quoteCart(store,userId,{roles:[]},products,'',0);
+
+  const productA=quote.items.find(item=>item.productId==='a');
+  const gift=quote.items.find(item=>item.productId==='gift');
+  assert.equal(productA?.dropPercent,20);
+  assert.equal(productA?.unitPrice,4000);
+  assert.equal(gift?.gift,true);
+  assert.equal(gift?.unitPrice,0);
+  assert.equal(quote.appliedBundles[0].giftProductId,'gift');
+  assert.equal(quote.bundleDiscount,700);
+  assert.equal(quote.total,6300);
 });
