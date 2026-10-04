@@ -1,0 +1,9 @@
+[package]
+name = "studio-k-fivem-preview"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyhow = "1"
+serde_json = "1"
+rage-formats = { git = "https://github.com/VIRUXE/rage-formats", rev = "b727866031e9f4c467dbec2bbd6e0dec955903f1" }
