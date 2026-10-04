@@ -1085,7 +1085,8 @@ app.get('/api/portfolio/control/state',portfolioControl,async(req,res)=>{
 app.get('/api/portfolio/radio',(req,res)=>{res.set('Cache-Control','no-store');res.json(radioSnapshot(portfolioSite().radio));});
 app.put('/api/portfolio/control/site',portfolioControl,portfolioSameOrigin,(req,res)=>{const current=portfolioSite(),next=portfolioSiteSchema.parse({...current,...req.body});next.radio=normalizeRadio(next.radio,current.radio);store.set('portfolio:site',next);recordVersion(store,{entityType:'site',entityId:'main',before:current,after:next,actor:req.portfolioWeb?.user?.id||'portfolio-control',action:'update'});store.log('portfólio','Configurações do site atualizadas.','portfolio-control');res.json(next)});
 app.put('/api/portfolio/control/studio-id',portfolioControl,portfolioSameOrigin,(req,res)=>{
-  const next=saveStudioIdConfig(store,req.body||{});
+  const previous=studioIdConfig(store),next=saveStudioIdConfig(store,req.body||{});
+  recordVersion(store,{entityType:'studioId',entityId:'main',before:previous,after:next,actor:req.portfolioWeb?.user?.id||'portfolio-control',action:'update'});
   store.log('portfólio','Configurações do Studio K ID atualizadas.','portfolio-control');
   res.json(next);
 });
@@ -1094,7 +1095,8 @@ app.put('/api/portfolio/control/feedbacks',portfolioControl,portfolioSameOrigin,
     order:z.array(z.string().trim().min(1).max(120)).max(1000).default([]),
     hidden:z.array(z.string().trim().min(1).max(120)).max(1000).default([])
   }).parse(req.body||{});
-  const moderation=savePortfolioFeedbackModeration(body);
+  const previous=portfolioFeedbackModeration(),moderation=savePortfolioFeedbackModeration(body);
+  recordVersion(store,{entityType:'feedbackModeration',entityId:'main',before:previous,after:moderation,actor:req.portfolioWeb?.user?.id||'portfolio-control',action:'update'});
   store.log('portfólio',`Organização de feedbacks atualizada: ${moderation.order.length} ordenados · ${moderation.hidden.length} ocultos`,'portfolio-control');
   res.json({ok:true,moderation,feedbacks:await controlPortfolioFeedbacks(500)});
 });
@@ -1127,6 +1129,22 @@ app.post('/api/portfolio/control/versions/:id/restore',portfolioControl,portfoli
   if(version.entityType==='site'){
     const current=portfolioSite();store.set('portfolio:site',portfolioSiteSchema.parse(version.before));
     recordVersion(store,{entityType:'site',entityId:'main',before:current,after:version.before,actor:req.portfolioWeb?.user?.id||'portfolio-control',action:'restore'});
+    return res.json(version.before);
+  }
+  if(version.entityType==='studioId'){
+    const current=studioIdConfig(store),restored=saveStudioIdConfig(store,version.before);
+    recordVersion(store,{entityType:'studioId',entityId:'main',before:current,after:restored,actor:req.portfolioWeb?.user?.id||'portfolio-control',action:'restore'});
+    return res.json(restored);
+  }
+  if(version.entityType==='feedbackModeration'){
+    const current=portfolioFeedbackModeration(),restored=savePortfolioFeedbackModeration(version.before);
+    recordVersion(store,{entityType:'feedbackModeration',entityId:'main',before:current,after:restored,actor:req.portfolioWeb?.user?.id||'portfolio-control',action:'restore'});
+    return res.json(restored);
+  }
+  if(version.entityType==='drop'){
+    const drops=portfolioDrops(),index=drops.findIndex(item=>item.id===version.entityId);
+    if(index>=0)drops[index]=version.before;else drops.unshift(version.before);store.set('portfolio:drops',drops);
+    recordVersion(store,{entityType:'drop',entityId:version.entityId,before:version.after,after:version.before,actor:req.portfolioWeb?.user?.id||'portfolio-control',action:'restore'});
     return res.json(version.before);
   }
   if(version.entityType==='product'||version.entityType==='item'){
@@ -1202,6 +1220,7 @@ app.post('/api/portfolio/control/drops',portfolioControl,portfolioSameOrigin,(re
   if(!product)throw new AppError('Produto do drop não encontrado.',404);
   const drop={id:randomUUID(),...data,created:store.now(),updated:store.now(),announcedAt:'',announcementMessageId:'',announceAttemptAt:''};
   const drops=portfolioDrops();drops.unshift(drop);store.set('portfolio:drops',drops.slice(0,300));
+  recordVersion(store,{entityType:'drop',entityId:drop.id,before:null,after:drop,actor:req.portfolioWeb?.user?.id||'portfolio-control',action:'create'});
   store.log('portfólio',`Drop agendado: ${drop.title}`,'portfolio-control',{dropId:drop.id,productId:drop.productId});
   res.json({...drop,status:portfolioDropStatus(drop)});
 });
@@ -1214,13 +1233,15 @@ app.put('/api/portfolio/control/drops/:id',portfolioControl,portfolioSameOrigin,
   const scheduleChanged=previous.startsAt!==data.startsAt||previous.productId!==data.productId||previous.channelId!==data.channelId||previous.announceDiscord!==data.announceDiscord;
   const next={...previous,...data,updated:store.now(),...(scheduleChanged?{announcedAt:'',announcementMessageId:'',announceAttemptAt:''}:{})};
   drops[index]=next;store.set('portfolio:drops',drops);
+  recordVersion(store,{entityType:'drop',entityId:next.id,before:previous,after:next,actor:req.portfolioWeb?.user?.id||'portfolio-control',action:'update'});
   store.log('portfólio',`Drop atualizado: ${next.title}`,'portfolio-control',{dropId:next.id,productId:next.productId});
   res.json({...next,status:portfolioDropStatus(next)});
 });
 app.delete('/api/portfolio/control/drops/:id',portfolioControl,portfolioSameOrigin,(req,res)=>{
-  const drops=portfolioDrops(),exists=drops.some(drop=>drop.id===req.params.id);
-  if(!exists)throw new AppError('Drop não encontrado.',404);
+  const drops=portfolioDrops(),previous=drops.find(drop=>drop.id===req.params.id)||null;
+  if(!previous)throw new AppError('Drop não encontrado.',404);
   store.set('portfolio:drops',drops.filter(drop=>drop.id!==req.params.id));
+  recordVersion(store,{entityType:'drop',entityId:req.params.id,before:previous,after:null,actor:req.portfolioWeb?.user?.id||'portfolio-control',action:'delete'});
   store.log('portfólio',`Drop removido: ${req.params.id}`,'portfolio-control',{dropId:req.params.id});
   res.json({ok:true});
 });
