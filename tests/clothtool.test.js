@@ -98,3 +98,10 @@ test('ClothTool revokes pending authorizations as well as active sessions', asyn
   assert.equal((await f.poll(pending.deviceCode)).status, 410);
   assert.equal((await f.request('/api/clothtool/session', { token: session.accessToken })).status, 401);
 });
+
+test('ClothTool can disconnect only its own desktop session with its scoped token', async t => {
+  const f = await fixture(t), session = await f.connect();
+  assert.equal((await f.request('/api/clothtool/session', { method: 'DELETE', token: session.accessToken })).status, 200);
+  assert.equal((await f.request('/api/clothtool/session', { token: session.accessToken })).status, 401);
+  assert.equal((await f.request('/api/clothtool/session', { method: 'DELETE', token: session.accessToken })).status, 401);
+});
