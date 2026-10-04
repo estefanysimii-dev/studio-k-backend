@@ -1102,6 +1102,12 @@ app.post('/api/portfolio/products/:id/order',portfolioSameOrigin,async(req,res)=
 const portfolioControl=async(req,res,next)=>{const web=portfolioSession(req);if(!await portfolioCanControl(req,web))return res.status(403).json({error:'A Central de Controle é exclusiva para membros com cargo de Staff no Discord do Studio K.'});req.portfolioWeb=web;next()};
 app.get('/api/portfolio/control/state',portfolioControl,async(req,res)=>{
   let channels=[],roles=[];
+  const cartGroups=store.all("SELECT key,value FROM kv WHERE key LIKE 'portfolio:cart-group:%'").map(row=>{
+    let value={};try{value=JSON.parse(row.value||'{}')}catch{}
+    const id=String(row.key).split(':').pop(),orderIds=Array.isArray(value.orderIds)?value.orderIds:[];
+    const orders=orderIds.map(orderId=>store.one('SELECT id,status,price,product,user_id,approved_by,created FROM orders WHERE id=?',orderId)).filter(Boolean);
+    return{id,userId:value.userId||orders[0]?.user_id||'',created:value.created||orders[0]?.created||'',quote:value.quote||null,orders,total:orders.reduce((sum,order)=>sum+Number(order.price||0),0)};
+  }).sort((a,b)=>String(b.created||'').localeCompare(String(a.created||''))).slice(0,200);
   if(bot.status().connected){
     try{
       const meta=await bot.metadata();
@@ -1129,6 +1135,7 @@ app.get('/api/portfolio/control/state',portfolioControl,async(req,res)=>{
     feedbacks:await controlPortfolioFeedbacks(500),
     commerce:commerceAdminState(store),
     versions:versionsFor(store).slice(0,300),
+    cartGroups,
     discord:{
       oauthConfigured:!!(process.env.DISCORD_CLIENT_ID&&process.env.DISCORD_CLIENT_SECRET),
       redirectUri:portfolioRedirect,
@@ -1171,6 +1178,22 @@ app.delete('/api/portfolio/control/commerce/:kind/:id',portfolioControl,portfoli
   res.json(result);
 });
 app.put('/api/portfolio/control/leaderboard',portfolioControl,portfolioSameOrigin,(req,res)=>res.json(setLeaderboardConfig(store,req.body||{})));
+app.post('/api/portfolio/control/cart-groups/:id/approve',portfolioControl,portfolioSameOrigin,async(req,res)=>{
+  const key=`portfolio:cart-group:${req.params.id}`,group=store.get(key,null);
+  if(!group)throw new AppError('Grupo de carrinho não encontrado.',404);
+  const actor=req.portfolioWeb?.user?.id||'portfolio-control',approved=[];
+  for(const orderId of group.orderIds||[]){
+    const order=store.one('SELECT * FROM orders WHERE id=?',orderId);
+    if(!order)continue;
+    if(order.status==='pending')store.approveOrder(orderId,actor);
+    approved.push(orderId);
+  }
+  store.log('pagamento',`Carrinho ${req.params.id.slice(0,8)} aprovado em grupo (${approved.length} itens).`,actor,{groupId:req.params.id,orderIds:approved});
+  recordVersion(store,{entityType:'cartGroup',entityId:req.params.id,before:{status:'pending'},after:{status:'paid',orderIds:approved},actor,action:'approve'});
+  if(bot.status().connected)await bot.tick().catch(()=>{});
+  addNotification(store,group.userId,{type:'order',title:'Pagamento do carrinho aprovado 💜',text:`${approved.length} item(ns) foram aprovados e seguiram para entrega.`,href:'/account'});
+  res.json({ok:true,approved});
+});
 app.put('/api/portfolio/control/feedback-automation',portfolioControl,portfolioSameOrigin,(req,res)=>{
   const previous=commerceAdminState(store).feedbackAutomation||{enabled:true,delayHours:24};
   const next=setFeedbackAutomationConfig(store,req.body||{});
