@@ -802,6 +802,15 @@ app.get('/api/portfolio/public-state',async(req,res)=>{
   let me={authenticated:false,canControl:false},personal={cart:[],notifications:[],missions:[],recommendations:[],leaderboardOptIn:false,restockSubscriptions:[],ticketCategories:[],activityHistory:[]};
   if(web){
     const profile=portfolioMemberProfile(web.user.id,web.member||{});
+    const badgeKey=`portfolio:member-badges:${web.user.id}`;
+    const badgeNames=(profile.badges||[]).map(badge=>String(badge?.name||badge?.label||badge?.id||badge||'')).filter(Boolean);
+    const knownBadges=store.get(badgeKey,null);
+    if(Array.isArray(knownBadges)){
+      for(const badge of badgeNames.filter(name=>!knownBadges.includes(name))){
+        recordPortfolioEvent('achievement_unlock',{sessionId:`member:${web.user.id}`,userId:web.user.id,itemKind:'page',path:'/account',meta:{title:badge}});
+      }
+    }
+    store.set(badgeKey,badgeNames);
     const missions=(commerce.missions||[]).map(mission=>({...mission,...missionProgress(store,web.user.id,web.member||{},mission)}));
     personal={
       cart:cartFor(store,web.user.id),
@@ -811,13 +820,13 @@ app.get('/api/portfolio/public-state',async(req,res)=>{
       leaderboardOptIn:store.get(`portfolio:leaderboard-optin:${web.user.id}`,false)===true,
       restockSubscriptions:products.filter(product=>(store.get(`portfolio:restock:${product.id}`,[])||[]).includes(web.user.id)).map(product=>product.id),
       ticketCategories:store.settings().tickets?.categories||[],
-      activityHistory:store.all("SELECT event,item_kind,item_id,path,meta,created FROM portfolio_events WHERE user_id=? ORDER BY id DESC LIMIT 60",web.user.id).map(row=>{
+      activityHistory:store.all("SELECT event,item_kind,item_id,path,meta,created FROM portfolio_events WHERE user_id=? AND event IN ('order_created','mission_claim','xp_gain','achievement_unlock') ORDER BY id DESC LIMIT 60",web.user.id).map(row=>{
         let meta={};try{meta=JSON.parse(row.meta||'{}')}catch{}
         const labels={
-          page_view:'Página visitada',product_view:'Produto visualizado',portfolio_view:'Projeto visualizado',
-          favorite_add:'Adicionado aos favoritos',favorite_remove:'Removido dos favoritos',cart_update:'Carrinho atualizado',
-          cart_checkout:'Carrinho finalizado',checkout_start:'Checkout iniciado',checkout_error:'Falha no checkout',
-          search:'Busca realizada',filter:'Filtro aplicado',compare_open:'Comparação aberta'
+          order_created:'Compra realizada',
+          mission_claim:'Missão concluída',
+          xp_gain:'XP recebido',
+          achievement_unlock:'Conquista desbloqueada'
         };
         return{event:row.event,label:labels[row.event]||row.event,itemKind:row.item_kind||'',itemId:row.item_id||'',path:row.path||'',meta,created:row.created};
       })
@@ -960,7 +969,14 @@ app.post('/api/portfolio/me/cart/checkout',portfolioSameOrigin,async(req,res)=>{
 app.get('/api/portfolio/me/notifications',(req,res)=>{const web=portfolioSession(req);if(!web?.user?.id)throw new AppError('Conecte sua conta.',401);res.json({notifications:notificationsFor(store,web.user.id)});});
 app.put('/api/portfolio/me/notifications/:id',portfolioSameOrigin,(req,res)=>{const web=portfolioSession(req);if(!web?.user?.id)throw new AppError('Conecte sua conta.',401);res.json({notifications:markNotification(store,web.user.id,req.params.id,req.body?.read!==false)});});
 app.post('/api/portfolio/me/notifications/read-all',portfolioSameOrigin,(req,res)=>{const web=portfolioSession(req);if(!web?.user?.id)throw new AppError('Conecte sua conta.',401);const items=notificationsFor(store,web.user.id).map(x=>({...x,read:true}));store.set(`portfolio:notifications:${web.user.id}`,items);res.json({notifications:items});});
-app.post('/api/portfolio/me/missions/:id/claim',portfolioSameOrigin,(req,res)=>{const web=portfolioSession(req);if(!web?.user?.id)throw new AppError('Conecte sua conta.',401);const result=claimMission(store,web.user.id,web.member||{},req.params.id);res.json({result,profile:portfolioMemberProfile(web.user.id,web.member||{})});});
+app.post('/api/portfolio/me/missions/:id/claim',portfolioSameOrigin,(req,res)=>{
+  const web=portfolioSession(req);if(!web?.user?.id)throw new AppError('Conecte sua conta.',401);
+  const mission=(store.get('portfolio:missions',[])||[]).find(item=>item.id===req.params.id)||null;
+  const result=claimMission(store,web.user.id,web.member||{},req.params.id);
+  recordPortfolioEvent('mission_claim',{sessionId:`member:${web.user.id}`,userId:web.user.id,itemKind:'page',itemId:req.params.id,path:'/account',meta:{title:mission?.title||'Missão Studio K',xp:Number(result.xp||0)}});
+  if(Number(result.xp||0)>0)recordPortfolioEvent('xp_gain',{sessionId:`member:${web.user.id}`,userId:web.user.id,itemKind:'page',itemId:req.params.id,path:'/account',meta:{source:'mission',title:mission?.title||'Missão Studio K',xp:Number(result.xp||0)}});
+  res.json({result,profile:portfolioMemberProfile(web.user.id,web.member||{})});
+});
 app.put('/api/portfolio/me/leaderboard',portfolioSameOrigin,(req,res)=>{const web=portfolioSession(req);if(!web?.user?.id)throw new AppError('Conecte sua conta.',401);store.set(`portfolio:leaderboard-optin:${web.user.id}`,req.body?.enabled===true);res.json({enabled:req.body?.enabled===true});});
 app.put('/api/portfolio/me/restock/:productId',portfolioSameOrigin,(req,res)=>{
   const web=portfolioSession(req);if(!web?.user?.id)throw new AppError('Conecte sua conta para receber aviso de reposição.',401);
@@ -971,6 +987,17 @@ app.put('/api/portfolio/me/restock/:productId',portfolioSameOrigin,(req,res)=>{
   store.set(key,next);
   res.json({enabled,productId:product.id});
 });
+app.post('/api/portfolio/me/upload-ticket',portfolioSameOrigin,(req,res)=>{
+  const web=portfolioSession(req);if(!web?.user?.id)throw new AppError('Conecte sua conta para enviar mídia.',401);
+  const name=z.string().trim().min(1).max(180).parse(req.body?.name||'arquivo');
+  const ext=(name.toLowerCase().match(/\.([a-z0-9]{2,8})$/)?.[1]||'');
+  if(!['png','jpg','jpeg','webp','gif','mp4'].includes(ext))throw new AppError('Formato não suportado. Use PNG, WebP, JPEG, JPG, GIF ou MP4.',400);
+  const token=randomBytes(32).toString('base64url');
+  store.set(`portfolio-upload:${hash(token)}`,{userId:web.user.id,name,public:true,expires:Date.now()+5*60000});
+  const uploadUrl=new URL(`/api/portfolio/upload/${encodeURIComponent(token)}`,portfolioBackendOrigin);
+  res.json({token,uploadUrl:uploadUrl.toString(),expiresIn:300});
+});
+
 app.post('/api/portfolio/me/gallery',portfolioSameOrigin,(req,res)=>{
   const web=portfolioSession(req);if(!web?.user?.id)throw new AppError('Conecte sua conta para enviar uma imagem.',401);
   const body=z.object({name:z.string().trim().min(1).max(100),caption:z.string().trim().max(600).default(''),imageUrl:z.string().trim().min(1).max(2000),productIds:z.array(z.string().trim().min(1).max(160)).max(20).default([])}).parse(req.body||{});
