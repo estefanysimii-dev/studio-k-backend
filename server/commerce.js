@@ -325,7 +325,8 @@ export function leaderboard(store,limit=20){
     const purchases=Number(store.one("SELECT COUNT(*) AS n FROM orders WHERE user_id=? AND status IN ('paid','delivered')",userId)?.n||0);
     const feedbacks=Number(store.one("SELECT COUNT(*) AS n FROM feedback_requests WHERE user_id=? AND status='submitted'",userId)?.n||0);
     const favorites=(store.get(`portfolio:favorites:${userId}`,{products:[],items:[]})?.products||[]).length;
-    return{userId,score:purchases*250+feedbacks*75+favorites*15+Number(store.get(`portfolio:xp-bonus:${userId}`,0)||0)};
+    const identity=store.get(`portfolio:member:${userId}`,null);
+    return{userId,studioId:identity?.studioId||'Studio K Member',score:purchases*250+feedbacks*75+favorites*15+Number(store.get(`portfolio:xp-bonus:${userId}`,0)||0)};
   }).filter(Boolean).sort((a,b)=>b.score-a.score).slice(0,limit);
 }
 
