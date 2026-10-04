@@ -362,14 +362,28 @@ export function recommendationsFor(store,userId,products,currentProductId='',lim
 }
 
 export function globalSearch(store,products,items,query){
-  const q=String(query||'').trim().toLowerCase();if(q.length<2)return[];
+  const raw=String(query||'').trim(),q=raw.toLowerCase();if(q.length<2)return[];
   const collections=list(store,'portfolio:collections').filter(x=>activeWindow(x));
-  const score=(text)=>{const t=text.toLowerCase();return t===q?100:t.startsWith(q)?75:t.includes(q)?45:0;};
+  const score=(text)=>{const t=String(text||'').toLowerCase();return t===q?100:t.startsWith(q)?75:t.includes(q)?45:0;};
   const results=[];
   for(const p of products){const s=score([p.name,p.category,...(p.tags||[])].join(' '));if(s)results.push({kind:'product',id:p.id,title:p.name,subtitle:p.category,href:`/products/${p.id}`,score:s});}
   for(const p of items){const s=score([p.name,p.category,...(p.tags||[])].join(' '));if(s)results.push({kind:'portfolio',id:p.id,title:p.name,subtitle:p.category,href:`/portfolio/${p.id}`,score:s});}
   for(const x of collections){const s=score([x.name,x.description].join(' '));if(s)results.push({kind:'collection',id:x.id,title:x.name,subtitle:'Coleção',href:`/collections/${x.slug}`,score:s});}
-  return results.sort((a,b)=>b.score-a.score).slice(0,20);
+
+  const categories=[...new Set(products.map(p=>String(p.category||'')).filter(Boolean))];
+  for(const category of categories){const s=score(category);if(s)results.push({kind:'category',id:`category:${category}`,title:category,subtitle:'Categoria da loja',href:`/products?category=${encodeURIComponent(category)}`,score:s+8});}
+  const tags=[...new Set(products.flatMap(p=>p.tags||[]).map(String).filter(Boolean))].slice(0,300);
+  for(const tag of tags){const s=score(tag);if(s)results.push({kind:'tag',id:`tag:${tag}`,title:`#${tag}`,subtitle:'Tag de produto',href:`/products?tag=${encodeURIComponent(tag)}`,score:s+5});}
+
+  const resources=[
+    {id:'account',title:'Minha Conta',subtitle:'Studio K ID, pedidos, tickets e benefícios',href:'/account',terms:'conta perfil studio k id pedidos tickets benefícios'},
+    {id:'cart',title:'Carrinho',subtitle:'Sua compra e combos',href:'/cart',terms:'carrinho sacola compra combo checkout'},
+    {id:'community',title:'Comunidade',subtitle:'Galeria, lookbooks e ranking',href:'/community',terms:'comunidade galeria lookbook ranking'},
+    {id:'collections',title:'Coleções',subtitle:'Coleções Studio K',href:'/collections',terms:'coleções collection coleção'},
+    {id:'compare',title:'Comparador 3D',subtitle:'Compare duas peças lado a lado',href:'/compare',terms:'comparar comparador 3d produto'}
+  ];
+  for(const resource of resources){const s=score([resource.title,resource.subtitle,resource.terms].join(' '));if(s)results.push({kind:'resource',id:resource.id,title:resource.title,subtitle:resource.subtitle,href:resource.href,score:s+3});}
+  return results.sort((a,b)=>b.score-a.score).slice(0,24);
 }
 
 export function leaderboard(store,limit=20){
