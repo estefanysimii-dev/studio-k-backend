@@ -236,7 +236,11 @@ export function quoteCart(store,userId,member,products,couponCode='',memberDisco
   const normalized=String(couponCode||'').trim().toUpperCase();
   if(normalized&&lines.length){
     const cp=store.one('SELECT * FROM coupons WHERE code=?',normalized);
-    if(cp&&cp.active&&(!cp.expires||Date.parse(cp.expires)>Date.now())&&(!cp.max_uses||cp.uses<cp.max_uses)){
+    const roleIds=new Set((member?.roles||[]).map(role=>String(role.id||'')));
+    const used=cp?Number(store.one('SELECT COUNT(*) AS n FROM coupon_uses WHERE code=? AND user_id=?',normalized,userId)?.n||0):0;
+    const roleAllowed=!cp?.role_id||roleIds.has(String(cp.role_id));
+    const perUserAllowed=!cp?.per_user||used<Number(cp.per_user||0);
+    if(cp&&cp.active&&roleAllowed&&perUserAllowed&&(!cp.expires||Date.parse(cp.expires)>Date.now())&&(!cp.max_uses||cp.uses<cp.max_uses)){
       const baseEligible=lines.filter(l=>!l.roleBenefit||l.roleBenefit.stackWithCoupon===true);
       const eligible=cp.product_id?baseEligible.filter(l=>l.productId===cp.product_id):baseEligible;
       const eligibleValue=eligible.reduce((s,l)=>s+l.subtotal,0);
