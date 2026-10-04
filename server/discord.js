@@ -1552,7 +1552,11 @@ ${normalized.previewAfter}
     if(m.guildId!==env.DISCORD_GUILD_ID||m.author.bot||m.webhookId||configuredLogChannels(store.settings().logs).includes(m.channelId))return;
     const day=new Date().toISOString().slice(0,10);
     store.run('INSERT INTO message_activity(day,user_id,count) VALUES(?,?,1) ON CONFLICT(day,user_id) DO UPDATE SET count=count+1',day,m.author.id);
+    const ticket=store.one("SELECT id,user_id,category FROM tickets WHERE channel_id=? AND status='open'",m.channelId);
     store.run("UPDATE tickets SET updated=? WHERE channel_id=? AND status='open'",store.now(),m.channelId);
+    if(ticket&&m.author.id!==ticket.user_id){
+      addNotification(store,ticket.user_id,{type:'ticket',title:'Nova resposta no seu ticket',text:`${ticket.category}: ${String(m.content||'A equipe respondeu ao seu atendimento.').slice(0,180)}`,href:'/account'});
+    }
   });
   const wait=ms=>new Promise(resolve=>setTimeout(resolve,ms));
   async function recentAudit(guild,type,{targetId='',channelId='',maxAge=5000}={}){
