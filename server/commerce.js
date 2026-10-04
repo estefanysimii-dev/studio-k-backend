@@ -186,6 +186,19 @@ function discountForBundle(subtotal,bundle,count){
 function productCollections(store,productId){
   return list(store,'portfolio:collections').filter(c=>(c.productIds||[]).includes(productId)).map(c=>c.id);
 }
+export function productAvailability(store,product){
+  const mode=String(product?.stockMode||'unlimited');
+  const botId=String(product?.botProductId||'');
+  const reservedOrSold=botId?Number(store.one("SELECT COUNT(*) AS n FROM orders WHERE product_id=? AND status IN ('pending','paid','delivered')",botId)?.n||0):0;
+  let remaining=null;
+  if(mode==='digital'&&botId){
+    remaining=Number(store.one('SELECT COUNT(*) AS n FROM stock WHERE product_id=? AND order_id IS NULL',botId)?.n||0);
+  }else if(['limited','slots','numbered'].includes(mode)){
+    remaining=Math.max(0,Number(product?.stockLimit||0)-reservedOrSold);
+  }
+  return{soldCount:reservedOrSold,remaining,available:remaining===null||remaining>0};
+}
+
 export function roleBenefitFor(store,member,productId,collections=[]){
   const roleIds=new Set((member?.roles||[]).map(r=>r.id));
   const candidates=list(store,'portfolio:role-benefits').filter(b=>b.active!==false&&roleIds.has(b.roleId)).filter(b=>{
