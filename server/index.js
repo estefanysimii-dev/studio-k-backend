@@ -967,6 +967,16 @@ app.post('/api/portfolio/me/gallery',portfolioSameOrigin,(req,res)=>{
   addNotification(store,web.user.id,{type:'gallery',title:'Imagem enviada para aprovação ✨',text:'A equipe Studio K vai revisar sua publicação antes dela aparecer na comunidade.',href:'/community'});
   res.json(item);
 });
+app.post('/api/portfolio/me/tickets',portfolioSameOrigin,async(req,res)=>{
+  const web=portfolioSession(req);if(!web?.user?.id)throw new AppError('Conecte sua conta para abrir um atendimento.',401);
+  if(!bot.status().connected)throw new AppError('O bot está offline. Tente novamente quando o atendimento estiver disponível.',503);
+  const categories=store.settings().tickets?.categories||['Suporte'];
+  const category=z.string().trim().min(1).max(80).parse(req.body?.category||categories[0]||'Suporte');
+  if(!categories.includes(category))throw new AppError('Categoria de atendimento inválida.',400);
+  const ticket=await bot.openTicket(web.user.id,category);
+  addNotification(store,web.user.id,{type:'ticket',title:'Atendimento aberto',text:`${category} já está disponível na sua conta e no Discord.`,href:'/account'});
+  res.json({ok:true,ticket});
+});
 app.get('/api/portfolio/me/tickets',async(req,res)=>{
   const web=portfolioSession(req);if(!web?.user?.id)throw new AppError('Conecte sua conta para ver seus atendimentos.',401);
   const tickets=store.all('SELECT id,channel_id,category,status,state,priority,created,updated,claimed_by,closed_reason,transcript FROM tickets WHERE user_id=? ORDER BY created DESC LIMIT 100',web.user.id);
