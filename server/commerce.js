@@ -19,6 +19,7 @@ export const bundleSchema=z.object({
     discountType:z.enum(['percent','fixed']).default('percent'),
     discountValue:z.number().int().min(0).max(100000000)
   })).max(12).default([]),
+  giftProductId:z.string().trim().max(160).default(''),
   active:z.boolean().default(true)
 });
 
@@ -227,9 +228,12 @@ export function roleBenefitFor(store,member,productId,collections=[]){
 
 export function quoteCart(store,userId,member,products,couponCode='',memberDiscountPercent=0){
   const cart=cartFor(store,userId),byId=new Map(products.map(p=>[p.id,p])),lines=[];
+  const now=Date.now(),activeDrops=(store.get('portfolio:drops',[])||[]).filter(drop=>drop.published!==false&&Date.parse(drop.startsAt)<=now&&Date.parse(drop.endsAt)>now);
   for(const row of cart){
     const p=byId.get(row.productId);if(!p||p.published===false)continue;
-    const qty=Math.max(1,row.quantity),base=Math.max(0,Number(p.priceCents||0)),collections=productCollections(store,p.id),roleBenefit=roleBenefitFor(store,member,p.id,collections);
+    const qty=Math.max(1,row.quantity),base=Math.max(0,Number(p.priceCents||0)),drop=activeDrops.find(item=>item.productId===p.id);
+    const dropPercent=Math.max(0,Math.min(100,Number(drop?.discountPercent||0))),dropDiscount=Math.floor(base*dropPercent/100),afterDrop=Math.max(0,base-dropDiscount);
+    const collections=productCollections(store,p.id),roleBenefit=roleBenefitFor(store,member,p.id,collections);
     const globalPercent=Math.max(0,Math.min(100,Number(memberDiscountPercent||0)));
     const rolePercent=Math.max(0,Math.min(100,Number(roleBenefit?.discountPercent||0)));
     const effectivePercent=Math.max(globalPercent,rolePercent);
@@ -238,15 +242,24 @@ export function quoteCart(store,userId,member,products,couponCode='',memberDisco
       : globalPercent>0
         ? {id:'studio-k-id',label:'Studio K ID',discountPercent:globalPercent,stackWithCoupon:true}
         : null;
-    const roleDiscount=Math.floor(base*effectivePercent/100);
-    const unit=Math.max(0,base-roleDiscount);
-    lines.push({productId:p.id,name:p.name,quantity:qty,basePrice:base,unitPrice:unit,roleDiscount,roleBenefit:effectiveBenefit?{id:effectiveBenefit.id,label:effectiveBenefit.label,discountPercent:effectiveBenefit.discountPercent,stackWithCoupon:effectiveBenefit.stackWithCoupon===true}:null,subtotal:unit*qty});
+    const roleDiscount=Math.floor(afterDrop*effectivePercent/100);
+    const unit=Math.max(0,afterDrop-roleDiscount);
+    lines.push({productId:p.id,name:p.name,quantity:qty,basePrice:base,unitPrice:unit,dropDiscount,dropPercent,roleDiscount,roleBenefit:effectiveBenefit?{id:effectiveBenefit.id,label:effectiveBenefit.label,discountPercent:effectiveBenefit.discountPercent,stackWithCoupon:effectiveBenefit.stackWithCoupon===true}:null,subtotal:unit*qty,gift:false});
   }
   let subtotal=lines.reduce((s,l)=>s+l.subtotal,0),bundleDiscount=0,appliedBundles=[];
   for(const bundle of list(store,'portfolio:bundles').filter(x=>x.active!==false)){
-    const matched=lines.filter(line=>(bundle.productIds||[]).includes(line.productId));
+    const matched=lines.filter(line=>!line.gift&&(bundle.productIds||[]).includes(line.productId));
     const count=matched.reduce((s,line)=>s+line.quantity,0),base=matched.reduce((s,line)=>s+line.subtotal,0),discount=discountForBundle(base,bundle,count);
-    if(discount>0){bundleDiscount+=discount;appliedBundles.push({id:bundle.id,name:bundle.name,discount});}
+    const qualified=count>=Math.max(2,Number(bundle.minItems||2));
+    let giftProductId='',giftName='';
+    if(qualified&&bundle.giftProductId){
+      const gift=byId.get(bundle.giftProductId);
+      if(gift&&gift.published!==false&&!lines.some(line=>line.gift&&line.productId===gift.id)){
+        lines.push({productId:gift.id,name:gift.name,quantity:1,basePrice:Number(gift.priceCents||0),unitPrice:0,dropDiscount:0,dropPercent:0,roleDiscount:Number(gift.priceCents||0),roleBenefit:{id:'bundle-gift',label:bundle.name,discountPercent:100,stackWithCoupon:false},subtotal:0,gift:true});
+        giftProductId=gift.id;giftName=gift.name;
+      }
+    }
+    if(discount>0||giftProductId){bundleDiscount+=discount;appliedBundles.push({id:bundle.id,name:bundle.name,discount,giftProductId,giftName});}
   }
   bundleDiscount=Math.min(subtotal,bundleDiscount);
   let couponDiscount=0,coupon=null;
