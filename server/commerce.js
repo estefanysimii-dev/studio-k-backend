@@ -14,6 +14,11 @@ export const bundleSchema=z.object({
   minItems:z.number().int().min(2).max(30).default(2),
   discountType:z.enum(['percent','fixed']).default('percent'),
   discountValue:z.number().int().min(0).max(100000000).default(10),
+  tiers:z.array(z.object({
+    minItems:z.number().int().min(2).max(100),
+    discountType:z.enum(['percent','fixed']).default('percent'),
+    discountValue:z.number().int().min(0).max(100000000)
+  })).max(12).default([]),
   active:z.boolean().default(true)
 });
 
@@ -189,9 +194,11 @@ export function markNotification(store,userId,id,read=true){
 }
 
 function discountForBundle(subtotal,bundle,count){
-  if(count<Math.max(2,Number(bundle.minItems||2)))return 0;
-  if(bundle.discountType==='fixed')return Math.min(subtotal,Math.max(0,Number(bundle.discountValue||0)));
-  return Math.floor(subtotal*Math.min(100,Math.max(0,Number(bundle.discountValue||0)))/100);
+  const tiers=Array.isArray(bundle.tiers)?bundle.tiers.filter(tier=>count>=Number(tier.minItems||0)).sort((a,b)=>Number(b.minItems||0)-Number(a.minItems||0)):[];
+  const rule=tiers[0]||bundle;
+  if(count<Math.max(2,Number(rule.minItems||bundle.minItems||2)))return 0;
+  if(rule.discountType==='fixed')return Math.min(subtotal,Math.max(0,Number(rule.discountValue||0)));
+  return Math.floor(subtotal*Math.min(100,Math.max(0,Number(rule.discountValue||0)))/100);
 }
 function productCollections(store,productId){
   return list(store,'portfolio:collections').filter(c=>(c.productIds||[]).includes(productId)).map(c=>c.id);
