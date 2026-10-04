@@ -257,7 +257,7 @@ export function quoteCart(store,userId,member,products,couponCode='',memberDisco
     let giftProductId='',giftName='';
     if(qualified&&bundle.giftProductId){
       const gift=byId.get(bundle.giftProductId);
-      if(gift&&gift.published!==false&&!lines.some(line=>line.gift&&line.productId===gift.id)){
+      if(gift&&gift.published!==false&&productAvailability(store,gift).available!==false&&!lines.some(line=>line.gift&&line.productId===gift.id)){
         lines.push({productId:gift.id,name:gift.name,quantity:1,basePrice:Number(gift.priceCents||0),unitPrice:0,dropDiscount:0,dropPercent:0,roleDiscount:Number(gift.priceCents||0),roleBenefit:{id:'bundle-gift',label:bundle.name,discountPercent:100,stackWithCoupon:false},subtotal:0,gift:true});
         giftProductId=gift.id;giftName=gift.name;
       }
