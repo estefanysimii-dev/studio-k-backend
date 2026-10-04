@@ -447,18 +447,27 @@ const maybeAutoAnnouncePortfolioProduct=async(portfolioProduct,reason='publish')
 
 let portfolioDropProcessing=false;
 const processPortfolioDrops=async()=>{
-  if(portfolioDropProcessing||!bot.status().connected)return;
+  if(portfolioDropProcessing)return;
   portfolioDropProcessing=true;
   try{
     const now=Date.now(),drops=portfolioDrops();
     let changed=false;
     for(let index=0;index<drops.length;index++){
       const drop=drops[index];
-      if(portfolioDropStatus(drop,now)!=='active'||!drop.announceDiscord||!drop.channelId||drop.announcedAt)continue;
+      if(portfolioDropStatus(drop,now)!=='active')continue;
+      const product=portfolioProducts().find(item=>item.id===drop.productId);
+      const notifyKey=`portfolio:drop-notified:${drop.id}`;
+      if(!store.get(notifyKey)){
+        for(const row of store.all("SELECT key FROM kv WHERE key LIKE 'portfolio:member:%'")){
+          const userId=String(row.key).split(':').pop();
+          addNotification(store,userId,{type:'drop',title:`Drop no ar · ${drop.title} 🔥`,text:drop.discountPercent?`${drop.discountPercent}% OFF · ${product?.name||'Studio K'}`:(product?.name||'Novo drop Studio K'),href:product?`/products/${product.id}`:'/products'});
+        }
+        store.set(notifyKey,{at:store.now()});
+      }
+      if(!bot.status().connected||!drop.announceDiscord||!drop.channelId||drop.announcedAt)continue;
       const lastAttempt=Date.parse(drop.announceAttemptAt||'');
       if(Number.isFinite(lastAttempt)&&now-lastAttempt<5*60000)continue;
       drop.announceAttemptAt=store.now();changed=true;
-      const product=portfolioProducts().find(item=>item.id===drop.productId);
       if(!product){
         store.log('aviso',`Drop ${drop.title}: produto não encontrado para anúncio.`,'portfolio-scheduler',{dropId:drop.id});
         continue;
