@@ -1212,6 +1212,18 @@ app.post('/api/portfolio/control/products/:id/sync-bot',portfolioControl,portfol
   store.log('portfólio',`Produto sincronizado com o bot: ${linked.name}`,'portfolio-control');
   res.json({ok:true,product:linked,botProductId:linked.botProductId});
 });
+app.post('/api/portfolio/control/products/:id/stock',portfolioControl,portfolioSameOrigin,(req,res)=>{
+  let product=portfolioProducts().find(item=>item.id===req.params.id);
+  if(!product)throw new AppError('Produto não encontrado.',404);
+  if(product.stockMode!=='digital')throw new AppError('Este produto não usa estoque digital.',409);
+  if(!product.botProductId)product=syncPortfolioProductToBot(product);
+  const items=z.array(z.string().trim().min(1).max(1200)).min(1).max(1000).parse(req.body?.items||[]);
+  store.transaction(()=>{for(const item of items)store.run('INSERT INTO stock(id,product_id,secret) VALUES(?,?,?)',randomUUID(),product.botProductId,store.encrypt(item));});
+  const availability=productAvailability(store,product);
+  recordVersion(store,{entityType:'digitalStock',entityId:product.id,before:null,after:{added:items.length,remaining:availability.remaining},actor:req.portfolioWeb?.user?.id||'portfolio-control',action:'stock-add'});
+  store.log('estoque',`${items.length} unidade(s) digitais adicionadas a ${product.name}.`,req.portfolioWeb?.user?.id||'portfolio-control');
+  res.json({ok:true,added:items.length,...availability});
+});
 app.post('/api/portfolio/control/products/:id/announce',portfolioControl,portfolioSameOrigin,async(req,res)=>{
   if(!bot.status().connected)throw new AppError('O bot precisa estar conectado para publicar no Discord.',503);
   const channelId=id.parse(req.body?.channelId);
