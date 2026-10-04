@@ -404,7 +404,7 @@ const syncPortfolioProductToBot=(portfolioProduct)=>{
     name:portfolioProduct.name,
     description:portfolioProduct.description||'',
     priceCents:Number(portfolioProduct.priceCents||0),
-    type:'service',
+    type:portfolioProduct.stockMode==='digital'?'digital':'service',
     roleId:portfolioProduct.postPurchaseRoleId||'',
     active:portfolioProduct.published!==false,
     image:image&&image.startsWith('https://')?image:'',
