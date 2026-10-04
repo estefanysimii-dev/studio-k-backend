@@ -525,7 +525,8 @@ const portfolioAnalyticsSummary=(days=30)=>{
   const uniqueVisitors=Number(store.one("SELECT COUNT(DISTINCT session_id) AS n FROM portfolio_events WHERE event='page_view' AND created>=?",since)?.n||0);
   const returningVisitors=Number(store.one("SELECT COUNT(*) AS n FROM (SELECT session_id FROM portfolio_events WHERE event='page_view' AND created>=? GROUP BY session_id HAVING COUNT(DISTINCT substr(created,1,10))>1)",since)?.n||0);
   const paid=store.one("SELECT COUNT(*) AS n,COALESCE(SUM(price),0) AS revenue FROM orders WHERE status IN ('paid','delivered') AND created>=?",since)||{};
-  const paidOrders=Number(paid.n||0),revenue=Number(paid.revenue||0);
+  const paidOrders=Number(paid.n||0),revenue=Number(paid.revenue||0),avgTicket=paidOrders?Math.round(revenue/paidOrders):0;
+  const topCoupons=store.all("SELECT coupon_code AS label,COUNT(*) AS value FROM orders WHERE status IN ('paid','delivered') AND created>=? AND coupon_code IS NOT NULL AND coupon_code<>'' GROUP BY coupon_code ORDER BY value DESC LIMIT 10",since).map(row=>({label:String(row.label||''),value:Number(row.value||0)}));
   const topRows=store.all("SELECT item_id, SUM(CASE WHEN event='product_view' THEN 1 ELSE 0 END) AS views, SUM(CASE WHEN event='favorite_add' THEN 1 ELSE 0 END) AS favorites, SUM(CASE WHEN event='checkout_start' THEN 1 ELSE 0 END) AS checkouts, SUM(CASE WHEN event='order_created' THEN 1 ELSE 0 END) AS orders FROM portfolio_events WHERE item_kind='product' AND item_id IS NOT NULL AND created>=? GROUP BY item_id ORDER BY views DESC,favorites DESC LIMIT 20",since);
   const rawEvents=store.all("SELECT session_id,event,item_kind,item_id,path,meta,created FROM portfolio_events WHERE created>=? ORDER BY id DESC LIMIT 10000",since);
   const productDwell=new Map(),sourceCounts=new Map(),clickCounts=new Map(),searchCounts=new Map(),exitCounts=new Map(),clickPoints=[];
@@ -564,7 +565,7 @@ const portfolioAnalyticsSummary=(days=30)=>{
   const sortMap=(map,limit=8)=>[...map.entries()].sort((a,b)=>b[1]-a[1]).slice(0,limit).map(([label,value])=>({label,value}));
   const daily=store.all("SELECT substr(created,1,10) AS day, SUM(CASE WHEN event='page_view' THEN 1 ELSE 0 END) AS pageViews, SUM(CASE WHEN event='product_view' THEN 1 ELSE 0 END) AS productViews, SUM(CASE WHEN event='checkout_start' THEN 1 ELSE 0 END) AS checkouts, SUM(CASE WHEN event='order_created' THEN 1 ELSE 0 END) AS orders FROM portfolio_events WHERE created>=? GROUP BY substr(created,1,10) ORDER BY day",since).map(row=>({day:row.day,pageViews:Number(row.pageViews||0),productViews:Number(row.productViews||0),checkouts:Number(row.checkouts||0),orders:Number(row.orders||0)}));
   return{
-    days:windowDays,pageViews,uniqueVisitors,returningVisitors,productViews,portfolioViews,favoriteAdds,checkoutStarts,ordersCreated,paidOrders,revenue,clicks,searches,filters,checkoutErrors,cartUpdates,cartCheckouts,cartSessions,cartCheckoutSessions,
+    days:windowDays,pageViews,uniqueVisitors,returningVisitors,productViews,portfolioViews,favoriteAdds,checkoutStarts,ordersCreated,paidOrders,revenue,avgTicket,topCoupons,clicks,searches,filters,checkoutErrors,cartUpdates,cartCheckouts,cartSessions,cartCheckoutSessions,
     cartAbandonment:cartSessions?Math.max(0,Math.min(100,Math.round((cartSessions-cartCheckoutSessions)/cartSessions*100))):0,
     avgPageSeconds:pageDurationCount?Math.round(pageDurationTotal/pageDurationCount):0,
     avgScrollDepth:scrollCount?Math.round(scrollTotal/scrollCount):0,
