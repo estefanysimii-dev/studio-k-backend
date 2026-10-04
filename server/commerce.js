@@ -208,14 +208,22 @@ export function roleBenefitFor(store,member,productId,collections=[]){
   return candidates[0]||null;
 }
 
-export function quoteCart(store,userId,member,products,couponCode=''){
+export function quoteCart(store,userId,member,products,couponCode='',memberDiscountPercent=0){
   const cart=cartFor(store,userId),byId=new Map(products.map(p=>[p.id,p])),lines=[];
   for(const row of cart){
     const p=byId.get(row.productId);if(!p||p.published===false)continue;
-    const qty=Math.max(1,row.quantity),base=Math.max(0,Number(p.priceCents||0)),collections=productCollections(store,p.id),benefit=roleBenefitFor(store,member,p.id,collections);
-    const roleDiscount=Math.floor(base*Math.min(100,Number(benefit?.discountPercent||0))/100);
+    const qty=Math.max(1,row.quantity),base=Math.max(0,Number(p.priceCents||0)),collections=productCollections(store,p.id),roleBenefit=roleBenefitFor(store,member,p.id,collections);
+    const globalPercent=Math.max(0,Math.min(100,Number(memberDiscountPercent||0)));
+    const rolePercent=Math.max(0,Math.min(100,Number(roleBenefit?.discountPercent||0)));
+    const effectivePercent=Math.max(globalPercent,rolePercent);
+    const effectiveBenefit=rolePercent>=globalPercent&&roleBenefit
+      ? roleBenefit
+      : globalPercent>0
+        ? {id:'studio-k-id',label:'Studio K ID',discountPercent:globalPercent,stackWithCoupon:true}
+        : null;
+    const roleDiscount=Math.floor(base*effectivePercent/100);
     const unit=Math.max(0,base-roleDiscount);
-    lines.push({productId:p.id,name:p.name,quantity:qty,basePrice:base,unitPrice:unit,roleDiscount,roleBenefit:benefit?{id:benefit.id,label:benefit.label,discountPercent:benefit.discountPercent,stackWithCoupon:benefit.stackWithCoupon===true}:null,subtotal:unit*qty});
+    lines.push({productId:p.id,name:p.name,quantity:qty,basePrice:base,unitPrice:unit,roleDiscount,roleBenefit:effectiveBenefit?{id:effectiveBenefit.id,label:effectiveBenefit.label,discountPercent:effectiveBenefit.discountPercent,stackWithCoupon:effectiveBenefit.stackWithCoupon===true}:null,subtotal:unit*qty});
   }
   let subtotal=lines.reduce((s,l)=>s+l.subtotal,0),bundleDiscount=0,appliedBundles=[];
   for(const bundle of list(store,'portfolio:bundles').filter(x=>x.active!==false)){
