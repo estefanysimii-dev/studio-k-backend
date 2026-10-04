@@ -187,11 +187,13 @@ export function studioIdProfile(store,userId,member={},options={}){
   try{supporterMatcher=config.supporterRolePattern?new RegExp(config.supporterRolePattern,'i'):null;}catch{}
   const isSupporter=!!supporterMatcher&&roleNames.some(name=>supporterMatcher.test(name));
   const isNeonLover=/neon|emissiv/.test(purchaseText);
+  const bonusXp=Math.max(0,Number(store.get(`portfolio:xp-bonus:${userId}`,0)||0));
   const xp=Number(config.xp.base||0)
     +(member?.inGuild?Number(config.xp.discordMember||0):0)
     +(purchases.length*Number(config.xp.purchase||0))
     +(feedbackCount*Number(config.xp.feedback||0))
-    +(favoriteCount*Number(config.xp.favorite||0));
+    +(favoriteCount*Number(config.xp.favorite||0))
+    +bonusXp;
   const step=Math.max(50,Number(config.levelStep||300));
   const level=Math.max(1,Math.floor(xp/step)+1);
   const rank=[...config.ranks].filter(item=>level>=item.minLevel).sort((a,b)=>b.minLevel-a.minLevel)[0]||config.ranks[0];
@@ -283,7 +285,8 @@ export function studioIdProfile(store,userId,member={},options={}){
       feedbacks:feedbackCount,
       favorites:favoriteCount,
       tickets:Number(ticketStats.total||0),
-      openTickets:Number(ticketStats.open||0)
+      openTickets:Number(ticketStats.open||0),
+      bonusXp
     },
     purchasedProductIds:[...new Set(purchases.map(row=>String(row.product_id||'')).filter(Boolean))]
   };
