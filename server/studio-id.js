@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { addNotification } from './commerce.js';
 
 export const studioRaritySchema=z.enum(['common','rare','epic','legendary']);
 
@@ -247,9 +248,18 @@ export function studioIdProfile(store,userId,member={},options={}){
     if(achievement.unlocked&&!achievementHistory[achievement.id]){
       achievementHistory[achievement.id]=store.now();
       achievementsChanged=true;
+      addNotification(store,userId,{type:'achievement',title:'Conquista desbloqueada 🏆',text:achievement.label,href:'/account'});
     }
   }
   if(achievementsChanged)store.set(`portfolio:achievements:${userId}`,achievementHistory);
+
+  const progressKey=`portfolio:progress-state:${userId}`;
+  const previousProgress=store.get(progressKey,null);
+  if(previousProgress){
+    if(level>Number(previousProgress.level||0))addNotification(store,userId,{type:'level',title:`Level ${level} desbloqueado ✨`,text:`Seu Studio K ID evoluiu para o level ${level}.`,href:'/account'});
+    if(previousProgress.rankId&&previousProgress.rankId!==rank.id)addNotification(store,userId,{type:'rank',title:`Novo rank: ${rank.label}`,text:'Seu rank do Studio K ID acabou de evoluir.',href:'/account'});
+  }
+  store.set(progressKey,{level,rankId:rank.id,at:store.now()});
   const achievements=config.features.achievements?achievementCatalog.map(({unlocked,...achievement})=>({
     ...achievement,
     unlocked,
