@@ -321,7 +321,8 @@ export function claimMission(store,userId,member,missionId){
 
 export function recommendationsFor(store,userId,products,currentProductId='',limit=6){
   const fav=store.get(`portfolio:favorites:${userId}`,{products:[]})||{},favorites=new Set(fav.products||[]);
-  const purchased=new Set(store.all("SELECT product_id FROM orders WHERE user_id=? AND status IN ('paid','delivered')",userId).map(r=>r.product_id));
+  const purchasedRaw=new Set(store.all("SELECT product_id FROM orders WHERE user_id=? AND status IN ('paid','delivered')",userId).map(r=>String(r.product_id||'')));
+  const purchased=new Set(products.filter(product=>purchasedRaw.has(String(product.id))||purchasedRaw.has(String(product.botProductId||''))).map(product=>product.id));
   const current=products.find(p=>p.id===currentProductId);
   const since24=new Date(Date.now()-24*3600000).toISOString();
   const views=store.all("SELECT item_id,COUNT(*) AS n FROM portfolio_events WHERE event='product_view' AND item_kind='product' AND created>=? GROUP BY item_id",since24);
@@ -347,7 +348,8 @@ export function recommendationsFor(store,userId,products,currentProductId='',lim
     if(current){
       if(p.category&&p.category===current.category)score+=35;
       const overlap=(p.tags||[]).filter(t=>(current.tags||[]).includes(t)).length;score+=overlap*18;
-      const together=store.one("SELECT COUNT(*) AS n FROM orders a JOIN orders b ON a.user_id=b.user_id WHERE a.product_id=? AND b.product_id=? AND a.status IN ('paid','delivered') AND b.status IN ('paid','delivered')",current.id,p.id)?.n||0;
+      const currentOrderId=current.botProductId||current.id,pOrderId=p.botProductId||p.id;
+      const together=store.one("SELECT COUNT(*) AS n FROM orders a JOIN orders b ON a.user_id=b.user_id WHERE a.product_id=? AND b.product_id=? AND a.status IN ('paid','delivered') AND b.status IN ('paid','delivered')",currentOrderId,pOrderId)?.n||0;
       score+=Math.min(50,Number(together)*15);
     }
     const reason=current&&p.category===current.category
