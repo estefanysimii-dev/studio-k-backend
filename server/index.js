@@ -937,6 +937,13 @@ app.get('/api/portfolio/me/tickets',(req,res)=>{
   const tickets=store.all('SELECT id,channel_id,category,status,state,priority,created,updated,claimed_by,closed_reason,transcript FROM tickets WHERE user_id=? ORDER BY created DESC LIMIT 100',web.user.id);
   res.json({tickets:tickets.map(t=>({...t,notes:store.all("SELECT actor,note,private,created FROM ticket_notes WHERE ticket_id=? AND private=0 ORDER BY created",t.id),transcriptAvailable:!!t.transcript}))});
 });
+app.get('/api/portfolio/me/tickets/:id/transcript',(req,res)=>{
+  const web=portfolioSession(req);if(!web?.user?.id)throw new AppError('Conecte sua conta para ver o transcript.',401);
+  const ticket=store.one('SELECT id,transcript,status FROM tickets WHERE id=? AND user_id=?',req.params.id,web.user.id);
+  if(!ticket)throw new AppError('Atendimento não encontrado.',404);
+  if(!ticket.transcript)throw new AppError('O transcript estará disponível após o encerramento.',409);
+  res.json({id:ticket.id,transcript:ticket.transcript});
+});
 app.get('/api/portfolio/me/tickets/:id/messages',async(req,res)=>{
   const web=portfolioSession(req);if(!web?.user?.id)throw new AppError('Conecte sua conta para ver o atendimento.',401);
   if(!bot.status().connected)throw new AppError('O bot está offline. O histórico salvo continua disponível, mas as mensagens ao vivo precisam do bot conectado.',503);
