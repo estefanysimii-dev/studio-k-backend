@@ -1375,7 +1375,25 @@ const server=app.listen(port,host,()=>console.log(`Studio K ${demo?'[DEMONSTRAÇ
 void bot.start();
 const portfolioDropTimer=setInterval(()=>void processPortfolioDrops(),30000);
 portfolioDropTimer.unref();
-const portfolioScheduleTimer=setInterval(()=>{try{runSchedules(store,{products:storedPortfolioProducts,setProducts:value=>store.set('portfolio:products',value)})}catch(error){store.log('erro',`Agendador Studio K: ${String(error.message||error).slice(0,400)}`) }},30000);
+const processPortfolioSchedules=async()=>{
+  try{
+    runSchedules(store,{products:storedPortfolioProducts,setProducts:value=>store.set('portfolio:products',value)});
+    for(const job of (commerceAdminState(store).schedules||[]).filter(item=>item.status==='done'&&item.kind==='product_publish')){
+      const key=`portfolio:schedule-published:${job.id}`;
+      if(store.get(key))continue;
+      const product=portfolioProducts().find(item=>item.id===job.targetId);
+      if(product?.published){
+        await maybeAutoAnnouncePortfolioProduct(product,'publicação agendada');
+        for(const row of store.all("SELECT key FROM kv WHERE key LIKE 'portfolio:member:%'")){
+          const userId=String(row.key).split(':').pop();
+          addNotification(store,userId,{type:'product',title:'Publicação agendada no ar ✨',text:product.name,href:`/products/${product.id}`});
+        }
+      }
+      store.set(key,{at:store.now()});
+    }
+  }catch(error){store.log('erro',`Agendador Studio K: ${String(error.message||error).slice(0,400)}`);}
+};
+const portfolioScheduleTimer=setInterval(()=>void processPortfolioSchedules(),30000);
 portfolioScheduleTimer.unref();
-setTimeout(()=>{void processPortfolioDrops();try{runSchedules(store,{products:storedPortfolioProducts,setProducts:value=>store.set('portfolio:products',value)})}catch{}},5000).unref();
+setTimeout(()=>{void processPortfolioDrops();void processPortfolioSchedules();},5000).unref();
 for(const signal of ['SIGTERM','SIGINT'])process.on(signal,async()=>{clearInterval(portfolioDropTimer);clearInterval(portfolioScheduleTimer);await bot.stop();server.close(()=>{store.db.close();process.exit(0);});});
