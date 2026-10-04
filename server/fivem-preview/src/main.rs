@@ -120,7 +120,7 @@ fn build_preview(ydd: &[u8], ytd: &[u8]) -> Result<(Vec<u8>, Value)> {
     let mut textures = Vec::<Value>::new();
     let mut materials = Vec::<Value>::new();
     let mut primitives = Vec::<Value>::new();
-    let mut image_cache = HashMap::<String, usize>::new();
+    let mut image_cache = HashMap::<String, (usize, bool)>::new();
 
     let mut mesh_count = 0usize;
     let mut vertex_count = 0usize;
@@ -183,8 +183,8 @@ fn build_preview(ydd: &[u8], ytd: &[u8]) -> Result<(Vec<u8>, Value)> {
 
             let material_index = if let Some(source_texture) = source_texture {
                 let cache_key = format!("{}#{:08x}", texture_key(&source_texture.name), source_texture.name_hash);
-                let (texture_index, has_alpha) = if let Some(&cached) = image_cache.get(&cache_key) {
-                    (cached, false)
+                let (texture_index, has_alpha) = if let Some(&(cached, cached_alpha)) = image_cache.get(&cache_key) {
+                    (cached, cached_alpha)
                 } else {
                     let rgba = rage_formats::decompress_texture(source_texture)
                         .with_context(|| format!("Falha ao decodificar a textura '{}'.", source_texture.name))?;
@@ -207,7 +207,7 @@ fn build_preview(ydd: &[u8], ytd: &[u8]) -> Result<(Vec<u8>, Value)> {
                         "sampler": 0
                     }));
                     let idx = textures.len() - 1;
-                    image_cache.insert(cache_key, idx);
+                    image_cache.insert(cache_key, (idx, has_alpha));
                     (idx, has_alpha)
                 };
 
