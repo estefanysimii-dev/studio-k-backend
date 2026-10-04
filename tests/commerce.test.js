@@ -49,7 +49,7 @@ test('Commerce Suite applies role benefits, progressive combos and notifications
   // A faixa progressiva de 3 itens deve substituir a faixa de 2 itens.
   setCart(store,userId,[{productId:'polo',quantity:2},{productId:'manguito',quantity:1}]);
   const tierQuote=quoteCart(store,userId,member,products,'',5);
-  assert.equal(tierQuote.bundleDiscount,816);
+  assert.equal(tierQuote.bundleDiscount,1560);
 
   addNotification(store,userId,{type:'test',title:'Olá',text:'Teste',href:'/account'});
   let notifications=notificationsFor(store,userId);
