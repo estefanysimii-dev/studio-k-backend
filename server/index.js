@@ -900,7 +900,12 @@ app.post('/api/portfolio/me/cart/checkout',portfolioSameOrigin,async(req,res)=>{
       const availability=productAvailability(store,product);
       if(availability.available===false)throw new AppError(`${line.name} esgotou ou ficou sem vagas antes da finalização.`,409);
       product=syncPortfolioProductToBot(product);
-      const order=store.createOrder(product.botProductId,web.user.id,'');created.push({order,product,line});
+      const order=store.createOrder(product.botProductId,web.user.id,'');
+      if(product.stockMode==='numbered'){
+        const editionNumber=Math.max(1,productAvailability(store,product).soldCount);
+        store.set(`portfolio:numbered-order:${order.id}`,{number:editionNumber,total:Number(product.stockLimit||0),label:product.limitedLabel||'Edição limitada'});
+      }
+      created.push({order,product,line});
     }
     const roleSubtotal=created.reduce((sum,x)=>sum+Number(x.line.unitPrice||0),0),extra=Math.max(0,quote.bundleDiscount+quote.couponDiscount);
     let allocated=0;
@@ -977,10 +982,12 @@ app.get('/api/portfolio/me/orders',(req,res)=>{
   if(!web?.user?.id)throw new AppError('Conecte sua conta do Discord para ver seus pedidos.',401);
   const orders=store.all('SELECT id,product_id,product,price,status,created,expires,approved_at,delivered_at,coupon_code,discount,error FROM orders WHERE user_id=? ORDER BY created DESC LIMIT 100',web.user.id).map(order=>{
     let product={};try{product=JSON.parse(order.product||'{}')}catch{}
+    const edition=store.get(`portfolio:numbered-order:${order.id}`,null);
     return{
       id:order.id,
       productId:order.product_id,
       productName:product.name||'Produto Studio K',
+      edition:edition||null,
       price:Number(order.price||0),
       status:order.status,
       created:order.created,
@@ -1017,6 +1024,10 @@ app.post('/api/portfolio/products/:id/order',portfolioSameOrigin,async(req,res)=
   if(!demo)await bot.member(web.user.id);
   const couponCode=String(req.body?.couponCode||'').trim().slice(0,40);
   let order=store.createOrder(product.botProductId,web.user.id,couponCode);
+  if(product.stockMode==='numbered'){
+    const editionNumber=Math.max(1,productAvailability(store,product).soldCount);
+    store.set(`portfolio:numbered-order:${order.id}`,{number:editionNumber,total:Number(product.stockLimit||0),label:product.limitedLabel||'Edição limitada'});
+  }
   const activeDrop=activeDropForProduct(product.id);
   const dropDiscountPercent=Math.max(0,Math.min(100,Number(activeDrop?.discountPercent||0)));
   if(dropDiscountPercent>0&&Number(order.price||0)>0){
