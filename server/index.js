@@ -512,7 +512,7 @@ const portfolioAnalyticsSummary=(days=30)=>{
   const paidOrders=Number(paid.n||0),revenue=Number(paid.revenue||0);
   const topRows=store.all("SELECT item_id, SUM(CASE WHEN event='product_view' THEN 1 ELSE 0 END) AS views, SUM(CASE WHEN event='favorite_add' THEN 1 ELSE 0 END) AS favorites, SUM(CASE WHEN event='checkout_start' THEN 1 ELSE 0 END) AS checkouts, SUM(CASE WHEN event='order_created' THEN 1 ELSE 0 END) AS orders FROM portfolio_events WHERE item_kind='product' AND item_id IS NOT NULL AND created>=? GROUP BY item_id ORDER BY views DESC,favorites DESC LIMIT 20",since);
   const rawEvents=store.all("SELECT session_id,event,item_kind,item_id,path,meta,created FROM portfolio_events WHERE created>=? ORDER BY id DESC LIMIT 10000",since);
-  const productDwell=new Map(),sourceCounts=new Map(),clickCounts=new Map(),searchCounts=new Map(),exitCounts=new Map();
+  const productDwell=new Map(),sourceCounts=new Map(),clickCounts=new Map(),searchCounts=new Map(),exitCounts=new Map(),clickPoints=[];
   let pageDurationTotal=0,pageDurationCount=0,scrollTotal=0,scrollCount=0;
   for(const row of rawEvents){
     let meta={};try{meta=JSON.parse(row.meta||'{}')}catch{}
@@ -533,6 +533,8 @@ const portfolioAnalyticsSummary=(days=30)=>{
     }else if(row.event==='click'){
       const label=String(meta.label||meta.href||'Clique').trim().slice(0,100);
       if(label)clickCounts.set(label,(clickCounts.get(label)||0)+1);
+      const x=Number(meta.xPct),y=Number(meta.yPct);
+      if(Number.isFinite(x)&&Number.isFinite(y))clickPoints.push({path:String(row.path||'/').slice(0,160),label,x:Math.max(0,Math.min(100,x)),y:Math.max(0,Math.min(100,y)),created:row.created});
     }else if(row.event==='search'){
       const query=String(meta.query||'').trim().toLowerCase().slice(0,80);
       if(query)searchCounts.set(query,(searchCounts.get(query)||0)+1);
@@ -557,6 +559,7 @@ const portfolioAnalyticsSummary=(days=30)=>{
     topClicks:sortMap(clickCounts),
     topSearches:sortMap(searchCounts),
     exitPages:sortMap(exitCounts),
+    clickPoints:clickPoints.slice(0,800),
     daily
   };
 };
