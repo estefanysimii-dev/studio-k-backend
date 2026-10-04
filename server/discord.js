@@ -588,7 +588,15 @@ ${normalized.previewAfter}
       if(shouldHave&&!m.roles.cache.has(id)){await m.roles.add(id,`Studio K ID: rank ${currentProfile.rank?.label||currentProfile.rank?.id}`);changed=true;}
       if(!shouldHave&&m.roles.cache.has(id)){await m.roles.remove(id,`Studio K ID: rank ${currentProfile.rank?.label||currentProfile.rank?.id}`);changed=true;}
     }
-    if(changed)store.log('studio-k-id',`Rank do Studio K ID sincronizado: ${currentProfile.studioId} · ${currentProfile.rank?.label||currentProfile.rank?.id}`,userId);
+    if(changed){
+      store.log('studio-k-id',`Rank do Studio K ID sincronizado: ${currentProfile.studioId} · ${currentProfile.rank?.label||currentProfile.rank?.id}`,userId);
+      try{
+        await m.send({
+          content:`✨ Seu **Studio K ID ${currentProfile.studioId}** evoluiu para **${currentProfile.rank?.label||'um novo rank'}**. Seu cargo no Discord já foi sincronizado.`,
+          allowedMentions:safe
+        });
+      }catch{}
+    }
     return{changed,rank:currentProfile.rank};
   }
   async function nextTicketName(category,guild){
