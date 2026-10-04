@@ -784,7 +784,7 @@ app.post('/api/portfolio/analytics/event',portfolioSameOrigin,(req,res)=>{
 app.get('/api/portfolio/public-state',async(req,res)=>{
   const web=portfolioSession(req),items=portfolioItems().filter(x=>x.published),products=portfolioProducts().filter(x=>x.published),feedbacks=await publicPortfolioFeedbacks(500),commerce=commercePublicState(store);
   const canControl=web?await portfolioCanControl(req,web):false;
-  let me={authenticated:false,canControl:false},personal={cart:[],notifications:[],missions:[],recommendations:[],leaderboardOptIn:false};
+  let me={authenticated:false,canControl:false},personal={cart:[],notifications:[],missions:[],recommendations:[],leaderboardOptIn:false,restockSubscriptions:[]};
   if(web){
     const profile=portfolioMemberProfile(web.user.id,web.member||{});
     const missions=(commerce.missions||[]).map(mission=>({...mission,...missionProgress(store,web.user.id,web.member||{},mission)}));
@@ -793,7 +793,8 @@ app.get('/api/portfolio/public-state',async(req,res)=>{
       notifications:notificationsFor(store,web.user.id),
       missions,
       recommendations:recommendationsFor(store,web.user.id,products,'',8),
-      leaderboardOptIn:store.get(`portfolio:leaderboard-optin:${web.user.id}`,false)===true
+      leaderboardOptIn:store.get(`portfolio:leaderboard-optin:${web.user.id}`,false)===true,
+      restockSubscriptions:products.filter(product=>(store.get(`portfolio:restock:${product.id}`,[])||[]).includes(web.user.id)).map(product=>product.id)
     };
     me={authenticated:true,user:web.user,member:web.member,canControl,profile,favorites:portfolioFavoritesFor(web.user.id)};
     if(bot.status().connected)void bot.syncStudioIdRankRole(web.user.id,profile).catch(error=>store.log('aviso',`Studio K ID rank sync: ${String(error.message).slice(0,300)}`));
@@ -930,6 +931,15 @@ app.put('/api/portfolio/me/notifications/:id',portfolioSameOrigin,(req,res)=>{co
 app.post('/api/portfolio/me/notifications/read-all',portfolioSameOrigin,(req,res)=>{const web=portfolioSession(req);if(!web?.user?.id)throw new AppError('Conecte sua conta.',401);const items=notificationsFor(store,web.user.id).map(x=>({...x,read:true}));store.set(`portfolio:notifications:${web.user.id}`,items);res.json({notifications:items});});
 app.post('/api/portfolio/me/missions/:id/claim',portfolioSameOrigin,(req,res)=>{const web=portfolioSession(req);if(!web?.user?.id)throw new AppError('Conecte sua conta.',401);const result=claimMission(store,web.user.id,web.member||{},req.params.id);res.json({result,profile:portfolioMemberProfile(web.user.id,web.member||{})});});
 app.put('/api/portfolio/me/leaderboard',portfolioSameOrigin,(req,res)=>{const web=portfolioSession(req);if(!web?.user?.id)throw new AppError('Conecte sua conta.',401);store.set(`portfolio:leaderboard-optin:${web.user.id}`,req.body?.enabled===true);res.json({enabled:req.body?.enabled===true});});
+app.put('/api/portfolio/me/restock/:productId',portfolioSameOrigin,(req,res)=>{
+  const web=portfolioSession(req);if(!web?.user?.id)throw new AppError('Conecte sua conta para receber aviso de reposição.',401);
+  const product=portfolioProducts().find(item=>item.id===req.params.productId&&item.published!==false);
+  if(!product)throw new AppError('Produto não encontrado.',404);
+  const key=`portfolio:restock:${product.id}`,current=[...new Set(store.get(key,[])||[])],enabled=req.body?.enabled!==false;
+  const next=enabled?[...new Set([...current,web.user.id])]:current.filter(id=>id!==web.user.id);
+  store.set(key,next);
+  res.json({enabled,productId:product.id});
+});
 app.post('/api/portfolio/me/gallery',portfolioSameOrigin,(req,res)=>{
   const web=portfolioSession(req);if(!web?.user?.id)throw new AppError('Conecte sua conta para enviar uma imagem.',401);
   const body=z.object({name:z.string().trim().min(1).max(100),caption:z.string().trim().max(600).default(''),imageUrl:z.string().trim().min(1).max(2000),productIds:z.array(z.string().trim().min(1).max(160)).max(20).default([])}).parse(req.body||{});
@@ -1189,12 +1199,18 @@ app.put('/api/portfolio/control/products/:id',portfolioControl,portfolioSameOrig
   if(!products.length)products=portfolioProducts();
   const productIndex=products.findIndex(x=>x.id===req.params.id);
   if(productIndex<0)throw new AppError('Produto não encontrado.',404);
-  const previous=products[productIndex];
+  const previous=products[productIndex],previousAvailability=productAvailability(store,previous);
   const next={...previous,...portfolioProductSchema.parse(req.body),updated:store.now()};
   if(next.featured)for(const x of products)x.featured=false;
   products[productIndex]=next;
   store.set('portfolio:products',products);
   recordVersion(store,{entityType:'product',entityId:next.id,before:previous,after:next,actor:req.portfolioWeb?.user?.id||'portfolio-control',action:'update'});
+  const nextAvailability=productAvailability(store,next);
+  if(previousAvailability.available===false&&nextAvailability.available===true){
+    const restockKey=`portfolio:restock:${next.id}`,subscribers=[...new Set(store.get(restockKey,[])||[])];
+    for(const userId of subscribers)addNotification(store,userId,{type:'restock',title:'Disponível novamente ✨',text:next.name,href:`/products/${next.id}`});
+    if(subscribers.length)store.set(restockKey,[]);
+  }
   const becamePublished=previous.published===false&&next.published===true;
   if(becamePublished){
     for(const row of store.all("SELECT key FROM kv WHERE key LIKE 'portfolio:member:%'")){
@@ -1221,6 +1237,11 @@ app.post('/api/portfolio/control/products/:id/stock',portfolioControl,portfolioS
   const items=z.array(z.string().trim().min(1).max(1200)).min(1).max(1000).parse(req.body?.items||[]);
   store.transaction(()=>{for(const item of items)store.run('INSERT INTO stock(id,product_id,secret) VALUES(?,?,?)',randomUUID(),product.botProductId,store.encrypt(item));});
   const availability=productAvailability(store,product);
+  if(availability.available){
+    const restockKey=`portfolio:restock:${product.id}`,subscribers=[...new Set(store.get(restockKey,[])||[])];
+    for(const userId of subscribers)addNotification(store,userId,{type:'restock',title:'Voltou ao estoque ✨',text:product.name,href:`/products/${product.id}`});
+    if(subscribers.length)store.set(restockKey,[]);
+  }
   recordVersion(store,{entityType:'digitalStock',entityId:product.id,before:null,after:{added:items.length,remaining:availability.remaining},actor:req.portfolioWeb?.user?.id||'portfolio-control',action:'stock-add'});
   store.log('estoque',`${items.length} unidade(s) digitais adicionadas a ${product.name}.`,req.portfolioWeb?.user?.id||'portfolio-control');
   res.json({ok:true,added:items.length,...availability});
