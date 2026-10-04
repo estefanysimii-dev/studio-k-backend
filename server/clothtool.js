@@ -85,6 +85,15 @@ export function installClothTool(app, { store, control, sameOrigin, canControl, 
     res.json({ authorized: true, expiresAt: new Date(session.expires).toISOString(), user: { id: parent.user.id, name: parent.user.name || parent.user.username || 'Studio K' } });
   });
 
+  app.delete('/api/clothtool/session', (req, res) => {
+    const raw = String(req.headers.authorization || '').match(/^Bearer ([a-f0-9]{64})$/)?.[1];
+    if (!raw) return fail(res, 401, 'Sessão do ClothTool inválida.');
+    const tokenHash = digest(raw), session = store.one('SELECT id FROM clothtool_sessions WHERE token_hash=?', tokenHash);
+    if (!session) return fail(res, 401, 'Sessão expirada ou já revogada.');
+    store.run('DELETE FROM clothtool_sessions WHERE id=?', session.id);
+    res.json({ ok: true });
+  });
+
   const route = '/api/portfolio/control/clothtool';
   app.get(route, control, (req, res) => {
     cleanup();
