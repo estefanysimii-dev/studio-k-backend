@@ -1509,6 +1509,18 @@ const server=app.listen(port,host,()=>console.log(`Studio K ${demo?'[DEMONSTRAÇ
 void bot.start();
 const portfolioDropTimer=setInterval(()=>void processPortfolioDrops(),30000);
 portfolioDropTimer.unref();
+const processRestockSubscriptions=()=>{
+  try{
+    for(const row of store.all("SELECT key,value FROM kv WHERE key LIKE 'portfolio:restock:%'")){
+      let subscribers=[];try{subscribers=JSON.parse(row.value||'[]')}catch{}
+      if(!Array.isArray(subscribers)||!subscribers.length)continue;
+      const productId=String(row.key).split(':').pop(),product=portfolioProducts().find(item=>item.id===productId);
+      if(!product||product.available===false)continue;
+      for(const userId of [...new Set(subscribers)])addNotification(store,userId,{type:'restock',title:'Disponível novamente ✨',text:product.name,href:`/products/${product.id}`});
+      store.set(row.key,[]);
+    }
+  }catch(error){store.log('erro',`Reposição Studio K: ${String(error.message||error).slice(0,400)}`);}
+};
 const processPortfolioSchedules=async()=>{
   try{
     runSchedules(store,{products:storedPortfolioProducts,setProducts:value=>store.set('portfolio:products',value)});
@@ -1527,7 +1539,7 @@ const processPortfolioSchedules=async()=>{
     }
   }catch(error){store.log('erro',`Agendador Studio K: ${String(error.message||error).slice(0,400)}`);}
 };
-const portfolioScheduleTimer=setInterval(()=>void processPortfolioSchedules(),30000);
+const portfolioScheduleTimer=setInterval(()=>{void processPortfolioSchedules();processRestockSubscriptions();},30000);
 portfolioScheduleTimer.unref();
-setTimeout(()=>{void processPortfolioDrops();void processPortfolioSchedules();},5000).unref();
+setTimeout(()=>{void processPortfolioDrops();void processPortfolioSchedules();processRestockSubscriptions();},5000).unref();
 for(const signal of ['SIGTERM','SIGINT'])process.on(signal,async()=>{clearInterval(portfolioDropTimer);clearInterval(portfolioScheduleTimer);await bot.stop();server.close(()=>{store.db.close();process.exit(0);});});
