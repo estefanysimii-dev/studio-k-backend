@@ -15,7 +15,7 @@ import { studioIdConfig, saveStudioIdConfig, studioIdConfigSchema, studioIdentit
 import {
   commerceAdminState,commercePublicState,upsertCommerce,deleteCommerce,setLeaderboardConfig,
   cartFor,setCart,notificationsFor,addNotification,markNotification,quoteCart,missionProgress,claimMission,
-  recommendationsFor,globalSearch,leaderboard,activityFeed,recordVersion,versionsFor,runSchedules
+  recommendationsFor,globalSearch,leaderboard,activityFeed,recordVersion,versionsFor,runSchedules,productAvailability
 } from './commerce.js';
 const demo=process.env.STUDIO_DEMO==='true',port=Number(process.env.PORT||3210),host=demo?'127.0.0.1':process.env.HOST||'127.0.0.1';
 const base=new URL(process.env.PUBLIC_URL||`http://localhost:${port}`);
@@ -294,7 +294,11 @@ const portfolioSite=()=>{
 };
 const portfolioItems=()=>{const v=store.get('portfolio:items',[]);return Array.isArray(v)?v:[]};
 const storedPortfolioProducts=()=>{const v=store.get('portfolio:products',[]);return Array.isArray(v)?v:[]};
-const portfolioProducts=()=>{const stored=storedPortfolioProducts();if(stored.length)return stored;return store.products().map(p=>({id:p.id,name:p.name,description:p.description||'',priceCents:p.priceCents||0,category:p.category||'Studio K',tags:[],coverUrl:p.image||'',modelUrl:'',featured:false,published:true,botProductId:p.id,created:p.created||''}))};
+const portfolioProducts=()=>{
+  const stored=storedPortfolioProducts();
+  const baseProducts=stored.length?stored:store.products().map(p=>({id:p.id,name:p.name,description:p.description||'',priceCents:p.priceCents||0,category:p.category||'Studio K',tags:[],coverUrl:p.image||'',modelUrl:'',featured:false,published:true,botProductId:p.id,created:p.created||'',gender:'unisex',neon:false,stockMode:p.type==='digital'?'digital':'unlimited',stockLimit:0,limitedLabel:''}));
+  return baseProducts.map(product=>({...product,...productAvailability(store,product)}));
+};
 const portfolioAssets=()=>{const v=store.get('portfolio:assets',[]);return Array.isArray(v)?v:[]};
 const portfolioDrops=()=>{const v=store.get('portfolio:drops',[]);return Array.isArray(v)?v:[]};
 const portfolioDropStatus=(drop,at=Date.now())=>{
@@ -967,6 +971,7 @@ app.post('/api/portfolio/products/:id/order',portfolioSameOrigin,async(req,res)=
   const product=portfolioProducts().find(item=>item.id===req.params.id&&item.published!==false);
   if(!product)throw new AppError('Produto não encontrado.',404);
   if(!product.botProductId)throw new AppError('Este produto ainda não está sincronizado com o bot do Studio K.',409);
+  if(product.available===false)throw new AppError('Este produto está esgotado ou sem vagas disponíveis.',409);
   if(!demo)await bot.member(web.user.id);
   const couponCode=String(req.body?.couponCode||'').trim().slice(0,40);
   let order=store.createOrder(product.botProductId,web.user.id,couponCode);
