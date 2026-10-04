@@ -12,6 +12,11 @@ import { createBot } from './discord.js';
 import { defaultRadio, radioSchema, normalizeRadio, radioSnapshot } from './radio.js';
 import { settingsSchema, productSchema, messageSchema, templateSchema, giveawaySchema, eventSchema, id } from './schema.js';
 import { studioIdConfig, saveStudioIdConfig, studioIdConfigSchema, studioIdentityFor, studioFavoritesFor, studioProfilePrefsFor, studioIdProfile } from './studio-id.js';
+import {
+  commerceAdminState,commercePublicState,upsertCommerce,deleteCommerce,setLeaderboardConfig,
+  cartFor,setCart,notificationsFor,addNotification,markNotification,quoteCart,missionProgress,claimMission,
+  recommendationsFor,globalSearch,leaderboard,activityFeed,recordVersion,versionsFor,runSchedules
+} from './commerce.js';
 const demo=process.env.STUDIO_DEMO==='true',port=Number(process.env.PORT||3210),host=demo?'127.0.0.1':process.env.HOST||'127.0.0.1';
 const base=new URL(process.env.PUBLIC_URL||`http://localhost:${port}`);
 const root=resolve(dirname(fileURLToPath(import.meta.url)),'..');
@@ -614,7 +619,15 @@ const portfolioItemSchema=z.object({
   featured:z.boolean().default(false),
   published:z.boolean().default(true)
 });
-const portfolioProductSchema=portfolioItemSchema.extend({priceCents:z.number().int().min(0).max(1000000000).default(0),botProductId:z.string().max(80).default('')});
+const portfolioProductSchema=portfolioItemSchema.extend({
+  priceCents:z.number().int().min(0).max(1000000000).default(0),
+  botProductId:z.string().max(80).default(''),
+  gender:z.enum(['unisex','feminino','masculino']).default('unisex'),
+  neon:z.boolean().default(false),
+  stockMode:z.enum(['unlimited','digital','limited','slots','numbered']).default('unlimited'),
+  stockLimit:z.number().int().min(0).max(100000).default(0),
+  limitedLabel:z.string().trim().max(120).default('')
+});
 const portfolioDropSchema=z.object({
   title:z.string().trim().min(2).max(140),
   description:z.string().trim().max(1200).default(''),
@@ -741,7 +754,7 @@ app.get('/api/portfolio/feedbacks',async(req,res)=>res.json(await publicPortfoli
 app.post('/api/portfolio/analytics/event',portfolioSameOrigin,(req,res)=>{
   const body=z.object({
     sessionId:z.string().trim().min(8).max(96),
-    event:z.enum(['page_view','page_leave','product_view','product_dwell','portfolio_view','search','filter','click','checkout_start','checkout_error']),
+    event:z.enum(['page_view','page_leave','product_view','product_dwell','portfolio_view','search','filter','click','checkout_start','checkout_error','cart_update','cart_checkout','compare_open']),
     itemKind:z.enum(['product','portfolio','page']).default('page'),
     itemId:z.string().trim().max(160).default(''),
     path:z.string().trim().max(500).default(''),
@@ -752,15 +765,26 @@ app.post('/api/portfolio/analytics/event',portfolioSameOrigin,(req,res)=>{
   res.status(204).end();
 });
 app.get('/api/portfolio/public-state',async(req,res)=>{
-  const web=portfolioSession(req),items=portfolioItems().filter(x=>x.published),products=portfolioProducts().filter(x=>x.published),feedbacks=await publicPortfolioFeedbacks(500);
+  const web=portfolioSession(req),items=portfolioItems().filter(x=>x.published),products=portfolioProducts().filter(x=>x.published),feedbacks=await publicPortfolioFeedbacks(500),commerce=commercePublicState(store);
   const canControl=web?await portfolioCanControl(req,web):false;
-  let me={authenticated:false,canControl:false};
+  let me={authenticated:false,canControl:false},personal={cart:[],notifications:[],missions:[],recommendations:[]};
   if(web){
     const profile=portfolioMemberProfile(web.user.id,web.member||{});
+    const missions=(commerce.missions||[]).map(mission=>({...mission,...missionProgress(store,web.user.id,web.member||{},mission)}));
+    personal={
+      cart:cartFor(store,web.user.id),
+      notifications:notificationsFor(store,web.user.id),
+      missions,
+      recommendations:recommendationsFor(store,web.user.id,products,'',8)
+    };
     me={authenticated:true,user:web.user,member:web.member,canControl,profile,favorites:portfolioFavoritesFor(web.user.id)};
     if(bot.status().connected)void bot.syncStudioIdRankRole(web.user.id,profile).catch(error=>store.log('aviso',`Studio K ID rank sync: ${String(error.message).slice(0,300)}`));
   }
-  res.json({site:portfolioSite(),status:portfolioStatus(),items,products,drops:publicPortfolioDrops(),feedbacks,me});
+  res.json({
+    site:portfolioSite(),status:portfolioStatus(),items,products,drops:publicPortfolioDrops(),feedbacks,me,
+    commerce:{...commerce,activity:activityFeed(store,products,publicPortfolioDrops(),20),leaderboard:leaderboard(store,20)},
+    personal
+  });
 });
 app.get('/api/portfolio/me/profile',(req,res)=>{
   const web=portfolioSession(req);
@@ -825,6 +849,69 @@ app.put('/api/portfolio/me/favorites/:kind/:id',portfolioSameOrigin,(req,res)=>{
   const profile=portfolioMemberProfile(web.user.id,web.member||{});
   if(bot.status().connected)void bot.syncStudioIdRankRole(web.user.id,profile).catch(error=>store.log('aviso',`Studio K ID rank sync: ${String(error.message).slice(0,300)}`));
   res.json({ok:true,favorite:shouldFavorite,favorites,profile});
+});
+app.get('/api/portfolio/search',(req,res)=>res.json({results:globalSearch(store,portfolioProducts().filter(x=>x.published!==false),portfolioItems().filter(x=>x.published!==false),req.query.q)}));
+app.get('/api/portfolio/products/:id/recommendations',(req,res)=>{
+  const web=portfolioSession(req),products=portfolioProducts().filter(x=>x.published!==false);
+  res.json({recommendations:recommendationsFor(store,web?.user?.id||'',products,String(req.params.id||''),8)});
+});
+app.get('/api/portfolio/me/cart',(req,res)=>{
+  const web=portfolioSession(req);if(!web?.user?.id)throw new AppError('Conecte sua conta do Discord para usar o carrinho.',401);
+  res.json({cart:cartFor(store,web.user.id),quote:quoteCart(store,web.user.id,web.member||{},portfolioProducts().filter(x=>x.published!==false),String(req.query.coupon||''))});
+});
+app.put('/api/portfolio/me/cart',portfolioSameOrigin,(req,res)=>{
+  const web=portfolioSession(req);if(!web?.user?.id)throw new AppError('Conecte sua conta do Discord para usar o carrinho.',401);
+  const items=z.array(z.object({productId:z.string().trim().min(1).max(160),quantity:z.number().int().min(1).max(20)})).max(50).parse(req.body?.items||[]);
+  setCart(store,web.user.id,items);
+  recordPortfolioEvent('cart_update',{sessionId:`member:${web.user.id}`,userId:web.user.id,itemKind:'page',path:'/cart',meta:{items:items.length}});
+  res.json({cart:cartFor(store,web.user.id),quote:quoteCart(store,web.user.id,web.member||{},portfolioProducts().filter(x=>x.published!==false),String(req.body?.couponCode||''))});
+});
+app.post('/api/portfolio/me/cart/checkout',portfolioSameOrigin,async(req,res)=>{
+  const web=portfolioSession(req);if(!web?.user?.id)throw new AppError('Conecte sua conta do Discord para finalizar o carrinho.',401);
+  if(!demo)await bot.member(web.user.id);
+  const products=portfolioProducts().filter(x=>x.published!==false),couponCode=String(req.body?.couponCode||'').trim().slice(0,40),quote=quoteCart(store,web.user.id,web.member||{},products,couponCode);
+  if(!quote.items.length)throw new AppError('Seu carrinho está vazio.');
+  const expanded=[];for(const line of quote.items)for(let n=0;n<line.quantity;n++)expanded.push(line);
+  if(expanded.length>20)throw new AppError('O carrinho pode finalizar até 20 unidades por vez.');
+  const created=[];
+  try{
+    for(const line of expanded){
+      const product=products.find(p=>p.id===line.productId);if(!product?.botProductId)throw new AppError(`${line.name} ainda não está sincronizado com o bot.`,409);
+      const order=store.createOrder(product.botProductId,web.user.id,'');created.push({order,product,line});
+    }
+    const roleSubtotal=created.reduce((sum,x)=>sum+Number(x.line.unitPrice||0),0),extra=Math.max(0,quote.bundleDiscount+quote.couponDiscount);
+    let allocated=0;
+    for(let i=0;i<created.length;i++){
+      const row=created[i],base=Math.max(0,Number(row.line.unitPrice||0));
+      const part=i===created.length-1?Math.max(0,extra-allocated):(roleSubtotal?Math.floor(extra*base/roleSubtotal):0);
+      allocated+=part;
+      const finalPrice=Math.max(0,base-part),discount=Math.max(0,Number(row.product.priceCents||0)-finalPrice);
+      store.run('UPDATE orders SET price=?,discount=? WHERE id=?',finalPrice,discount,row.order.id);
+    }
+  }catch(error){
+    for(const row of created){try{store.cancelOrder(row.order.id,'cart-rollback')}catch{}}
+    throw error;
+  }
+  const groupId=randomUUID(),orderIds=created.map(x=>x.order.id);store.set(`portfolio:cart-group:${groupId}`,{userId:web.user.id,orderIds,quote,created:store.now()});
+  setCart(store,web.user.id,[]);
+  if(couponCode&&quote.coupon){
+    const cp=store.one('SELECT * FROM coupons WHERE code=?',quote.coupon.code);
+    if(cp){store.run('UPDATE coupons SET uses=uses+1 WHERE code=?',quote.coupon.code);store.run('INSERT OR IGNORE INTO coupon_uses(code,user_id,order_id,created) VALUES(?,?,?,?)',quote.coupon.code,web.user.id,orderIds[0],store.now());store.run('UPDATE orders SET coupon_code=? WHERE id=?',quote.coupon.code,orderIds[0]);}
+  }
+  addNotification(store,web.user.id,{type:'order',title:'Carrinho convertido em pedido 💜',text:`${orderIds.length} item(ns) · total R$ ${(quote.total/100).toFixed(2).replace('.',',')}`,href:'/account'});
+  recordPortfolioEvent('cart_checkout',{sessionId:`member:${web.user.id}`,userId:web.user.id,itemKind:'page',path:'/cart',meta:{groupId,items:orderIds.length,total:quote.total}});
+  const sales=store.settings().sales||{};
+  res.json({groupId,orderIds,total:quote.total,quote,payment:{pixKey:sales.pixKey||'',recipient:sales.recipient||'',instructions:sales.instructions||''}});
+});
+app.get('/api/portfolio/me/notifications',(req,res)=>{const web=portfolioSession(req);if(!web?.user?.id)throw new AppError('Conecte sua conta.',401);res.json({notifications:notificationsFor(store,web.user.id)});});
+app.put('/api/portfolio/me/notifications/:id',portfolioSameOrigin,(req,res)=>{const web=portfolioSession(req);if(!web?.user?.id)throw new AppError('Conecte sua conta.',401);res.json({notifications:markNotification(store,web.user.id,req.params.id,req.body?.read!==false)});});
+app.post('/api/portfolio/me/notifications/read-all',portfolioSameOrigin,(req,res)=>{const web=portfolioSession(req);if(!web?.user?.id)throw new AppError('Conecte sua conta.',401);const items=notificationsFor(store,web.user.id).map(x=>({...x,read:true}));store.set(`portfolio:notifications:${web.user.id}`,items);res.json({notifications:items});});
+app.post('/api/portfolio/me/missions/:id/claim',portfolioSameOrigin,(req,res)=>{const web=portfolioSession(req);if(!web?.user?.id)throw new AppError('Conecte sua conta.',401);const result=claimMission(store,web.user.id,web.member||{},req.params.id);res.json({result,profile:portfolioMemberProfile(web.user.id,web.member||{})});});
+app.put('/api/portfolio/me/leaderboard',portfolioSameOrigin,(req,res)=>{const web=portfolioSession(req);if(!web?.user?.id)throw new AppError('Conecte sua conta.',401);store.set(`portfolio:leaderboard-optin:${web.user.id}`,req.body?.enabled===true);res.json({enabled:req.body?.enabled===true});});
+app.get('/api/portfolio/me/tickets',(req,res)=>{
+  const web=portfolioSession(req);if(!web?.user?.id)throw new AppError('Conecte sua conta para ver seus atendimentos.',401);
+  const tickets=store.all('SELECT id,channel_id,category,status,state,priority,created,updated,claimed_by,closed_reason,transcript FROM tickets WHERE user_id=? ORDER BY created DESC LIMIT 100',web.user.id);
+  res.json({tickets:tickets.map(t=>({...t,notes:store.all("SELECT actor,note,private,created FROM ticket_notes WHERE ticket_id=? AND private=0 ORDER BY created",t.id),transcriptAvailable:!!t.transcript}))});
 });
 app.get('/api/portfolio/me/orders',(req,res)=>{
   const web=portfolioSession(req);
@@ -930,6 +1017,8 @@ app.get('/api/portfolio/control/state',portfolioControl,async(req,res)=>{
     analytics:portfolioAnalyticsSummary(30),
     assets:portfolioAssets(),
     feedbacks:await controlPortfolioFeedbacks(500),
+    commerce:commerceAdminState(store),
+    versions:versionsFor(store).slice(0,300),
     discord:{
       oauthConfigured:!!(process.env.DISCORD_CLIENT_ID&&process.env.DISCORD_CLIENT_SECRET),
       redirectUri:portfolioRedirect,
@@ -956,7 +1045,31 @@ app.put('/api/portfolio/control/feedbacks',portfolioControl,portfolioSameOrigin,
   store.log('portfólio',`Organização de feedbacks atualizada: ${moderation.order.length} ordenados · ${moderation.hidden.length} ocultos`,'portfolio-control');
   res.json({ok:true,moderation,feedbacks:await controlPortfolioFeedbacks(500)});
 });
-app.post('/api/portfolio/control/items',portfolioControl,portfolioSameOrigin,(req,res)=>{const item={id:randomUUID(),...portfolioItemSchema.parse(req.body),created:store.now(),updated:store.now()};const items=portfolioItems();if(item.featured)for(const x of items)x.featured=false;items.unshift(item);store.set('portfolio:items',items);res.json(item)});
+app.put('/api/portfolio/control/commerce/:kind',portfolioControl,portfolioSameOrigin,(req,res)=>{
+  const item=upsertCommerce(store,String(req.params.kind||''),req.body||{});
+  recordVersion(store,{entityType:String(req.params.kind||''),entityId:item.id,before:null,after:item,actor:req.portfolioWeb?.user?.id||'portfolio-control',action:'upsert'});
+  res.json(item);
+});
+app.delete('/api/portfolio/control/commerce/:kind/:id',portfolioControl,portfolioSameOrigin,(req,res)=>{
+  const kind=String(req.params.kind||''),idValue=String(req.params.id||''),before=(commerceAdminState(store)[kind]||[]).find(x=>x.id===idValue)||null;
+  const result=deleteCommerce(store,kind,idValue);
+  recordVersion(store,{entityType:kind,entityId:idValue,before,after:null,actor:req.portfolioWeb?.user?.id||'portfolio-control',action:'delete'});
+  res.json(result);
+});
+app.put('/api/portfolio/control/leaderboard',portfolioControl,portfolioSameOrigin,(req,res)=>res.json(setLeaderboardConfig(store,req.body||{})));
+app.get('/api/portfolio/control/versions',portfolioControl,(req,res)=>res.json(versionsFor(store).slice(0,500)));
+app.post('/api/portfolio/control/versions/:id/restore',portfolioControl,portfolioSameOrigin,(req,res)=>{
+  const version=versionsFor(store).find(x=>x.id===req.params.id);if(!version)throw new AppError('Versão não encontrada.',404);
+  if(!version.before)throw new AppError('Esta versão não possui estado anterior para restaurar.',409);
+  if(['bundles','collections','missions','banners','roleBenefits','schedules','gallery','lookbooks'].includes(version.entityType)){
+    const kind=version.entityType==='roleBenefits'?'roleBenefits':version.entityType;
+    const restored=upsertCommerce(store,kind,version.before);
+    recordVersion(store,{entityType:version.entityType,entityId:version.entityId,before:version.after,after:restored,actor:req.portfolioWeb?.user?.id||'portfolio-control',action:'restore'});
+    return res.json(restored);
+  }
+  throw new AppError('Restauração automática ainda não é suportada para este tipo.',409);
+});
+app.post('/api/portfolio/control/items',portfolioControl,portfolioSameOrigin,(req,res)=>{const item={id:randomUUID(),...portfolioItemSchema.parse(req.body),created:store.now(),updated:store.now()};const items=portfolioItems();if(item.featured)for(const x of items)x.featured=false;items.unshift(item);store.set('portfolio:items',items);recordVersion(store,{entityType:'item',entityId:item.id,before:null,after:item,actor:req.portfolioWeb?.user?.id||'portfolio-control',action:'create'});res.json(item)});
 app.put('/api/portfolio/control/items/:id',portfolioControl,portfolioSameOrigin,(req,res)=>{const items=portfolioItems(),index=items.findIndex(x=>x.id===req.params.id);if(index<0)throw new AppError('Projeto não encontrado.',404);const next={...items[index],...portfolioItemSchema.parse(req.body),updated:store.now()};if(next.featured)for(const x of items)x.featured=false;items[index]=next;store.set('portfolio:items',items);res.json(next)});
 app.delete('/api/portfolio/control/items/:id',portfolioControl,portfolioSameOrigin,(req,res)=>{store.set('portfolio:items',portfolioItems().filter(x=>x.id!==req.params.id));res.json({ok:true})});
 app.post('/api/portfolio/control/products',portfolioControl,portfolioSameOrigin,async(req,res)=>{
@@ -965,6 +1078,12 @@ app.post('/api/portfolio/control/products',portfolioControl,portfolioSameOrigin,
   if(item.featured)for(const x of products)x.featured=false;
   products.unshift(item);
   store.set('portfolio:products',products);
+  recordVersion(store,{entityType:'product',entityId:item.id,before:null,after:item,actor:req.portfolioWeb?.user?.id||'portfolio-control',action:'create'});
+  if(item.published){
+    for(const row of store.all("SELECT key FROM kv WHERE key LIKE 'portfolio:member:%'")){
+      const userId=String(row.key).split(':').pop();addNotification(store,userId,{type:'product',title:'Novo produto no Studio K ✨',text:item.name,href:`/products/${item.id}`});
+    }
+  }
   const announcement=item.published?await maybeAutoAnnouncePortfolioProduct(item,'novo produto'):{attempted:false,ok:false};
   const saved=portfolioProducts().find(product=>product.id===item.id)||item;
   res.json({...saved,_announcement:announcement});
@@ -979,7 +1098,13 @@ app.put('/api/portfolio/control/products/:id',portfolioControl,portfolioSameOrig
   if(next.featured)for(const x of products)x.featured=false;
   products[productIndex]=next;
   store.set('portfolio:products',products);
+  recordVersion(store,{entityType:'product',entityId:next.id,before:previous,after:next,actor:req.portfolioWeb?.user?.id||'portfolio-control',action:'update'});
   const becamePublished=previous.published===false&&next.published===true;
+  if(becamePublished){
+    for(const row of store.all("SELECT key FROM kv WHERE key LIKE 'portfolio:member:%'")){
+      const userId=String(row.key).split(':').pop();addNotification(store,userId,{type:'product',title:'Novo produto disponível ✨',text:next.name,href:`/products/${next.id}`});
+    }
+  }
   const announcement=becamePublished?await maybeAutoAnnouncePortfolioProduct(next,'produto publicado'):{attempted:false,ok:false};
   const saved=portfolioProducts().find(product=>product.id===next.id)||next;
   res.json({...saved,_announcement:announcement});
@@ -1184,5 +1309,7 @@ const server=app.listen(port,host,()=>console.log(`Studio K ${demo?'[DEMONSTRAÇ
 void bot.start();
 const portfolioDropTimer=setInterval(()=>void processPortfolioDrops(),30000);
 portfolioDropTimer.unref();
-setTimeout(()=>void processPortfolioDrops(),5000).unref();
-for(const signal of ['SIGTERM','SIGINT'])process.on(signal,async()=>{clearInterval(portfolioDropTimer);await bot.stop();server.close(()=>{store.db.close();process.exit(0);});});
+const portfolioScheduleTimer=setInterval(()=>{try{runSchedules(store,{products:storedPortfolioProducts,setProducts:value=>store.set('portfolio:products',value)})}catch(error){store.log('erro',`Agendador Studio K: ${String(error.message||error).slice(0,400)}`) }},30000);
+portfolioScheduleTimer.unref();
+setTimeout(()=>{void processPortfolioDrops();try{runSchedules(store,{products:storedPortfolioProducts,setProducts:value=>store.set('portfolio:products',value)})}catch{}},5000).unref();
+for(const signal of ['SIGTERM','SIGINT'])process.on(signal,async()=>{clearInterval(portfolioDropTimer);clearInterval(portfolioScheduleTimer);await bot.stop();server.close(()=>{store.db.close();process.exit(0);});});
