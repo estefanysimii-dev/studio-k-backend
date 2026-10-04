@@ -274,6 +274,18 @@ export function studioIdProfile(store,userId,member={},options={}){
     {id:'priority-support',label:'Priority Support',description:'Identifica apoiadores elegíveis para fluxos prioritários de suporte.',icon:'★',rarity:'epic',unlocked:isSupporter,progress:isSupporter?1:0,target:1},
     {id:'icon-aura',label:'Icon Aura',description:'Tratamento visual máximo do Studio K ID.',icon:'K',rarity:'legendary',unlocked:level>=th.iconLevel,progress:Math.min(level,th.iconLevel),target:th.iconLevel}
   ].map(perk=>({...perk,rarity:safeRarity(perk.rarity)})):[];
+  const perkStateKey=`portfolio:perk-state:${userId}`;
+  const previousPerks=store.get(perkStateKey,null);
+  const unlockedPerkIds=perks.filter(perk=>perk.unlocked).map(perk=>perk.id);
+  if(Array.isArray(previousPerks)){
+    const known=new Set(previousPerks);
+    for(const perk of perks){
+      if(perk.unlocked&&!known.has(perk.id)){
+        addNotification(store,userId,{type:'perk',title:'Novo benefício liberado 💜',text:perk.label,href:'/account'});
+      }
+    }
+  }
+  store.set(perkStateKey,unlockedPerkIds);
   return{
     studioId:identity.studioId,
     joinedAt:identity.joinedAt,
