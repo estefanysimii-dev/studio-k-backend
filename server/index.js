@@ -275,7 +275,7 @@ const defaultPortfolioSite={
   heroSubtitle:'Roupas, texturas e experiências visuais criadas para transformar personagens e projetos no GTA V / FiveM.',
   primaryCtaLabel:'Explorar Portfólio',
   secondaryCtaLabel:'Entrar no Discord',
-  discordInviteUrl:'',
+  discordInviteUrl:'https://discord.gg/YPShX4FQCE',
   defaultAnnouncementChannelId:'',
   autoAnnounceProducts:false,
   adminRoleIds:[],
@@ -291,6 +291,7 @@ const portfolioSite=()=>{
   site.assistant.campaigns=Array.isArray(site.assistant.campaigns)?site.assistant.campaigns:defaultPortfolioAssistant.campaigns;
   if(!site.brandTagline||site.brandTagline==='KINETIC LOOM')site.brandTagline=defaultPortfolioSite.brandTagline;
   if(!site.logoUrl||site.logoUrl==='/media/studio-k-logo.webp')site.logoUrl=defaultPortfolioSite.logoUrl;
+  if(!site.discordInviteUrl)site.discordInviteUrl=defaultPortfolioSite.discordInviteUrl;
   return site;
 };
 const portfolioItems=()=>{const v=store.get('portfolio:items',[]);return Array.isArray(v)?v:[]};
