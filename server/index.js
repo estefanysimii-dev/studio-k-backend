@@ -912,6 +912,13 @@ app.put('/api/portfolio/me/notifications/:id',portfolioSameOrigin,(req,res)=>{co
 app.post('/api/portfolio/me/notifications/read-all',portfolioSameOrigin,(req,res)=>{const web=portfolioSession(req);if(!web?.user?.id)throw new AppError('Conecte sua conta.',401);const items=notificationsFor(store,web.user.id).map(x=>({...x,read:true}));store.set(`portfolio:notifications:${web.user.id}`,items);res.json({notifications:items});});
 app.post('/api/portfolio/me/missions/:id/claim',portfolioSameOrigin,(req,res)=>{const web=portfolioSession(req);if(!web?.user?.id)throw new AppError('Conecte sua conta.',401);const result=claimMission(store,web.user.id,web.member||{},req.params.id);res.json({result,profile:portfolioMemberProfile(web.user.id,web.member||{})});});
 app.put('/api/portfolio/me/leaderboard',portfolioSameOrigin,(req,res)=>{const web=portfolioSession(req);if(!web?.user?.id)throw new AppError('Conecte sua conta.',401);store.set(`portfolio:leaderboard-optin:${web.user.id}`,req.body?.enabled===true);res.json({enabled:req.body?.enabled===true});});
+app.post('/api/portfolio/me/gallery',portfolioSameOrigin,(req,res)=>{
+  const web=portfolioSession(req);if(!web?.user?.id)throw new AppError('Conecte sua conta para enviar uma imagem.',401);
+  const body=z.object({name:z.string().trim().min(1).max(100),caption:z.string().trim().max(600).default(''),imageUrl:z.string().trim().min(1).max(2000),productIds:z.array(z.string().trim().min(1).max(160)).max(20).default([])}).parse(req.body||{});
+  const item=upsertCommerce(store,'gallery',{...body,userId:web.user.id,status:'pending'});
+  addNotification(store,web.user.id,{type:'gallery',title:'Imagem enviada para aprovação ✨',text:'A equipe Studio K vai revisar sua publicação antes dela aparecer na comunidade.',href:'/community'});
+  res.json(item);
+});
 app.get('/api/portfolio/me/tickets',(req,res)=>{
   const web=portfolioSession(req);if(!web?.user?.id)throw new AppError('Conecte sua conta para ver seus atendimentos.',401);
   const tickets=store.all('SELECT id,channel_id,category,status,state,priority,created,updated,claimed_by,closed_reason,transcript FROM tickets WHERE user_id=? ORDER BY created DESC LIMIT 100',web.user.id);
