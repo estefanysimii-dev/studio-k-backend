@@ -771,7 +771,7 @@ app.post('/api/portfolio/analytics/event',portfolioSameOrigin,(req,res)=>{
 app.get('/api/portfolio/public-state',async(req,res)=>{
   const web=portfolioSession(req),items=portfolioItems().filter(x=>x.published),products=portfolioProducts().filter(x=>x.published),feedbacks=await publicPortfolioFeedbacks(500),commerce=commercePublicState(store);
   const canControl=web?await portfolioCanControl(req,web):false;
-  let me={authenticated:false,canControl:false},personal={cart:[],notifications:[],missions:[],recommendations:[]};
+  let me={authenticated:false,canControl:false},personal={cart:[],notifications:[],missions:[],recommendations:[],leaderboardOptIn:false};
   if(web){
     const profile=portfolioMemberProfile(web.user.id,web.member||{});
     const missions=(commerce.missions||[]).map(mission=>({...mission,...missionProgress(store,web.user.id,web.member||{},mission)}));
@@ -779,7 +779,8 @@ app.get('/api/portfolio/public-state',async(req,res)=>{
       cart:cartFor(store,web.user.id),
       notifications:notificationsFor(store,web.user.id),
       missions,
-      recommendations:recommendationsFor(store,web.user.id,products,'',8)
+      recommendations:recommendationsFor(store,web.user.id,products,'',8),
+      leaderboardOptIn:store.get(`portfolio:leaderboard-optin:${web.user.id}`,false)===true
     };
     me={authenticated:true,user:web.user,member:web.member,canControl,profile,favorites:portfolioFavoritesFor(web.user.id)};
     if(bot.status().connected)void bot.syncStudioIdRankRole(web.user.id,profile).catch(error=>store.log('aviso',`Studio K ID rank sync: ${String(error.message).slice(0,300)}`));
