@@ -310,6 +310,11 @@ export function studioIdProfile(store,userId,member={},options={}){
       openTickets:Number(ticketStats.open||0),
       bonusXp
     },
-    purchasedProductIds:[...new Set(purchases.map(row=>String(row.product_id||'')).filter(Boolean))]
+    purchasedProductIds:[...new Set(purchases.map(row=>{
+      const orderId=String(row.product_id||'');
+      const portfolioProducts=store.get('portfolio:products',[])||[];
+      const match=Array.isArray(portfolioProducts)?portfolioProducts.find(product=>String(product.botProductId||'')===orderId||String(product.id||'')===orderId):null;
+      return String(match?.id||orderId);
+    }).filter(Boolean))]
   };
 }
