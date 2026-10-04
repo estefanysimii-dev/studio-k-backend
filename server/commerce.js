@@ -68,6 +68,7 @@ export const roleBenefitSchema=z.object({
   discountPercent:z.number().int().min(0).max(100).default(0),
   stackWithCoupon:z.boolean().default(false),
   productIds:z.array(idText).max(100).default([]),
+  excludedProductIds:z.array(idText).max(100).default([]),
   collectionIds:z.array(idText).max(100).default([]),
   active:z.boolean().default(true)
 });
@@ -220,7 +221,8 @@ export function productAvailability(store,product){
 export function roleBenefitFor(store,member,productId,collections=[]){
   const roleIds=new Set((member?.roles||[]).map(r=>r.id));
   const candidates=list(store,'portfolio:role-benefits').filter(b=>b.active!==false&&roleIds.has(b.roleId)).filter(b=>{
-    const p=b.productIds||[],c=b.collectionIds||[];
+    const p=b.productIds||[],excluded=b.excludedProductIds||[],c=b.collectionIds||[];
+    if(excluded.includes(productId))return false;
     return(!p.length&&!c.length)||p.includes(productId)||c.some(id=>collections.includes(id));
   }).sort((a,b)=>Number(b.discountPercent||0)-Number(a.discountPercent||0));
   return candidates[0]||null;
