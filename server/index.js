@@ -894,10 +894,11 @@ app.post('/api/portfolio/me/cart/checkout',portfolioSameOrigin,async(req,res)=>{
   const created=[];
   try{
     for(const line of expanded){
-      const product=products.find(p=>p.id===line.productId);
-      if(!product?.botProductId)throw new AppError(`${line.name} ainda não está sincronizado com o bot.`,409);
+      let product=products.find(p=>p.id===line.productId);
+      if(!product)throw new AppError(`${line.name} não está mais disponível.`,409);
       const availability=productAvailability(store,product);
       if(availability.available===false)throw new AppError(`${line.name} esgotou ou ficou sem vagas antes da finalização.`,409);
+      product=syncPortfolioProductToBot(product);
       const order=store.createOrder(product.botProductId,web.user.id,'');created.push({order,product,line});
     }
     const roleSubtotal=created.reduce((sum,x)=>sum+Number(x.line.unitPrice||0),0),extra=Math.max(0,quote.bundleDiscount+quote.couponDiscount);
@@ -999,10 +1000,10 @@ app.get('/api/portfolio/me/orders/:id/delivery',(req,res)=>{
 app.post('/api/portfolio/products/:id/order',portfolioSameOrigin,async(req,res)=>{
   const web=portfolioSession(req);
   if(!web?.user?.id)throw new AppError('Conecte sua conta do Discord antes de iniciar uma compra.',401);
-  const product=portfolioProducts().find(item=>item.id===req.params.id&&item.published!==false);
+  let product=portfolioProducts().find(item=>item.id===req.params.id&&item.published!==false);
   if(!product)throw new AppError('Produto não encontrado.',404);
-  if(!product.botProductId)throw new AppError('Este produto ainda não está sincronizado com o bot do Studio K.',409);
   if(product.available===false)throw new AppError('Este produto está esgotado ou sem vagas disponíveis.',409);
+  product=syncPortfolioProductToBot(product);
   if(!demo)await bot.member(web.user.id);
   const couponCode=String(req.body?.couponCode||'').trim().slice(0,40);
   let order=store.createOrder(product.botProductId,web.user.id,couponCode);
