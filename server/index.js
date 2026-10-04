@@ -913,6 +913,19 @@ app.get('/api/portfolio/me/tickets',(req,res)=>{
   const tickets=store.all('SELECT id,channel_id,category,status,state,priority,created,updated,claimed_by,closed_reason,transcript FROM tickets WHERE user_id=? ORDER BY created DESC LIMIT 100',web.user.id);
   res.json({tickets:tickets.map(t=>({...t,notes:store.all("SELECT actor,note,private,created FROM ticket_notes WHERE ticket_id=? AND private=0 ORDER BY created",t.id),transcriptAvailable:!!t.transcript}))});
 });
+app.get('/api/portfolio/me/tickets/:id/messages',async(req,res)=>{
+  const web=portfolioSession(req);if(!web?.user?.id)throw new AppError('Conecte sua conta para ver o atendimento.',401);
+  if(!bot.status().connected)throw new AppError('O bot está offline. O histórico salvo continua disponível, mas as mensagens ao vivo precisam do bot conectado.',503);
+  res.json({messages:await bot.webTicketMessages(req.params.id,web.user.id)});
+});
+app.post('/api/portfolio/me/tickets/:id/reply',portfolioSameOrigin,async(req,res)=>{
+  const web=portfolioSession(req);if(!web?.user?.id)throw new AppError('Conecte sua conta para responder.',401);
+  if(!bot.status().connected)throw new AppError('O bot está offline.',503);
+  const text=z.string().trim().min(1).max(1800).parse(req.body?.text||'');
+  const result=await bot.webTicketReply(req.params.id,web.user.id,text);
+  addNotification(store,web.user.id,{type:'ticket',title:'Mensagem enviada ao atendimento',text:'Sua resposta foi enviada para a equipe Studio K.',href:'/account'});
+  res.json({ok:true,...result});
+});
 app.get('/api/portfolio/me/orders',(req,res)=>{
   const web=portfolioSession(req);
   if(!web?.user?.id)throw new AppError('Conecte sua conta do Discord para ver seus pedidos.',401);
