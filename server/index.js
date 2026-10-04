@@ -297,7 +297,12 @@ const storedPortfolioProducts=()=>{const v=store.get('portfolio:products',[]);re
 const portfolioProducts=()=>{
   const stored=storedPortfolioProducts();
   const baseProducts=stored.length?stored:store.products().map(p=>({id:p.id,name:p.name,description:p.description||'',priceCents:p.priceCents||0,category:p.category||'Studio K',tags:[],coverUrl:p.image||'',modelUrl:'',featured:false,published:true,botProductId:p.id,created:p.created||'',gender:'unisex',neon:false,stockMode:p.type==='digital'?'digital':'unlimited',stockLimit:0,limitedLabel:''}));
-  return baseProducts.map(product=>({...product,...productAvailability(store,product)}));
+  const since24=new Date(Date.now()-24*3600000).toISOString();
+  return baseProducts.map(product=>{
+    const viewsToday=Number(store.one("SELECT COUNT(*) AS n FROM portfolio_events WHERE event='product_view' AND item_kind='product' AND item_id=? AND created>=?",product.id,since24)?.n||0);
+    const favoritesTotal=Number(store.one("SELECT COUNT(*) AS n FROM portfolio_events WHERE event='favorite_add' AND item_kind='product' AND item_id=?",product.id)?.n||0);
+    return{...product,...productAvailability(store,product),viewsToday,favoritesTotal};
+  });
 };
 const portfolioAssets=()=>{const v=store.get('portfolio:assets',[]);return Array.isArray(v)?v:[]};
 const portfolioDrops=()=>{const v=store.get('portfolio:drops',[]);return Array.isArray(v)?v:[]};
