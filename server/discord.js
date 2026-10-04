@@ -695,6 +695,37 @@ ${normalized.previewAfter}
       throw e;
     }
   }
+  async function webTicketMessages(ticketId,userId){
+    const ticket=store.one('SELECT * FROM tickets WHERE id=? AND user_id=?',ticketId,userId);
+    if(!ticket)throw new AppError('Atendimento não encontrado.',404);
+    if(!ticket.channel_id||ticket.status!=='open')return[];
+    const c=await channel(ticket.channel_id),batch=await c.messages.fetch({limit:100});
+    return [...batch.values()].reverse()
+      .filter(message=>!message.system)
+      .map(message=>({
+        id:message.id,
+        authorId:message.author?.id||'',
+        author:message.member?.displayName||message.author?.globalName||message.author?.username||'Studio K',
+        avatar:message.author?.displayAvatarURL?.({size:64})||'',
+        customer:message.author?.id===userId,
+        bot:!!message.author?.bot,
+        content:String(message.content||'').slice(0,3000),
+        attachments:[...message.attachments.values()].map(a=>({name:a.name||'arquivo',url:a.url})).slice(0,10),
+        created:message.createdAt?.toISOString?.()||store.now()
+      }));
+  }
+  async function webTicketReply(ticketId,userId,text){
+    const ticket=store.one('SELECT * FROM tickets WHERE id=? AND user_id=?',ticketId,userId);
+    if(!ticket)throw new AppError('Atendimento não encontrado.',404);
+    if(ticket.status!=='open'||!ticket.channel_id)throw new AppError('Este atendimento não está aberto.',409);
+    const content=String(text||'').trim().slice(0,1800);if(!content)throw new AppError('Escreva uma mensagem.');
+    const c=await channel(ticket.channel_id);
+    const message=await c.send({content:`**Mensagem enviada pelo site · <@${userId}>**\n${content}`,allowedMentions:{parse:[],users:[userId],roles:[],repliedUser:false}});
+    store.run('INSERT INTO ticket_notes(id,ticket_id,actor,note,private,created) VALUES(?,?,?,?,0,?)',randomUUID(),ticketId,userId,content,store.now());
+    store.run('UPDATE tickets SET state=?,updated=? WHERE id=?','waiting_staff',store.now(),ticketId);
+    ticketAuditAppend(ticketId,{action:'web-reply',actor:userId,target:userId,note:content,at:store.now()});
+    return{id:message.id,created:message.createdAt?.toISOString?.()||store.now()};
+  }
   async function closeTicket(id,actor,reason=''){
     const ticket=store.one('SELECT * FROM tickets WHERE id=?',id);if(!ticket)throw new AppError('Ticket não encontrado.',404);if(ticket.status==='closed')return;
     const c=await channel(ticket.channel_id),messages=[];let before;
@@ -1629,7 +1660,7 @@ ${normalized.previewAfter}
     try{const guild=requireGuild();const commands=[{name:'central',description:'Abra a Central Studio K'},{name:'perfil',description:'Veja sua conta, Studio K ID, tickets e pedidos'},{name:'id',description:'Veja seu Studio K ID'},{name:'rank',description:'Veja seu rank, level e XP'},{name:'ajuda',description:'Pesquise ajuda e perguntas frequentes',options:[{name:'busca',description:'Assunto ou palavra-chave',type:3,required:false}]},{name:'loja',description:'Veja produtos e serviços disponíveis'},{name:'cupom',description:'Aplique um cupom na próxima compra',options:[{name:'codigo',description:'Código do cupom',type:3,required:true}]},{name:'pedido',description:'Consulte um pedido e recupere sua entrega',options:[{name:'id',description:'Código completo do pedido; deixe vazio para o mais recente',type:3,required:false}]},{name:'ticket',description:'Abra um atendimento privado'},{name:'verificar',description:'Aceite as regras e receba acesso'},{name:'notificacoes',description:'Escolha quais notificações deseja receber'},{name:'idioma',description:'Escolha o idioma das mensagens privadas do Studio K'},{name:'Traduzir mensagem',type:3}];await new REST({version:'10'}).setToken(env.DISCORD_TOKEN).put(Routes.applicationGuildCommands(env.DISCORD_CLIENT_ID||client.user.id,guild.id),{body:commands});const s=store.settings().brand;client.user.setPresence({status:s.status,activities:s.activity?[{name:s.activity,type:ActivityType[s.activityType]}]:[]});await refreshInviteCache(guild);for(const state of guild.voiceStates.cache.values())if(state.member&&!state.member.user.bot&&state.channelId)startVoiceForUser(state.id,store.now());try{await applyVoicePresence();}catch(e){store.log('aviso',`Presença em call: ${e.message}`);}store.log('conexão',`Conectado ao servidor ${guild.name}.`);error='';await tick();}catch(e){error=e.message;store.log('erro',e.message);}
   });
   const timer=setInterval(()=>void tick(),30000);timer.unref();
-  return {status,client,channel,member,memberProfile,studioIdProfileFor,syncStudioIdRankRole,assignRole,verifyOAuthUser,sendMessage,openTicket,closeTicket,publishPanel,publishConfiguredMessage,publishProduct,createGiveaway,evaluateGiveaway,updateSalesLive,updateOverviewLive,updateLivePanels,createEvent,applyBrand,applyVoicePresence,makeBackup,tick,
+  return {status,client,channel,member,memberProfile,studioIdProfileFor,syncStudioIdRankRole,assignRole,verifyOAuthUser,sendMessage,openTicket,closeTicket,webTicketMessages,webTicketReply,publishPanel,publishConfiguredMessage,publishProduct,createGiveaway,evaluateGiveaway,updateSalesLive,updateOverviewLive,updateLivePanels,createEvent,applyBrand,applyVoicePresence,makeBackup,tick,
     async metadata(){
       const g=requireGuild();
       await Promise.all([g.channels.fetch(),g.roles.fetch(),g.emojis.fetch(),g.members.fetch()]);
