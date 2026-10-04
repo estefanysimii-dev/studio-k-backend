@@ -505,7 +505,9 @@ const portfolioAnalyticsSummary=(days=30)=>{
   const since=new Date(Date.now()-windowDays*86400000).toISOString();
   const count=event=>Number(store.one('SELECT COUNT(*) AS n FROM portfolio_events WHERE event=? AND created>=?',event,since)?.n||0);
   const pageViews=count('page_view'),productViews=count('product_view'),portfolioViews=count('portfolio_view'),favoriteAdds=count('favorite_add'),checkoutStarts=count('checkout_start'),ordersCreated=count('order_created');
-  const clicks=count('click'),searches=count('search'),filters=count('filter'),checkoutErrors=count('checkout_error');
+  const clicks=count('click'),searches=count('search'),filters=count('filter'),checkoutErrors=count('checkout_error'),cartUpdates=count('cart_update'),cartCheckouts=count('cart_checkout');
+  const cartSessions=Number(store.one("SELECT COUNT(DISTINCT session_id) AS n FROM portfolio_events WHERE event='cart_update' AND created>=?",since)?.n||0);
+  const cartCheckoutSessions=Number(store.one("SELECT COUNT(DISTINCT session_id) AS n FROM portfolio_events WHERE event='cart_checkout' AND created>=?",since)?.n||0);
   const uniqueVisitors=Number(store.one("SELECT COUNT(DISTINCT session_id) AS n FROM portfolio_events WHERE event='page_view' AND created>=?",since)?.n||0);
   const returningVisitors=Number(store.one("SELECT COUNT(*) AS n FROM (SELECT session_id FROM portfolio_events WHERE event='page_view' AND created>=? GROUP BY session_id HAVING COUNT(DISTINCT substr(created,1,10))>1)",since)?.n||0);
   const paid=store.one("SELECT COUNT(*) AS n,COALESCE(SUM(price),0) AS revenue FROM orders WHERE status IN ('paid','delivered') AND created>=?",since)||{};
@@ -548,7 +550,8 @@ const portfolioAnalyticsSummary=(days=30)=>{
   const sortMap=(map,limit=8)=>[...map.entries()].sort((a,b)=>b[1]-a[1]).slice(0,limit).map(([label,value])=>({label,value}));
   const daily=store.all("SELECT substr(created,1,10) AS day, SUM(CASE WHEN event='page_view' THEN 1 ELSE 0 END) AS pageViews, SUM(CASE WHEN event='product_view' THEN 1 ELSE 0 END) AS productViews, SUM(CASE WHEN event='checkout_start' THEN 1 ELSE 0 END) AS checkouts, SUM(CASE WHEN event='order_created' THEN 1 ELSE 0 END) AS orders FROM portfolio_events WHERE created>=? GROUP BY substr(created,1,10) ORDER BY day",since).map(row=>({day:row.day,pageViews:Number(row.pageViews||0),productViews:Number(row.productViews||0),checkouts:Number(row.checkouts||0),orders:Number(row.orders||0)}));
   return{
-    days:windowDays,pageViews,uniqueVisitors,returningVisitors,productViews,portfolioViews,favoriteAdds,checkoutStarts,ordersCreated,paidOrders,revenue,clicks,searches,filters,checkoutErrors,
+    days:windowDays,pageViews,uniqueVisitors,returningVisitors,productViews,portfolioViews,favoriteAdds,checkoutStarts,ordersCreated,paidOrders,revenue,clicks,searches,filters,checkoutErrors,cartUpdates,cartCheckouts,cartSessions,cartCheckoutSessions,
+    cartAbandonment:cartSessions?Math.max(0,Math.min(100,Math.round((cartSessions-cartCheckoutSessions)/cartSessions*100))):0,
     avgPageSeconds:pageDurationCount?Math.round(pageDurationTotal/pageDurationCount):0,
     avgScrollDepth:scrollCount?Math.round(scrollTotal/scrollCount):0,
     checkoutAbandonment:checkoutStarts?Math.max(0,Math.min(100,Math.round((checkoutStarts-ordersCreated)/checkoutStarts*100))):0,
