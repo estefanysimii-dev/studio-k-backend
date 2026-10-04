@@ -139,7 +139,6 @@ fn build_preview(ydd: &[u8], ytd: &[u8]) -> Result<(Vec<u8>, Value)> {
             let mut pos_bytes = Vec::with_capacity(vertices.len() * 12);
             let mut normal_bytes = Vec::with_capacity(vertices.len() * 12);
             let mut uv_bytes = Vec::with_capacity(vertices.len() * 8);
-            let mut color_bytes = Vec::with_capacity(vertices.len() * 4);
 
             let mut min = [f32::INFINITY; 3];
             let mut max = [f32::NEG_INFINITY; 3];
@@ -155,7 +154,6 @@ fn build_preview(ydd: &[u8], ytd: &[u8]) -> Result<(Vec<u8>, Value)> {
                 }
                 push_f32(&mut uv_bytes, v.texcoord0.x);
                 push_f32(&mut uv_bytes, v.texcoord0.y);
-                color_bytes.extend_from_slice(&v.color0);
             }
 
             let mut index_bytes = Vec::with_capacity(index_buffer.indices.len() * 4);
@@ -166,13 +164,11 @@ fn build_preview(ydd: &[u8], ytd: &[u8]) -> Result<(Vec<u8>, Value)> {
             let pos_view = add_view(&mut views, &mut bin, &pos_bytes, Some(34962));
             let normal_view = add_view(&mut views, &mut bin, &normal_bytes, Some(34962));
             let uv_view = add_view(&mut views, &mut bin, &uv_bytes, Some(34962));
-            let color_view = add_view(&mut views, &mut bin, &color_bytes, Some(34962));
             let index_view = add_view(&mut views, &mut bin, &index_bytes, Some(34963));
 
             let pos_accessor = add_accessor(&mut accessors, pos_view, 5126, vertices.len(), "VEC3", false, Some(min), Some(max));
             let normal_accessor = add_accessor(&mut accessors, normal_view, 5126, vertices.len(), "VEC3", false, None, None);
             let uv_accessor = add_accessor(&mut accessors, uv_view, 5126, vertices.len(), "VEC2", false, None, None);
-            let color_accessor = add_accessor(&mut accessors, color_view, 5121, vertices.len(), "VEC4", true, None, None);
             let index_accessor = add_accessor(&mut accessors, index_view, 5125, index_buffer.indices.len(), "SCALAR", false, None, None);
 
             let diffuse_name = drawable.diffuse_texture_name(geometry.shader_id).unwrap_or("").to_string();
@@ -239,12 +235,15 @@ fn build_preview(ydd: &[u8], ytd: &[u8]) -> Result<(Vec<u8>, Value)> {
                 materials.len() - 1
             };
 
+            // Roupas de ped no GTA/FiveM podem usar COLOR_0 para parâmetros internos
+            // do shader. Em glTF, COLOR_0 multiplica a textura PBR e pode tingir
+            // texturas brancas (por exemplo, amarelo). A prévia web portanto
+            // preserva geometria, normal e UV, mas omite vertex colors por padrão.
             primitives.push(json!({
                 "attributes": {
                     "POSITION": pos_accessor,
                     "NORMAL": normal_accessor,
-                    "TEXCOORD_0": uv_accessor,
-                    "COLOR_0": color_accessor
+                    "TEXCOORD_0": uv_accessor
                 },
                 "indices": index_accessor,
                 "material": material_index,
