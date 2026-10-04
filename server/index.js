@@ -405,7 +405,7 @@ const syncPortfolioProductToBot=(portfolioProduct)=>{
     description:portfolioProduct.description||'',
     priceCents:Number(portfolioProduct.priceCents||0),
     type:'service',
-    roleId:'',
+    roleId:portfolioProduct.postPurchaseRoleId||'',
     active:portfolioProduct.published!==false,
     image:image&&image.startsWith('https://')?image:'',
     delivery:'',
@@ -636,7 +636,8 @@ const portfolioProductSchema=portfolioItemSchema.extend({
   neon:z.boolean().default(false),
   stockMode:z.enum(['unlimited','digital','limited','slots','numbered']).default('unlimited'),
   stockLimit:z.number().int().min(0).max(100000).default(0),
-  limitedLabel:z.string().trim().max(120).default('')
+  limitedLabel:z.string().trim().max(120).default(''),
+  postPurchaseRoleId:z.string().trim().regex(/^$|^\d{17,20}$/).default('')
 });
 const portfolioDropSchema=z.object({
   title:z.string().trim().min(2).max(140),
