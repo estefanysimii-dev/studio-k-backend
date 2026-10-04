@@ -1017,7 +1017,9 @@ app.post('/api/portfolio/products/:id/order',portfolioSameOrigin,async(req,res)=
   const memberDiscountPercent=Math.max(0,Math.min(100,Number(portfolioSite().memberDiscountPercent||0)));
   const collectionIds=(commercePublicState(store).collections||[]).filter(collection=>(collection.productIds||[]).includes(product.id)).map(collection=>collection.id);
   const discordBenefit=roleBenefitFor(store,web.member||{},product.id,collectionIds);
-  const effectiveBenefitPercent=Math.max(memberDiscountPercent,Math.max(0,Math.min(100,Number(discordBenefit?.discountPercent||0))));
+  const discordBenefitAllowed=!order.coupon_code||discordBenefit?.stackWithCoupon===true;
+  const rolePercent=discordBenefitAllowed?Math.max(0,Math.min(100,Number(discordBenefit?.discountPercent||0))):0;
+  const effectiveBenefitPercent=Math.max(memberDiscountPercent,rolePercent);
   if(effectiveBenefitPercent>0&&Number(order.price||0)>0){
     const memberDiscount=Math.floor(Number(order.price||0)*effectiveBenefitPercent/100);
     if(memberDiscount>0){
