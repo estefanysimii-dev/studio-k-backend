@@ -799,7 +799,7 @@ app.post('/api/portfolio/analytics/event',portfolioSameOrigin,(req,res)=>{
 app.get('/api/portfolio/public-state',async(req,res)=>{
   const web=portfolioSession(req),items=portfolioItems().filter(x=>x.published),products=portfolioProducts().filter(x=>x.published),feedbacks=await publicPortfolioFeedbacks(500),commerce=commercePublicState(store);
   const canControl=web?await portfolioCanControl(req,web):false;
-  let me={authenticated:false,canControl:false},personal={cart:[],notifications:[],missions:[],recommendations:[],leaderboardOptIn:false,restockSubscriptions:[],ticketCategories:[]};
+  let me={authenticated:false,canControl:false},personal={cart:[],notifications:[],missions:[],recommendations:[],leaderboardOptIn:false,restockSubscriptions:[],ticketCategories:[],activityHistory:[]};
   if(web){
     const profile=portfolioMemberProfile(web.user.id,web.member||{});
     const missions=(commerce.missions||[]).map(mission=>({...mission,...missionProgress(store,web.user.id,web.member||{},mission)}));
@@ -810,7 +810,17 @@ app.get('/api/portfolio/public-state',async(req,res)=>{
       recommendations:recommendationsFor(store,web.user.id,products,'',8),
       leaderboardOptIn:store.get(`portfolio:leaderboard-optin:${web.user.id}`,false)===true,
       restockSubscriptions:products.filter(product=>(store.get(`portfolio:restock:${product.id}`,[])||[]).includes(web.user.id)).map(product=>product.id),
-      ticketCategories:store.settings().tickets?.categories||[]
+      ticketCategories:store.settings().tickets?.categories||[],
+      activityHistory:store.all("SELECT event,item_kind,item_id,path,meta,created FROM portfolio_events WHERE user_id=? ORDER BY id DESC LIMIT 60",web.user.id).map(row=>{
+        let meta={};try{meta=JSON.parse(row.meta||'{}')}catch{}
+        const labels={
+          page_view:'Página visitada',product_view:'Produto visualizado',portfolio_view:'Projeto visualizado',
+          favorite_add:'Adicionado aos favoritos',favorite_remove:'Removido dos favoritos',cart_update:'Carrinho atualizado',
+          cart_checkout:'Carrinho finalizado',checkout_start:'Checkout iniciado',checkout_error:'Falha no checkout',
+          search:'Busca realizada',filter:'Filtro aplicado',compare_open:'Comparação aberta'
+        };
+        return{event:row.event,label:labels[row.event]||row.event,itemKind:row.item_kind||'',itemId:row.item_id||'',path:row.path||'',meta,created:row.created};
+      })
     };
     me={authenticated:true,user:web.user,member:web.member,canControl,profile,favorites:portfolioFavoritesFor(web.user.id)};
     if(bot.status().connected)void bot.syncStudioIdRankRole(web.user.id,profile).catch(error=>store.log('aviso',`Studio K ID rank sync: ${String(error.message).slice(0,300)}`));
