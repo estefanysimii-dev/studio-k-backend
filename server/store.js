@@ -146,7 +146,7 @@ export function openStore(directory) {
   function createOrder(productId,userId,couponCode=''){return transaction(()=>{
     const row=one('SELECT * FROM products WHERE id=?',productId);if(!row)throw new AppError('Produto não encontrado.',404);
     const p=JSON.parse(row.data);if(!p.active)throw new AppError('Produto indisponível.');
-    const pending=one("SELECT COUNT(*) AS n FROM orders WHERE user_id=? AND status='pending'",userId).n;if(pending>=3)throw new AppError('Você já possui três pedidos aguardando pagamento.');
+    const pending=one("SELECT COUNT(*) AS n FROM orders WHERE user_id=? AND status='pending'",userId).n;if(pending>=20)throw new AppError('Você já possui muitos pedidos aguardando pagamento. Finalize ou cancele alguns antes de continuar.');
     const unit=p.type==='digital'?one('SELECT id FROM stock WHERE product_id=? AND order_id IS NULL LIMIT 1',productId):null;
     if(p.type==='digital'&&!unit)throw new AppError('Este produto está sem estoque.');
     const coupon=couponFor(couponCode,userId,productId,p.priceCents),discount=coupon?.discount||0,finalPrice=Math.max(0,p.priceCents-discount);
