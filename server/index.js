@@ -15,7 +15,7 @@ import { studioIdConfig, saveStudioIdConfig, studioIdConfigSchema, studioIdentit
 import {
   commerceAdminState,commercePublicState,upsertCommerce,deleteCommerce,setLeaderboardConfig,
   cartFor,setCart,notificationsFor,addNotification,markNotification,quoteCart,missionProgress,claimMission,
-  recommendationsFor,globalSearch,leaderboard,activityFeed,recordVersion,versionsFor,runSchedules,productAvailability
+  recommendationsFor,globalSearch,leaderboard,activityFeed,recordVersion,versionsFor,runSchedules,productAvailability,roleBenefitFor
 } from './commerce.js';
 const demo=process.env.STUDIO_DEMO==='true',port=Number(process.env.PORT||3210),host=demo?'127.0.0.1':process.env.HOST||'127.0.0.1';
 const base=new URL(process.env.PUBLIC_URL||`http://localhost:${port}`);
@@ -871,26 +871,29 @@ app.get('/api/portfolio/products/:id/recommendations',(req,res)=>{
 });
 app.get('/api/portfolio/me/cart',(req,res)=>{
   const web=portfolioSession(req);if(!web?.user?.id)throw new AppError('Conecte sua conta do Discord para usar o carrinho.',401);
-  res.json({cart:cartFor(store,web.user.id),quote:quoteCart(store,web.user.id,web.member||{},portfolioProducts().filter(x=>x.published!==false),String(req.query.coupon||''))});
+  res.json({cart:cartFor(store,web.user.id),quote:quoteCart(store,web.user.id,web.member||{},portfolioProducts().filter(x=>x.published!==false),String(req.query.coupon||''),Math.max(0,Math.min(100,Number(portfolioSite().memberDiscountPercent||0))))});
 });
 app.put('/api/portfolio/me/cart',portfolioSameOrigin,(req,res)=>{
   const web=portfolioSession(req);if(!web?.user?.id)throw new AppError('Conecte sua conta do Discord para usar o carrinho.',401);
   const items=z.array(z.object({productId:z.string().trim().min(1).max(160),quantity:z.number().int().min(1).max(20)})).max(50).parse(req.body?.items||[]);
   setCart(store,web.user.id,items);
   recordPortfolioEvent('cart_update',{sessionId:`member:${web.user.id}`,userId:web.user.id,itemKind:'page',path:'/cart',meta:{items:items.length}});
-  res.json({cart:cartFor(store,web.user.id),quote:quoteCart(store,web.user.id,web.member||{},portfolioProducts().filter(x=>x.published!==false),String(req.body?.couponCode||''))});
+  res.json({cart:cartFor(store,web.user.id),quote:quoteCart(store,web.user.id,web.member||{},portfolioProducts().filter(x=>x.published!==false),String(req.body?.couponCode||''),Math.max(0,Math.min(100,Number(portfolioSite().memberDiscountPercent||0))))});
 });
 app.post('/api/portfolio/me/cart/checkout',portfolioSameOrigin,async(req,res)=>{
   const web=portfolioSession(req);if(!web?.user?.id)throw new AppError('Conecte sua conta do Discord para finalizar o carrinho.',401);
   if(!demo)await bot.member(web.user.id);
-  const products=portfolioProducts().filter(x=>x.published!==false),couponCode=String(req.body?.couponCode||'').trim().slice(0,40),quote=quoteCart(store,web.user.id,web.member||{},products,couponCode);
+  const products=portfolioProducts().filter(x=>x.published!==false),couponCode=String(req.body?.couponCode||'').trim().slice(0,40),quote=quoteCart(store,web.user.id,web.member||{},products,couponCode,Math.max(0,Math.min(100,Number(portfolioSite().memberDiscountPercent||0))));
   if(!quote.items.length)throw new AppError('Seu carrinho está vazio.');
   const expanded=[];for(const line of quote.items)for(let n=0;n<line.quantity;n++)expanded.push(line);
   if(expanded.length>20)throw new AppError('O carrinho pode finalizar até 20 unidades por vez.');
   const created=[];
   try{
     for(const line of expanded){
-      const product=products.find(p=>p.id===line.productId);if(!product?.botProductId)throw new AppError(`${line.name} ainda não está sincronizado com o bot.`,409);
+      const product=products.find(p=>p.id===line.productId);
+      if(!product?.botProductId)throw new AppError(`${line.name} ainda não está sincronizado com o bot.`,409);
+      const availability=productAvailability(store,product);
+      if(availability.available===false)throw new AppError(`${line.name} esgotou ou ficou sem vagas antes da finalização.`,409);
       const order=store.createOrder(product.botProductId,web.user.id,'');created.push({order,product,line});
     }
     const roleSubtotal=created.reduce((sum,x)=>sum+Number(x.line.unitPrice||0),0),extra=Math.max(0,quote.bundleDiscount+quote.couponDiscount);
@@ -1002,8 +1005,11 @@ app.post('/api/portfolio/products/:id/order',portfolioSameOrigin,async(req,res)=
     }
   }
   const memberDiscountPercent=Math.max(0,Math.min(100,Number(portfolioSite().memberDiscountPercent||0)));
-  if(memberDiscountPercent>0&&Number(order.price||0)>0){
-    const memberDiscount=Math.floor(Number(order.price||0)*memberDiscountPercent/100);
+  const collectionIds=(commercePublicState(store).collections||[]).filter(collection=>(collection.productIds||[]).includes(product.id)).map(collection=>collection.id);
+  const discordBenefit=roleBenefitFor(store,web.member||{},product.id,collectionIds);
+  const effectiveBenefitPercent=Math.max(memberDiscountPercent,Math.max(0,Math.min(100,Number(discordBenefit?.discountPercent||0))));
+  if(effectiveBenefitPercent>0&&Number(order.price||0)>0){
+    const memberDiscount=Math.floor(Number(order.price||0)*effectiveBenefitPercent/100);
     if(memberDiscount>0){
       store.run('UPDATE orders SET price=?,discount=COALESCE(discount,0)+? WHERE id=?',Math.max(0,Number(order.price||0)-memberDiscount),memberDiscount,order.id);
       order=store.one('SELECT * FROM orders WHERE id=?',order.id);
