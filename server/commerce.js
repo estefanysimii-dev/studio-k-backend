@@ -110,7 +110,8 @@ export function commerceAdminState(store){
     schedules:list(store,'portfolio:schedules'),
     gallery:list(store,'portfolio:gallery'),
     lookbooks:list(store,'portfolio:lookbooks'),
-    leaderboard:store.get('portfolio:leaderboard-config',{enabled:false})
+    leaderboard:store.get('portfolio:leaderboard-config',{enabled:false}),
+    feedbackAutomation:store.get('portfolio:feedback-automation',{enabled:true,delayHours:24})
   };
 }
 
@@ -155,6 +156,15 @@ export function deleteCommerce(store,kind,id){
 export function setLeaderboardConfig(store,value){
   const next={enabled:value?.enabled===true};
   store.set('portfolio:leaderboard-config',next);return next;
+}
+
+export function setFeedbackAutomationConfig(store,value){
+  const next={
+    enabled:value?.enabled!==false,
+    delayHours:Math.max(0,Math.min(720,Number(value?.delayHours)||0))
+  };
+  store.set('portfolio:feedback-automation',next);
+  return next;
 }
 
 export function cartFor(store,userId){
