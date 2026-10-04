@@ -676,7 +676,33 @@ const portfolioProfilePrefsFor=(userId)=>studioProfilePrefsFor(store,userId);
 const portfolioMemberProfile=(userId,member={})=>studioIdProfile(store,userId,member,{
   discountPercent:Math.max(0,Number(portfolioSite().memberDiscountPercent||0))
 });
-async function publicPortfolioFeedbacks(limit=500){const rows=store.all("SELECT id,type,source_id,user_id,rating,comment,meta,submitted_at FROM feedback_requests WHERE status='submitted' ORDER BY submitted_at DESC LIMIT ?",Math.max(1,Math.min(1000,Number(limit)||500)));return Promise.all(rows.map(async row=>{let meta={};try{meta=JSON.parse(row.meta||'{}')}catch{}let profile=null;try{profile=await portfolioMember(row.user_id)}catch{}const source=row.type==='ticket'?'Atendimento':'Compra';const reference=row.type==='ticket'?(meta.ticket||`#${row.source_id.slice(0,8)}`):(meta.product||`#${row.source_id.slice(0,8)}`);return{id:row.id,rating:Number(row.rating||0),comment:String(row.comment||'').slice(0,1200),source,reference,name:profile?.name||'Cliente Studio K',avatar:profile?.avatar||'',submittedAt:row.submitted_at||'',meta:{service:meta.service||null,speed:meta.speed||null,resolution:meta.resolution||null}}}))}
+const portfolioFeedbackModeration=()=>{
+  const saved=store.get('portfolio:feedback-moderation',{})||{};
+  const normalize=list=>[...new Set((Array.isArray(list)?list:[]).map(value=>String(value||'').trim()).filter(Boolean))].slice(0,1000);
+  return{order:normalize(saved.order),hidden:normalize(saved.hidden)};
+};
+const savePortfolioFeedbackModeration=(value)=>{
+  const submitted=new Set(store.all("SELECT id FROM feedback_requests WHERE status='submitted'").map(row=>String(row.id)));
+  const normalize=list=>[...new Set((Array.isArray(list)?list:[]).map(value=>String(value||'').trim()).filter(id=>submitted.has(id)))].slice(0,1000);
+  const next={order:normalize(value?.order),hidden:normalize(value?.hidden)};
+  store.set('portfolio:feedback-moderation',next);
+  return next;
+};
+async function portfolioFeedbacks(limit=500,{includeHidden=false}={}){
+  const rows=store.all("SELECT id,type,source_id,user_id,rating,comment,meta,submitted_at FROM feedback_requests WHERE status='submitted' ORDER BY submitted_at DESC LIMIT ?",Math.max(1,Math.min(1000,Number(limit)||500)));
+  const moderation=portfolioFeedbackModeration(),hidden=new Set(moderation.hidden),orderIndex=new Map(moderation.order.map((id,index)=>[id,index]));
+  const sorted=[...rows].sort((a,b)=>{
+    const ai=orderIndex.has(a.id)?orderIndex.get(a.id):Number.MAX_SAFE_INTEGER;
+    const bi=orderIndex.has(b.id)?orderIndex.get(b.id):Number.MAX_SAFE_INTEGER;
+    if(ai!==bi)return ai-bi;
+    return String(b.submitted_at||'').localeCompare(String(a.submitted_at||''));
+  });
+  const visibleRows=includeHidden?sorted:sorted.filter(row=>!hidden.has(row.id));
+  const limited=visibleRows.slice(0,Math.max(1,Math.min(1000,Number(limit)||500)));
+  return Promise.all(limited.map(async(row,index)=>{let meta={};try{meta=JSON.parse(row.meta||'{}')}catch{}let profile=null;try{profile=await portfolioMember(row.user_id)}catch{}const source=row.type==='ticket'?'Atendimento':'Compra';const reference=row.type==='ticket'?(meta.ticket||`#${row.source_id.slice(0,8)}`):(meta.product||`#${row.source_id.slice(0,8)}`);return{id:row.id,rating:Number(row.rating||0),comment:String(row.comment||'').slice(0,1200),source,reference,name:profile?.name||'Cliente Studio K',avatar:profile?.avatar||'',submittedAt:row.submitted_at||'',visible:!hidden.has(row.id),order:index,meta:{service:meta.service||null,speed:meta.speed||null,resolution:meta.resolution||null}}}))
+}
+const publicPortfolioFeedbacks=(limit=500)=>portfolioFeedbacks(limit,{includeHidden:false});
+const controlPortfolioFeedbacks=(limit=500)=>portfolioFeedbacks(limit,{includeHidden:true});
 app.get('/api/portfolio/oauth/start',(req,res)=>{
   if(!process.env.DISCORD_CLIENT_ID||!process.env.DISCORD_CLIENT_SECRET)throw new AppError('OAuth do Discord ainda não está configurado no servidor.',503);
   const next=String(req.query.next||'/account'),safeNext=(next.startsWith('/')&&!next.startsWith('//'))?next:'/account';
@@ -903,7 +929,7 @@ app.get('/api/portfolio/control/state',portfolioControl,async(req,res)=>{
     drops:portfolioDrops().map(drop=>({...drop,status:portfolioDropStatus(drop)})),
     analytics:portfolioAnalyticsSummary(30),
     assets:portfolioAssets(),
-    feedbacks:await publicPortfolioFeedbacks(50),
+    feedbacks:await controlPortfolioFeedbacks(500),
     discord:{
       oauthConfigured:!!(process.env.DISCORD_CLIENT_ID&&process.env.DISCORD_CLIENT_SECRET),
       redirectUri:portfolioRedirect,
@@ -920,6 +946,15 @@ app.put('/api/portfolio/control/studio-id',portfolioControl,portfolioSameOrigin,
   const next=saveStudioIdConfig(store,req.body||{});
   store.log('portfólio','Configurações do Studio K ID atualizadas.','portfolio-control');
   res.json(next);
+});
+app.put('/api/portfolio/control/feedbacks',portfolioControl,portfolioSameOrigin,async(req,res)=>{
+  const body=z.object({
+    order:z.array(z.string().trim().min(1).max(120)).max(1000).default([]),
+    hidden:z.array(z.string().trim().min(1).max(120)).max(1000).default([])
+  }).parse(req.body||{});
+  const moderation=savePortfolioFeedbackModeration(body);
+  store.log('portfólio',`Organização de feedbacks atualizada: ${moderation.order.length} ordenados · ${moderation.hidden.length} ocultos`,'portfolio-control');
+  res.json({ok:true,moderation,feedbacks:await controlPortfolioFeedbacks(500)});
 });
 app.post('/api/portfolio/control/items',portfolioControl,portfolioSameOrigin,(req,res)=>{const item={id:randomUUID(),...portfolioItemSchema.parse(req.body),created:store.now(),updated:store.now()};const items=portfolioItems();if(item.featured)for(const x of items)x.featured=false;items.unshift(item);store.set('portfolio:items',items);res.json(item)});
 app.put('/api/portfolio/control/items/:id',portfolioControl,portfolioSameOrigin,(req,res)=>{const items=portfolioItems(),index=items.findIndex(x=>x.id===req.params.id);if(index<0)throw new AppError('Projeto não encontrado.',404);const next={...items[index],...portfolioItemSchema.parse(req.body),updated:store.now()};if(next.featured)for(const x of items)x.featured=false;items[index]=next;store.set('portfolio:items',items);res.json(next)});
