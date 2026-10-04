@@ -3,6 +3,7 @@ import { randomUUID, randomBytes, createHash } from 'node:crypto';
 import { joinVoiceChannel, getVoiceConnection, VoiceConnectionStatus, entersState } from '@discordjs/voice';
 import { AppError } from './store.js';
 import { studioIdConfig, studioIdProfile } from './studio-id.js';
+import { addNotification } from './commerce.js';
 export function expandText(value,variables={}) {
   return String(value||'').replace(/\{([A-Za-z][A-Za-z0-9_]*)\}/g,(match,key)=>Object.prototype.hasOwnProperty.call(variables,key)?String(variables[key]??''):match);
 }
@@ -751,7 +752,8 @@ ${normalized.previewAfter}
     }catch(e){
       store.log('aviso',`Ticket ${ticketName} encerrado, mas a DM com o transcript não pôde ser entregue: ${String(e.message).slice(0,300)}`,actor);
     }
-    ticketAuditAppend(id,{action:'close',actor,target:ticket.user_id,dmSent,reason:String(reason||'').slice(0,500)});if(/^\d{17,20}$/.test(String(actor||'')))store.recordStaffAction(actor,'close',id,ticket.user_id,{reason:String(reason||'').slice(0,500)});
+    addNotification(store,ticket.user_id,{type:'ticket',title:'Atendimento finalizado',text:`${ticket.category} foi encerrado. O transcript está disponível na sua conta.`,href:'/account'});
+        ticketAuditAppend(id,{action:'close',actor,target:ticket.user_id,dmSent,reason:String(reason||'').slice(0,500)});if(/^\d{17,20}$/.test(String(actor||'')))store.recordStaffAction(actor,'close',id,ticket.user_id,{reason:String(reason||'').slice(0,500)});
     const ticketAudit=ticketAuditFinish(id),events=Array.isArray(ticketAudit.events)?ticketAudit.events:[],openedAt=ticketAudit.openedAt||ticket.created,closedAt=now;
     const durationMs=Math.max(0,Date.parse(closedAt)-Date.parse(openedAt)),durationMinutes=Math.floor(durationMs/60000);
     const persistedNotes=store.all('SELECT actor,note,created FROM ticket_notes WHERE ticket_id=? ORDER BY created',id).map(n=>({action:'note',actor:n.actor,target:ticket.user_id,note:n.note,at:n.created}));
@@ -873,13 +875,15 @@ ${normalized.previewAfter}
         const user=await member(order.user_id),settings=store.settings(),style=settings.messageStyles.orderDelivery;
         const payload=styledPayload(style,{product:p.name,order:order.id,delivery,instructions:p.delivery||''});
         const feedback=p.type==='digital'?createFeedbackRequest('order',order.id,order.user_id,{product:p.name}):null;
+        const feedbackAutomation=store.get('portfolio:feedback-automation',{enabled:true,delayHours:24})||{};
         const components=[...(payload.components||[])].slice(0,4);
-        if(feedback)components.push(row(button('Dar feedback',`feedback:${feedback.id}`,2)));
+        if(feedback&&feedbackAutomation.enabled!==false&&Number(feedbackAutomation.delayHours||0)<=0)components.push(row(button('Dar feedback',`feedback:${feedback.id}`,2)));
         const deliveryMessage={...payload,components,allowedMentions:mentionPolicy(payload),nonce:createHash('sha256').update(order.id).digest('hex').slice(0,24),enforceNonce:true},localizedDelivery=await localizeFor(order.user_id,deliveryMessage);
         await user.send({...localizedDelivery,allowedMentions:mentionPolicy(localizedDelivery),nonce:deliveryMessage.nonce,enforceNonce:true});
         store.run('UPDATE orders SET delivery_done=1 WHERE id=?',order.id);
       }
       store.run("UPDATE orders SET status='delivered',delivery_done=1,delivered_at=?,error=NULL WHERE id=?",store.now(),order.id);
+      addNotification(store,order.user_id,{type:'order',title:'Pedido entregue 💜',text:`${p.name} já está disponível na sua biblioteca Studio K.`,href:'/account'});
       try{await syncStudioIdRankRole(order.user_id);}catch(e){store.log('aviso',`Studio K ID rank sync após entrega: ${String(e.message).slice(0,300)}`);}
       await audit('entrega',`Pedido ${order.id.slice(0,8)} entregue.`);
     }catch(e){store.run('UPDATE orders SET error=? WHERE id=?',String(e.message).slice(0,500),order.id);}
@@ -1140,6 +1144,23 @@ ${normalized.previewAfter}
     try{await applyVoicePresence();}catch(e){store.log('aviso',`Presença em call: ${e.message}`);}
     await updateLivePanels();
     for(const o of store.all("SELECT * FROM orders WHERE status='paid' LIMIT 10"))await deliverOrder(o);
+    const feedbackAutomation=store.get('portfolio:feedback-automation',{enabled:true,delayHours:24})||{};
+    if(feedbackAutomation.enabled!==false&&Number(feedbackAutomation.delayHours||0)>0){
+      const cutoff=new Date(Date.now()-Math.max(0,Number(feedbackAutomation.delayHours||0))*3600000).toISOString();
+      for(const request of store.all("SELECT * FROM feedback_requests WHERE type='order' AND status='pending' AND created<=? ORDER BY created LIMIT 20",cutoff)){
+        const reminderKey=`feedback-reminded:${request.id}`;
+        if(store.get(reminderKey))continue;
+        try{
+          const user=await member(request.user_id);
+          let meta={};try{meta=JSON.parse(request.meta||'{}')}catch{}
+          const message={content:`💜 Como foi sua experiência com **${meta.product||'sua compra no Studio K'}**? Sua avaliação ajuda o Studio K e ainda conta para seu perfil.`,components:[row(button('Dar feedback',`feedback:${request.id}`,2))],allowedMentions:safe};
+          const localized=await localizeFor(request.user_id,message);
+          await user.send({...localized,allowedMentions:safe});
+          store.set(reminderKey,{at:store.now()});
+          addNotification(store,request.user_id,{type:'feedback',title:'Conta pra gente como foi ✨',text:`Avalie ${meta.product||'sua última compra'} e ganhe progresso no Studio K ID.`,href:'/account'});
+        }catch(e){store.log('aviso',`Feedback automático ${request.id.slice(0,8)}: ${String(e.message).slice(0,300)}`);}
+      }
+    }
     for(const g of store.all("SELECT * FROM giveaways WHERE status IN ('active','drawn')")){if(g.status==='drawn'||Date.parse(JSON.parse(g.data).endsAt)<=Date.now())try{await finishGiveaway(g);}catch(e){store.log('erro',`Sorteio ${g.id.slice(0,8)}: ${e.message}`);}}
     if(s.tickets.escalationMinutes>0){
       const cutoff=new Date(Date.now()-s.tickets.escalationMinutes*60000).toISOString();
@@ -1214,6 +1235,7 @@ ${normalized.previewAfter}
         try{
           await publishFeedback({...request,meta:JSON.stringify(requestMeta)},rating,detailedComment,i.user);
           store.run("UPDATE feedback_requests SET status='submitted',rating=?,comment=?,meta=?,submitted_at=? WHERE id=?",rating,comment,JSON.stringify(requestMeta),store.now(),id);
+          addNotification(store,i.user.id,{type:'feedback',title:'Feedback publicado ★',text:`Obrigada! Sua avaliação ${rating}/5 foi registrada no Studio K.`,href:'/account'});
           try{await syncStudioIdRankRole(i.user.id);}catch(e){store.log('aviso',`Studio K ID rank sync após feedback: ${String(e.message).slice(0,300)}`);}
         }catch(e){
           store.run("UPDATE feedback_requests SET status='pending' WHERE id=? AND status='publishing'",id);
