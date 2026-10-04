@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { spawn } from 'node:child_process';
 import { z } from 'zod';
 import { openStore, AppError } from './store.js';
+import { installClothTool } from './clothtool.js';
 import { createBot } from './discord.js';
 import { defaultRadio, radioSchema, normalizeRadio, radioSnapshot } from './radio.js';
 import { settingsSchema, productSchema, messageSchema, templateSchema, giveawaySchema, eventSchema, id } from './schema.js';
@@ -609,11 +610,11 @@ const portfolioStaffRoleIds=()=>{
   const groups=store.settings().roleGroups||{};
   return [...new Set([...(groups.staff||[]),...(groups.highStaff||[])].filter(Boolean))];
 };
-const portfolioCanControl=async(req,web=portfolioSession(req))=>{
+const portfolioCanControl=async(req,web=portfolioSession(req),force=false)=>{
   if(!web?.user?.id)return false;
   const allowed=portfolioStaffRoleIds();
   if(!allowed.length)return false;
-  const member=await portfolioMember(web.user.id);
+  const member=await portfolioMember(web.user.id,{force});
   web.member=member;
   return !!member?.inGuild&&(member.roles||[]).some(role=>allowed.includes(role.id));
 };
@@ -714,7 +715,7 @@ const portfolioSiteSchema=z.object({
     ctx.addIssue({code:'custom',path:['defaultAnnouncementChannelId'],message:'Selecione um canal padrão antes de ativar o anúncio automático.'});
   }
 });
-async function portfolioMember(userId){try{const m=bot.status().connected?await bot.memberProfile(userId):null;return m?{...m,inGuild:true}:{inGuild:false,roles:[]}}catch{return{inGuild:false,roles:[]}}}
+async function portfolioMember(userId,options={}){try{const m=bot.status().connected?await bot.memberProfile(userId,options):null;return m?{...m,inGuild:true}:{inGuild:false,roles:[]}}catch{return{inGuild:false,roles:[]}}}
 const portfolioFavoritesFor=(userId)=>studioFavoritesFor(store,userId);
 const portfolioIdentityFor=(userId)=>studioIdentityFor(store,userId);
 const portfolioProfilePrefsFor=(userId)=>studioProfilePrefsFor(store,userId);
@@ -1137,6 +1138,8 @@ app.post('/api/portfolio/products/:id/order',portfolioSameOrigin,async(req,res)=
   });
 });
 const portfolioControl=async(req,res,next)=>{const web=portfolioSession(req);if(!await portfolioCanControl(req,web))return res.status(403).json({error:'A Central de Controle é exclusiva para membros com cargo de Staff no Discord do Studio K.'});req.portfolioWeb=web;next()};
+installClothTool(app,{store,control:portfolioControl,sameOrigin:portfolioSameOrigin,
+  canControl:userId=>portfolioCanControl(null,{user:{id:userId}},true),publicOrigin:portfolioPublicOrigin});
 app.get('/api/portfolio/control/state',portfolioControl,async(req,res)=>{
   let channels=[],roles=[];
   const cartGroups=store.all("SELECT key,value FROM kv WHERE key LIKE 'portfolio:cart-group:%'").map(row=>{
