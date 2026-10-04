@@ -215,7 +215,7 @@ export function quoteCart(store,userId,member,products,couponCode=''){
     const qty=Math.max(1,row.quantity),base=Math.max(0,Number(p.priceCents||0)),collections=productCollections(store,p.id),benefit=roleBenefitFor(store,member,p.id,collections);
     const roleDiscount=Math.floor(base*Math.min(100,Number(benefit?.discountPercent||0))/100);
     const unit=Math.max(0,base-roleDiscount);
-    lines.push({productId:p.id,name:p.name,quantity:qty,basePrice:base,unitPrice:unit,roleDiscount,roleBenefit:benefit?{id:benefit.id,label:benefit.label,discountPercent:benefit.discountPercent}:null,subtotal:unit*qty});
+    lines.push({productId:p.id,name:p.name,quantity:qty,basePrice:base,unitPrice:unit,roleDiscount,roleBenefit:benefit?{id:benefit.id,label:benefit.label,discountPercent:benefit.discountPercent,stackWithCoupon:benefit.stackWithCoupon===true}:null,subtotal:unit*qty});
   }
   let subtotal=lines.reduce((s,l)=>s+l.subtotal,0),bundleDiscount=0,appliedBundles=[];
   for(const bundle of list(store,'portfolio:bundles').filter(x=>x.active!==false)){
@@ -229,7 +229,8 @@ export function quoteCart(store,userId,member,products,couponCode=''){
   if(normalized&&lines.length){
     const cp=store.one('SELECT * FROM coupons WHERE code=?',normalized);
     if(cp&&cp.active&&(!cp.expires||Date.parse(cp.expires)>Date.now())&&(!cp.max_uses||cp.uses<cp.max_uses)){
-      const eligible=cp.product_id?lines.filter(l=>l.productId===cp.product_id):lines;
+      const baseEligible=lines.filter(l=>!l.roleBenefit||l.roleBenefit.stackWithCoupon===true);
+      const eligible=cp.product_id?baseEligible.filter(l=>l.productId===cp.product_id):baseEligible;
       const eligibleValue=eligible.reduce((s,l)=>s+l.subtotal,0);
       couponDiscount=cp.type==='percent'?Math.floor(eligibleValue*Math.min(100,cp.value)/100):Math.min(eligibleValue,cp.value);
       coupon={code:normalized,discount:couponDiscount};
