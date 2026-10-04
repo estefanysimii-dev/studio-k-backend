@@ -1101,8 +1101,10 @@ app.put('/api/portfolio/control/feedbacks',portfolioControl,portfolioSameOrigin,
   res.json({ok:true,moderation,feedbacks:await controlPortfolioFeedbacks(500)});
 });
 app.put('/api/portfolio/control/commerce/:kind',portfolioControl,portfolioSameOrigin,(req,res)=>{
-  const item=upsertCommerce(store,String(req.params.kind||''),req.body||{});
-  recordVersion(store,{entityType:String(req.params.kind||''),entityId:item.id,before:null,after:item,actor:req.portfolioWeb?.user?.id||'portfolio-control',action:'upsert'});
+  const kind=String(req.params.kind||''),incomingId=String(req.body?.id||''),adminState=commerceAdminState(store);
+  const before=incomingId&&Array.isArray(adminState[kind])?adminState[kind].find(item=>item.id===incomingId)||null:null;
+  const item=upsertCommerce(store,kind,req.body||{});
+  recordVersion(store,{entityType:kind,entityId:item.id,before,after:item,actor:req.portfolioWeb?.user?.id||'portfolio-control',action:before?'update':'create'});
   res.json(item);
 });
 app.delete('/api/portfolio/control/commerce/:kind/:id',portfolioControl,portfolioSameOrigin,(req,res)=>{
@@ -1113,8 +1115,9 @@ app.delete('/api/portfolio/control/commerce/:kind/:id',portfolioControl,portfoli
 });
 app.put('/api/portfolio/control/leaderboard',portfolioControl,portfolioSameOrigin,(req,res)=>res.json(setLeaderboardConfig(store,req.body||{})));
 app.put('/api/portfolio/control/feedback-automation',portfolioControl,portfolioSameOrigin,(req,res)=>{
+  const previous=commerceAdminState(store).feedbackAutomation||{enabled:true,delayHours:24};
   const next=setFeedbackAutomationConfig(store,req.body||{});
-  recordVersion(store,{entityType:'feedbackAutomation',entityId:'main',before:null,after:next,actor:req.portfolioWeb?.user?.id||'portfolio-control',action:'update'});
+  recordVersion(store,{entityType:'feedbackAutomation',entityId:'main',before:previous,after:next,actor:req.portfolioWeb?.user?.id||'portfolio-control',action:'update'});
   res.json(next);
 });
 app.get('/api/portfolio/control/versions',portfolioControl,(req,res)=>res.json(versionsFor(store).slice(0,500)));
@@ -1139,6 +1142,11 @@ app.post('/api/portfolio/control/versions/:id/restore',portfolioControl,portfoli
   if(version.entityType==='feedbackModeration'){
     const current=portfolioFeedbackModeration(),restored=savePortfolioFeedbackModeration(version.before);
     recordVersion(store,{entityType:'feedbackModeration',entityId:'main',before:current,after:restored,actor:req.portfolioWeb?.user?.id||'portfolio-control',action:'restore'});
+    return res.json(restored);
+  }
+  if(version.entityType==='feedbackAutomation'){
+    const current=commerceAdminState(store).feedbackAutomation||{enabled:true,delayHours:24},restored=setFeedbackAutomationConfig(store,version.before);
+    recordVersion(store,{entityType:'feedbackAutomation',entityId:'main',before:current,after:restored,actor:req.portfolioWeb?.user?.id||'portfolio-control',action:'restore'});
     return res.json(restored);
   }
   if(version.entityType==='drop'){
