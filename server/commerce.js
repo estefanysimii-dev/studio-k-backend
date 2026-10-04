@@ -408,7 +408,7 @@ export function activityFeed(store,products,drops,limit=20){
   const feed=[];
   for(const p of products.filter(x=>x.published!==false).slice(0,12))feed.push({id:`product:${p.id}`,type:'product',title:'Novo produto publicado',text:p.name,href:`/products/${p.id}`,created:p.created||p.updated||store.now()});
   for(const d of drops.filter(x=>x.published!==false).slice(0,8))feed.push({id:`drop:${d.id}`,type:'drop',title:'Drop disponível',text:d.title,href:d.productId?`/products/${d.productId}`:'/products',created:d.startsAt||d.created||store.now()});
-  for(const f of store.all("SELECT id,rating,submitted_at FROM feedback_requests WHERE status='submitted' ORDER BY submitted_at DESC LIMIT 10"))feed.push({id:`feedback:${f.id}`,type:'feedback',title:`Novo feedback ${'★'.repeat(Math.max(1,Math.min(5,Number(f.rating)||5)))}`,text:'Avaliação verificada da comunidade',href:'/feedbacks',created:f.submitted_at||store.now()});
+  for(const f of store.all("SELECT id,rating,submitted_at FROM feedback_requests WHERE status='submitted' ORDER BY submitted_at DESC LIMIT 10"))feed.push({id:`feedback:${f.id}`,type:'feedback',title:`Novo feedback ${'★'.repeat(Math.max(1,Math.min(5,Number(f.rating)||5)))}`,text:'Avaliação verificada da comunidade',href:'/',created:f.submitted_at||store.now()});
   return feed.sort((a,b)=>Date.parse(b.created)-Date.parse(a.created)).slice(0,limit);
 }
 
