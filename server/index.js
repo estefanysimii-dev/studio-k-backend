@@ -1408,6 +1408,45 @@ app.post('/api/portfolio/control/assets/:id/process',portfolioControl,portfolioS
   store.log('portfólio',`Arquivo processado automaticamente: ${result.source.originalName}`,'portfolio-control');
   res.json(result);
 });
+app.post('/api/portfolio/control/fivem-preview',portfolioControl,portfolioSameOrigin,async(req,res)=>{
+  const yddAssetId=String(req.body?.yddAssetId||''),ytdAssetId=String(req.body?.ytdAssetId||'');
+  if(!yddAssetId||!ytdAssetId)throw new AppError('Envie o YDD e o YTD da peça.',400);
+  const assets=portfolioAssets();
+  const ydd=assets.find(asset=>asset.id===yddAssetId&&String(asset.ext||'').toLowerCase()==='ydd');
+  const ytd=assets.find(asset=>asset.id===ytdAssetId&&String(asset.ext||'').toLowerCase()==='ytd');
+  if(!ydd)throw new AppError('Arquivo YDD não encontrado ou inválido.',404);
+  if(!ytd)throw new AppError('Arquivo YTD não encontrado ou inválido.',404);
+
+  const assetPath=asset=>join(asset.visibility==='public'?portfolioPublicDir:portfolioPrivateDir,asset.filename);
+  const outputId=randomUUID(),filename=`${outputId}.glb`,output=join(portfolioPublicDir,filename);
+  const processed=await runPortfolioProcess('studio-k-fivem-preview',[assetPath(ydd),assetPath(ytd),output],300000);
+  if(!statSync(output).size)throw new AppError('O processador FiveM gerou uma prévia vazia.',422);
+
+  let stats={drawables:0,drawableName:'',lod:'high',meshes:0,vertices:0,triangles:0,textures:0,materials:0};
+  const lines=String(processed.stdout||'').trim().split(/\r?\n/).filter(Boolean);
+  if(lines.length){
+    try{stats={...stats,...JSON.parse(lines.at(-1))}}catch{}
+  }
+
+  const preview=registerPortfolioAsset({
+    id:outputId,
+    originalName:String(ydd.originalName||'modelo.ydd').replace(/\.ydd$/i,'-preview.glb'),
+    filename,
+    ext:'glb',
+    visibility:'public',
+    size:statSync(output).size,
+    created:store.now(),
+    publicUrl:`/portfolio-assets/${filename}`,
+    sourceAssetId:ydd.id,
+    relatedSourceAssetIds:[ydd.id,ytd.id],
+    generated:true,
+    generatedKind:'fivem-preview'
+  });
+  store.log('portfólio',`Prévia FiveM gerada: ${ydd.originalName} + ${ytd.originalName}`,'portfolio-control',{
+    yddAssetId:ydd.id,ytdAssetId:ytd.id,previewAssetId:preview.id
+  });
+  res.json({kind:'model',source:ydd,textureSource:ytd,asset:preview,publicUrl:preview.publicUrl,stats});
+});
 const portfolioDirectAssetUpload=express.raw({type:()=>true,limit:'80mb'});
 app.options('/api/portfolio/upload/:token',(req,res)=>{
   if(req.headers.origin===portfolioPublicOrigin.origin){
@@ -1426,8 +1465,8 @@ app.put('/api/portfolio/upload/:token',portfolioDirectAssetUpload,(req,res)=>{
   store.run('DELETE FROM kv WHERE key=?',key);
   if(!ticket||Number(ticket.expires||0)<Date.now())throw new AppError('O link de upload expirou. Gere um novo link.',403);
   const original=String(req.query.name||ticket.name||'arquivo').slice(0,180),ext=(original.toLowerCase().match(/\.([a-z0-9]{2,8})$/)?.[1]||'bin');
-  const publicExts=new Set(['png','jpg','jpeg','webp','gif','mp4','webm','glb','gltf']),sourceExts=new Set(['blend','obj','psd','fbx']);
-  if(!publicExts.has(ext)&&!sourceExts.has(ext))throw new AppError('Formato não suportado. Use GLB/GLTF, PNG/JPEG/WebP/GIF, MP4/WebM ou fontes BLEND/OBJ/PSD/FBX.',400);
+  const publicExts=new Set(['png','jpg','jpeg','webp','gif','mp4','webm','glb','gltf']),sourceExts=new Set(['blend','psd','fbx','ydd','ytd']);
+  if(!publicExts.has(ext)&&!sourceExts.has(ext))throw new AppError('Formato não suportado. Use GLB/GLTF, PNG/JPEG/WebP/GIF, MP4/WebM ou fontes YDD/YTD/BLEND/FBX/PSD.',400);
   if(!Buffer.isBuffer(req.body)||!req.body.length)throw new AppError('Arquivo vazio.',400);
   const visibility=ticket.public&&publicExts.has(ext)?'public':'private',id=randomUUID(),filename=`${id}.${ext}`,dir=visibility==='public'?portfolioPublicDir:portfolioPrivateDir;
   writeFileSync(join(dir,filename),req.body);
@@ -1437,7 +1476,7 @@ app.put('/api/portfolio/upload/:token',portfolioDirectAssetUpload,(req,res)=>{
 });
 
 const portfolioAssetUpload=express.raw({type:()=>true,limit:'80mb'});
-app.post('/api/portfolio/control/assets',portfolioControl,sameOrigin,portfolioAssetUpload,(req,res)=>{const original=String(req.query.name||'arquivo').slice(0,180),ext=(original.toLowerCase().match(/\.([a-z0-9]{2,8})$/)?.[1]||'bin');const publicExts=new Set(['png','jpg','jpeg','webp','gif','mp4','webm','glb','gltf']),sourceExts=new Set(['blend','obj','psd','fbx']);if(!publicExts.has(ext)&&!sourceExts.has(ext))throw new AppError('Formato não suportado. Use GLB/GLTF, PNG/JPEG/WebP/GIF, MP4/WebM ou fontes BLEND/OBJ/PSD/FBX.',400);if(!Buffer.isBuffer(req.body)||!req.body.length)throw new AppError('Arquivo vazio.',400);const requestedPublic=String(req.query.public||'0')==='1',visibility=requestedPublic&&publicExts.has(ext)?'public':'private',id=randomUUID(),filename=`${id}.${ext}`,dir=visibility==='public'?portfolioPublicDir:portfolioPrivateDir;writeFileSync(join(dir,filename),req.body);const asset={id,originalName:original,filename,ext,visibility,size:req.body.length,created:store.now(),publicUrl:visibility==='public'?`/portfolio-assets/${filename}`:''};const assets=portfolioAssets();assets.unshift(asset);store.set('portfolio:assets',assets.slice(0,500));res.json(asset)});
+app.post('/api/portfolio/control/assets',portfolioControl,sameOrigin,portfolioAssetUpload,(req,res)=>{const original=String(req.query.name||'arquivo').slice(0,180),ext=(original.toLowerCase().match(/\.([a-z0-9]{2,8})$/)?.[1]||'bin');const publicExts=new Set(['png','jpg','jpeg','webp','gif','mp4','webm','glb','gltf']),sourceExts=new Set(['blend','psd','fbx','ydd','ytd']);if(!publicExts.has(ext)&&!sourceExts.has(ext))throw new AppError('Formato não suportado. Use GLB/GLTF, PNG/JPEG/WebP/GIF, MP4/WebM ou fontes YDD/YTD/BLEND/FBX/PSD.',400);if(!Buffer.isBuffer(req.body)||!req.body.length)throw new AppError('Arquivo vazio.',400);const requestedPublic=String(req.query.public||'0')==='1',visibility=requestedPublic&&publicExts.has(ext)?'public':'private',id=randomUUID(),filename=`${id}.${ext}`,dir=visibility==='public'?portfolioPublicDir:portfolioPrivateDir;writeFileSync(join(dir,filename),req.body);const asset={id,originalName:original,filename,ext,visibility,size:req.body.length,created:store.now(),publicUrl:visibility==='public'?`/portfolio-assets/${filename}`:''};const assets=portfolioAssets();assets.unshift(asset);store.set('portfolio:assets',assets.slice(0,500));res.json(asset)});
 app.use('/portfolio-assets',express.static(portfolioPublicDir,{index:false,maxAge:'1h',immutable:false}));
 // --- /Studio K Portfolio / Control integration ---
 
