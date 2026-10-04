@@ -655,7 +655,13 @@ const portfolioAssistantCampaignSchema=z.object({
   href:z.string().trim().max(2000).default(''),
   priceCents:z.number().int().min(0).max(1000000000).default(0),
   oldPriceCents:z.number().int().min(0).max(1000000000).default(0),
-  active:z.boolean().default(true)
+  active:z.boolean().default(true),
+  priority:z.number().int().min(0).max(1000).default(100),
+  startsAt:z.union([z.literal(''),z.string().datetime()]).default(''),
+  endsAt:z.union([z.literal(''),z.string().datetime()]).default(''),
+  pages:z.array(z.string().trim().min(1).max(240)).max(30).default([]),
+  audience:z.enum(['all','guest','member']).default('all'),
+  maxViews:z.number().int().min(0).max(100000).default(0)
 });
 const portfolioAssistantSchema=z.object({
   enabled:z.boolean().default(true),
