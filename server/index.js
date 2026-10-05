@@ -613,12 +613,22 @@ const portfolioStaffRoleIds=()=>{
   const groups=store.settings().roleGroups||{};
   return [...new Set([...(groups.staff||[]),...(groups.highStaff||[])].filter(Boolean))];
 };
+const portfolioCurrentMember=async(web,options={})=>{
+  if(!web?.user?.id)return{inGuild:false,roles:[]};
+  if(!bot.status().connected)return web.member||{inGuild:false,roles:[]};
+  const member=await portfolioMember(web.user.id,options);
+  web.member=member;
+  if(web.key){
+    const stored=store.get(web.key,null);
+    if(stored)store.set(web.key,{...stored,member});
+  }
+  return member;
+};
 const portfolioCanControl=async(req,web=portfolioSession(req),force=false)=>{
   if(!web?.user?.id)return false;
+  const member=await portfolioCurrentMember(web,{force});
   const allowed=portfolioStaffRoleIds();
   if(!allowed.length)return false;
-  const member=await portfolioMember(web.user.id,{force});
-  web.member=member;
   return !!member?.inGuild&&(member.roles||[]).some(role=>allowed.includes(role.id));
 };
 const portfolioItemSchema=z.object({
@@ -847,27 +857,29 @@ app.get('/api/portfolio/public-state',async(req,res)=>{
     personal
   });
 });
-app.get('/api/portfolio/me/profile',(req,res)=>{
+app.get('/api/portfolio/me/profile',async(req,res)=>{
   const web=portfolioSession(req);
   if(!web?.user?.id)throw new AppError('Conecte sua conta do Discord para acessar seu perfil Studio K.',401);
-  res.json({profile:portfolioMemberProfile(web.user.id,web.member||{}),favorites:portfolioFavoritesFor(web.user.id)});
+  const member=await portfolioCurrentMember(web);
+  res.json({profile:portfolioMemberProfile(web.user.id,member),favorites:portfolioFavoritesFor(web.user.id)});
 });
-app.put('/api/portfolio/me/profile/title',portfolioSameOrigin,(req,res)=>{
+app.put('/api/portfolio/me/profile/title',portfolioSameOrigin,async(req,res)=>{
   const web=portfolioSession(req);
   if(!web?.user?.id)throw new AppError('Conecte sua conta do Discord para personalizar seu Studio K ID.',401);
   const titleId=z.string().trim().min(1).max(80).parse(req.body?.titleId||'');
-  const profile=portfolioMemberProfile(web.user.id,web.member||{});
+  const member=await portfolioCurrentMember(web,{force:true});
+  const profile=portfolioMemberProfile(web.user.id,member);
   const title=(profile.titles||[]).find(item=>item.id===titleId);
-  if(!title)throw new AppError('Título Studio K não encontrado.',404);
-  if(!title.unlocked)throw new AppError('Este título ainda não foi desbloqueado.',403);
+  if(!title)throw new AppError('Este título não está disponível para os seus cargos atuais do Discord.',403);
   store.set(`portfolio:profile-prefs:${web.user.id}`,{...portfolioProfilePrefsFor(web.user.id),equippedTitleId:title.id});
-  const next=portfolioMemberProfile(web.user.id,web.member||{});
+  const next=portfolioMemberProfile(web.user.id,member);
   res.json({ok:true,equippedTitle:next.equippedTitle,profile:next});
 });
-app.get('/api/portfolio/me/ecosystem',(req,res)=>{
+app.get('/api/portfolio/me/ecosystem',async(req,res)=>{
   const web=portfolioSession(req);
   if(!web?.user?.id)throw new AppError('Autenticação Studio K obrigatória.',401);
-  const profile=portfolioMemberProfile(web.user.id,web.member||{});
+  const member=await portfolioCurrentMember(web);
+  const profile=portfolioMemberProfile(web.user.id,member);
   res.json({
     schemaVersion:1,
     subject:profile.studioId,

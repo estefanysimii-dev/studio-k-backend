@@ -6,36 +6,67 @@ import { tmpdir } from 'node:os';
 import { openStore } from '../server/store.js';
 import { studioIdConfig, saveStudioIdConfig, studioIdProfile } from '../server/studio-id.js';
 
-test('Studio K ID keeps account identity without gamification systems', (t) => {
-  const dir=mkdtempSync(join(tmpdir(),'studio-id-config-'));
+test('Studio K ID profile titles are granted only by Discord roles', (t) => {
+  const dir=mkdtempSync(join(tmpdir(),'studio-id-title-role-'));
   const store=openStore(dir);
   t.after(()=>{store.db.close();rmSync(dir,{recursive:true,force:true});});
 
   const initial=studioIdConfig(store);
-  for(const key of ['xp','levelStep','ranks','discordRankSync','badges','features']){
-    assert.equal(key in initial,false);
-  }
+  assert.equal(initial.defaultTitle.label,'Studio K Member');
+  assert.deepEqual(initial.titles,[]);
 
+  const vipRole='123456789012345678';
+  const creatorRole='223456789012345678';
   const next=saveStudioIdConfig(store,{
-    ...initial,
-    earlyMemberLimit:100,
-    thresholds:{collectorPurchases:4},
-    supporterRolePattern:'supporter|vip'
+    enabled:true,
+    defaultTitle:{label:'Studio K Member',description:'Título padrão.'},
+    titles:[
+      {id:'vip',label:'VIP Studio K',description:'Título VIP.',roleId:vipRole,enabled:true},
+      {id:'creator',label:'Creator Studio K',description:'Título Creator.',roleId:creatorRole,enabled:true}
+    ]
   });
 
-  assert.equal(next.earlyMemberLimit,100);
-  assert.equal(next.thresholds.collectorPurchases,4);
-  assert.equal(next.supporterRolePattern,'supporter|vip');
+  assert.equal(next.titles.length,2);
+  assert.equal(next.titles[0].roleId,vipRole);
   assert.deepEqual(studioIdConfig(store),next);
 
   const userId='identity-test-user';
-  store.set(`portfolio:favorites:${userId}`,{items:['look-1'],products:['product-1']});
-  const profile=studioIdProfile(store,userId,{inGuild:false,roles:[]});
-  for(const key of ['xp','level','rank','badges','achievements','perks']){
-    assert.equal(key in profile,false);
-  }
-  assert.equal(profile.studioId.startsWith('SK-'),true);
-  assert.equal(profile.equippedTitle.id,'member');
-  assert.equal(Array.isArray(profile.titles),true);
-  assert.equal(profile.favorites.items.includes('look-1'),true);
+  const noRoleProfile=studioIdProfile(store,userId,{inGuild:true,roles:[]});
+  assert.deepEqual(noRoleProfile.titles.map((item)=>item.id),['member']);
+  assert.equal(noRoleProfile.titles[0].source,'default');
+  assert.equal(noRoleProfile.equippedTitle.id,'member');
+
+  const vipProfile=studioIdProfile(store,userId,{
+    inGuild:true,
+    roles:[{id:vipRole,name:'Clientes VIP'}]
+  });
+  assert.deepEqual(vipProfile.titles.map((item)=>item.id),['member','vip']);
+  assert.equal(vipProfile.titles[1].roleName,'Clientes VIP');
+
+  store.set(`portfolio:profile-prefs:${userId}`,{equippedTitleId:'vip'});
+  const equipped=studioIdProfile(store,userId,{
+    inGuild:true,
+    roles:[{id:vipRole,name:'Clientes VIP'}]
+  });
+  assert.equal(equipped.equippedTitle.id,'vip');
+
+  const roleRemoved=studioIdProfile(store,userId,{inGuild:true,roles:[]});
+  assert.equal(roleRemoved.equippedTitle.id,'member');
+  assert.equal(store.get(`portfolio:profile-prefs:${userId}`).equippedTitleId,'member');
+});
+
+test('Studio K ID rejects duplicate Discord role mappings', (t) => {
+  const dir=mkdtempSync(join(tmpdir(),'studio-id-title-duplicate-'));
+  const store=openStore(dir);
+  t.after(()=>{store.db.close();rmSync(dir,{recursive:true,force:true});});
+
+  const roleId='323456789012345678';
+  assert.throws(()=>saveStudioIdConfig(store,{
+    enabled:true,
+    defaultTitle:{label:'Studio K Member',description:''},
+    titles:[
+      {id:'one',label:'Título 1',description:'',roleId,enabled:true},
+      {id:'two',label:'Título 2',description:'',roleId,enabled:true}
+    ]
+  }));
 });
