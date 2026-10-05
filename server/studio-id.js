@@ -5,14 +5,6 @@ export const studioRaritySchema=z.enum(['common','rare','epic','legendary']);
 
 export const defaultStudioIdConfig={
   enabled:true,
-  xp:{
-    base:100,
-    discordMember:100,
-    purchase:250,
-    feedback:75,
-    favorite:15
-  },
-  levelStep:300,
   earlyMemberLimit:250,
   thresholds:{
     collectorPurchases:5,
@@ -73,14 +65,6 @@ const badgeSchema=z.object({
 
 export const studioIdConfigSchema=z.object({
   enabled:z.boolean().default(true),
-  xp:z.object({
-    base:z.number().int().min(0).max(100000).default(100),
-    discordMember:z.number().int().min(0).max(100000).default(100),
-    purchase:z.number().int().min(0).max(100000).default(250),
-    feedback:z.number().int().min(0).max(100000).default(75),
-    favorite:z.number().int().min(0).max(100000).default(15)
-  }).default(defaultStudioIdConfig.xp),
-  levelStep:z.number().int().min(50).max(100000).default(300),
   earlyMemberLimit:z.number().int().min(0).max(1000000).default(250),
   thresholds:z.object({
     collectorPurchases:z.number().int().min(1).max(10000).default(5),
@@ -120,7 +104,6 @@ export function studioIdConfig(store){
   const merged={
     ...defaultStudioIdConfig,
     ...(saved&&typeof saved==='object'?saved:{}),
-    xp:{...defaultStudioIdConfig.xp,...(saved?.xp||{})},
     thresholds:{...defaultStudioIdConfig.thresholds,...(saved?.thresholds||{})},
     features:{...defaultStudioIdConfig.features,...(saved?.features||{})},
     badges:Array.isArray(saved?.badges)?saved.badges:defaultStudioIdConfig.badges,
@@ -188,16 +171,14 @@ export function studioIdProfile(store,userId,member={},options={}){
   try{supporterMatcher=config.supporterRolePattern?new RegExp(config.supporterRolePattern,'i'):null;}catch{}
   const isSupporter=!!supporterMatcher&&roleNames.some(name=>supporterMatcher.test(name));
   const isNeonLover=/neon|emissiv/.test(purchaseText);
-  const bonusXp=Math.max(0,Number(store.get(`portfolio:xp-bonus:${userId}`,0)||0));
-  const xp=Number(config.xp.base||0)
-    +(member?.inGuild?Number(config.xp.discordMember||0):0)
-    +(purchases.length*Number(config.xp.purchase||0))
-    +(feedbackCount*Number(config.xp.feedback||0))
-    +(favoriteCount*Number(config.xp.favorite||0))
-    +bonusXp;
-  const step=Math.max(50,Number(config.levelStep||300));
-  const level=Math.max(1,Math.floor(xp/step)+1);
-  const rank=[...config.ranks].filter(item=>level>=item.minLevel).sort((a,b)=>b.minLevel-a.minLevel)[0]||config.ranks[0];
+  // XP e Level foram desativados. Mantemos somente um snapshot legado para
+  // preservar ranks/badges existentes até as próximas etapas de limpeza.
+  const legacyProgress=store.get(`portfolio:progress-state:${userId}`,null)||{};
+  const legacyLevel=Math.max(1,Number(legacyProgress.level||1));
+  const legacyRankId=String(legacyProgress.rankId||'member');
+  const rank=config.ranks.find(item=>item.id===legacyRankId)
+    ||config.ranks.find(item=>item.id==='member')
+    ||config.ranks[0];
   const earlyMember=Number(config.earlyMemberLimit||0)>0&&Number(identity.sequence||0)<=Number(config.earlyMemberLimit||0);
   const th=config.thresholds;
   const badgeUnlocked=(badge)=>{
@@ -210,7 +191,7 @@ export function studioIdProfile(store,userId,member={},options={}){
       case 'purchases':return purchases.length>=value;
       case 'neon-lover':return isNeonLover;
       case 'feedbacks':return feedbackCount>=value;
-      case 'level':return level>=Math.max(1,value);
+      case 'level':return legacyLevel>=Math.max(1,value);
       case 'favorites':return favoriteCount>=value;
       default:return false;
     }
@@ -226,7 +207,7 @@ export function studioIdProfile(store,userId,member={},options={}){
     {id:'collector',label:'Collector',rarity:'rare',description:`Desbloqueado ao concluir ${th.collectorPurchases} compras.`,unlocked:purchases.length>=th.collectorPurchases},
     {id:'neon-lover',label:'Neon Lover',rarity:'epic',description:'Desbloqueado por uma compra Neon/emissiva.',unlocked:isNeonLover},
     {id:'reviewer',label:'Studio Reviewer',rarity:'rare',description:'Desbloqueado após o primeiro feedback.',unlocked:feedbackCount>=1},
-    ...config.ranks.filter(item=>item.id!=='member').map(item=>({id:item.id,label:item.label,rarity:item.rarity,description:`Desbloqueado no level ${item.minLevel}.`,unlocked:level>=item.minLevel}))
+    ...config.ranks.filter(item=>item.id!=='member').map(item=>({id:item.id,label:item.label,rarity:item.rarity,description:'Desbloqueio legado preservado durante a migração.',unlocked:legacyLevel>=item.minLevel}))
   ].map(title=>({...title,rarity:safeRarity(title.rarity)}));
   const prefs=studioProfilePrefsFor(store,userId);
   const equippedTitle=titleCatalog.find(title=>title.id===prefs.equippedTitleId&&title.unlocked)||titleCatalog[0];
@@ -239,8 +220,8 @@ export function studioIdProfile(store,userId,member={},options={}){
     {id:'collector',label:'Colecionador',description:`Concluiu ${th.collectorPurchases} compras no Studio K.`,icon:'◇',rarity:'epic',unlocked:purchases.length>=th.collectorPurchases},
     {id:'reviewer',label:'Sua voz conta',description:'Enviou o primeiro feedback.',icon:'✓',rarity:'rare',unlocked:feedbackCount>=1},
     {id:'neon-lover',label:'Energia Neon',description:'Adquiriu um produto Neon/emissivo.',icon:'✧',rarity:'epic',unlocked:isNeonLover},
-    {id:'level-five',label:'Ascensão',description:`Alcançou o level ${th.levelFive}.`,icon:'Ⅴ',rarity:'epic',unlocked:level>=th.levelFive},
-    {id:'studio-icon',label:'Ícone Studio K',description:`Alcançou o level ${th.iconLevel}.`,icon:'★',rarity:'legendary',unlocked:level>=th.iconLevel}
+    {id:'level-five',label:'Ascensão',description:'Conquista legada preservada durante a migração.',icon:'Ⅴ',rarity:'epic',unlocked:legacyLevel>=th.levelFive},
+    {id:'studio-icon',label:'Ícone Studio K',description:'Conquista legada preservada durante a migração.',icon:'★',rarity:'legendary',unlocked:legacyLevel>=th.iconLevel}
   ].map(item=>({...item,rarity:safeRarity(item.rarity)}));
   const achievementHistory=store.get(`portfolio:achievements:${userId}`,{})||{};
   let achievementsChanged=false;
@@ -253,13 +234,6 @@ export function studioIdProfile(store,userId,member={},options={}){
   }
   if(achievementsChanged)store.set(`portfolio:achievements:${userId}`,achievementHistory);
 
-  const progressKey=`portfolio:progress-state:${userId}`;
-  const previousProgress=store.get(progressKey,null);
-  if(previousProgress){
-    if(level>Number(previousProgress.level||0))addNotification(store,userId,{type:'level',title:`Level ${level} desbloqueado ✨`,text:`Seu Studio K ID evoluiu para o level ${level}.`,href:'/account'});
-    if(previousProgress.rankId&&previousProgress.rankId!==rank.id)addNotification(store,userId,{type:'rank',title:`Novo rank: ${rank.label}`,text:'Seu rank do Studio K ID acabou de evoluir.',href:'/account'});
-  }
-  store.set(progressKey,{level,rankId:rank.id,at:store.now()});
   const achievements=config.features.achievements?achievementCatalog.map(({unlocked,...achievement})=>({
     ...achievement,
     unlocked,
@@ -267,12 +241,12 @@ export function studioIdProfile(store,userId,member={},options={}){
   })):[];
   const perks=config.features.perks?[
     {id:'ecosystem-sync',label:'Studio K Sync',description:'Identidade reconhecida pelo site e bot do Studio K.',icon:'K',rarity:'common',unlocked:true,progress:1,target:1},
-    {id:'badge-showcase',label:'Badge Showcase',description:'Exibição expandida de badges no perfil.',icon:'✦',rarity:'common',unlocked:level>=2,progress:Math.min(level,2),target:2},
+    {id:'badge-showcase',label:'Badge Showcase',description:'Exibição expandida de badges no perfil.',icon:'✦',rarity:'common',unlocked:legacyLevel>=2,progress:legacyLevel>=2?1:0,target:1},
     {id:'profile-frame',label:'Collector Frame',description:`Moldura especial para o Studio K ID após ${th.profileFramePurchases} compras.`,icon:'◇',rarity:'rare',unlocked:purchases.length>=th.profileFramePurchases,progress:Math.min(purchases.length,th.profileFramePurchases),target:th.profileFramePurchases},
     {id:'neon-aura',label:'Neon Aura',description:'Efeito Neon especial no cartão do Studio K ID.',icon:'✧',rarity:'epic',unlocked:isNeonLover,progress:isNeonLover?1:0,target:1},
-    {id:'insider-mark',label:'Insider Mark',description:`Marca avançada de perfil para membros level ${th.insiderLevel}+.`,icon:'◆',rarity:'epic',unlocked:level>=th.insiderLevel,progress:Math.min(level,th.insiderLevel),target:th.insiderLevel},
+    {id:'insider-mark',label:'Insider Mark',description:'Marca legada preservada durante a migração.',icon:'◆',rarity:'epic',unlocked:legacyLevel>=th.insiderLevel,progress:legacyLevel>=th.insiderLevel?1:0,target:1},
     {id:'priority-support',label:'Priority Support',description:'Identifica apoiadores elegíveis para fluxos prioritários de suporte.',icon:'★',rarity:'epic',unlocked:isSupporter,progress:isSupporter?1:0,target:1},
-    {id:'icon-aura',label:'Icon Aura',description:'Tratamento visual máximo do Studio K ID.',icon:'K',rarity:'legendary',unlocked:level>=th.iconLevel,progress:Math.min(level,th.iconLevel),target:th.iconLevel}
+    {id:'icon-aura',label:'Icon Aura',description:'Tratamento visual legado do Studio K ID.',icon:'K',rarity:'legendary',unlocked:legacyLevel>=th.iconLevel,progress:legacyLevel>=th.iconLevel?1:0,target:1}
   ].map(perk=>({...perk,rarity:safeRarity(perk.rarity)})):[];
   const perkStateKey=`portfolio:perk-state:${userId}`;
   const previousPerks=store.get(perkStateKey,null);
@@ -289,10 +263,6 @@ export function studioIdProfile(store,userId,member={},options={}){
   return{
     studioId:identity.studioId,
     joinedAt:identity.joinedAt,
-    level,
-    xp,
-    levelFloor:(level-1)*step,
-    nextLevelXp:level*step,
     rank:{...rank,rarity:safeRarity(rank.rarity)},
     equippedTitle:{id:equippedTitle.id,label:equippedTitle.label,rarity:equippedTitle.rarity},
     titles:titleCatalog,
@@ -307,8 +277,7 @@ export function studioIdProfile(store,userId,member={},options={}){
       feedbacks:feedbackCount,
       favorites:favoriteCount,
       tickets:Number(ticketStats.total||0),
-      openTickets:Number(ticketStats.open||0),
-      bonusXp
+      openTickets:Number(ticketStats.open||0)
     },
     purchasedProductIds:[...new Set(purchases.map(row=>{
       const orderId=String(row.product_id||'');
