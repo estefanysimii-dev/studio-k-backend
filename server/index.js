@@ -850,7 +850,6 @@ app.get('/api/portfolio/public-state',async(req,res)=>{
       })
     };
     me={authenticated:true,user:web.user,member:web.member,canControl,profile,favorites:portfolioFavoritesFor(web.user.id)};
-    if(bot.status().connected)void bot.syncStudioIdRankRole(web.user.id,profile).catch(error=>store.log('aviso',`Studio K ID rank sync: ${String(error.message).slice(0,300)}`));
   }
   res.json({
     site:portfolioSite(),status:portfolioStatus(),items,products,drops:publicPortfolioDrops(),feedbacks,me,
@@ -891,7 +890,6 @@ app.get('/api/portfolio/me/ecosystem',(req,res)=>{
       avatar:web.user.avatar||''
     },
     identityState:{
-      rank:profile.rank,
       title:profile.equippedTitle
     },
     entitlements:{
@@ -917,7 +915,6 @@ app.put('/api/portfolio/me/favorites/:kind/:id',portfolioSameOrigin,(req,res)=>{
   store.set(`portfolio:favorites:${web.user.id}`,favorites);
   recordPortfolioEvent(shouldFavorite?'favorite_add':'favorite_remove',{sessionId:`member:${web.user.id}`,userId:web.user.id,itemKind:kind==='products'?'product':'portfolio',itemId,path:req.get('referer')||''});
   const profile=portfolioMemberProfile(web.user.id,web.member||{});
-  if(bot.status().connected)void bot.syncStudioIdRankRole(web.user.id,profile).catch(error=>store.log('aviso',`Studio K ID rank sync: ${String(error.message).slice(0,300)}`));
   res.json({ok:true,favorite:shouldFavorite,favorites,profile});
 });
 app.get('/api/portfolio/search',(req,res)=>res.json({results:globalSearch(store,portfolioProducts().filter(x=>x.published!==false),portfolioItems().filter(x=>x.published!==false),req.query.q)}));
