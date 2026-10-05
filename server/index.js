@@ -1275,7 +1275,8 @@ app.get('/api/portfolio/control/state',portfolioControl,async(req,res)=>{
     products:portfolioProducts(),
     drops:portfolioDrops().map(drop=>({...drop,status:portfolioDropStatus(drop)})),
     analytics:portfolioAnalyticsSummary(30),
-    assets:portfolioAssets(),
+    assets:portfolioVisibleAssets(),
+    assetStats:portfolioAssetStats(),
     feedbacks:await controlPortfolioFeedbacks(500),
     commerce:commerceAdminState(store),
     versions:versionsFor(store).slice(0,300),
@@ -1512,6 +1513,11 @@ app.post('/api/portfolio/control/assets/:id/process',portfolioControl,portfolioS
   const result=await processPortfolioAsset(req.params.id);
   store.log('portfólio',`Arquivo processado automaticamente: ${result.source.originalName}`,'portfolio-control');
   res.json(result);
+});
+app.post('/api/portfolio/control/assets/cleanup',portfolioControl,portfolioSameOrigin,(req,res)=>{
+  const result=cleanupPortfolioAssets();
+  store.log('portfólio',`Limpeza de mídia concluída: ${result.removedAssets} assets + ${result.removedUntrackedFiles} arquivos órfãos removidos`,'portfolio-control',result);
+  res.json({ok:true,...result});
 });
 app.post('/api/portfolio/control/fivem-preview',portfolioControl,portfolioSameOrigin,async(req,res)=>{
   const yddAssetId=String(req.body?.yddAssetId||''),ytdAssetId=String(req.body?.ytdAssetId||'');
