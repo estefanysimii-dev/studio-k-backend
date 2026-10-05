@@ -1547,10 +1547,11 @@ app.post('/api/portfolio/control/fivem-preview',portfolioControl,portfolioSameOr
     generated:true,
     generatedKind:'fivem-preview'
   });
+  const sourceCleanup=removePortfolioAssetsById([ydd.id,ytd.id]);
   store.log('portfólio',`Prévia FiveM gerada: ${ydd.originalName} + ${ytd.originalName}`,'portfolio-control',{
-    yddAssetId:ydd.id,ytdAssetId:ytd.id,previewAssetId:preview.id
+    yddAssetId:ydd.id,ytdAssetId:ytd.id,previewAssetId:preview.id,sourceBytesRemoved:sourceCleanup.freedBytes
   });
-  res.json({kind:'model',source:ydd,textureSource:ytd,asset:preview,publicUrl:preview.publicUrl,stats});
+  res.json({kind:'model',source:ydd,textureSource:ytd,asset:preview,publicUrl:preview.publicUrl,stats,sourceCleanup});
 });
 const portfolioDirectAssetUpload=express.raw({type:()=>true,limit:'80mb'});
 app.options('/api/portfolio/upload/:token',(req,res)=>{
