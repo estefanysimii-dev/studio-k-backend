@@ -143,7 +143,8 @@ test('Studio K ID, favorites, live drops and behavior tracking stay integrated',
   const state = await publicStateResponse.json();
   assert.equal(state.me.authenticated, true);
   assert.equal(state.me.profile.studioId, 'SK-00001');
-  assert.equal(state.me.profile.level >= 1, true);
+  assert.equal('level' in state.me.profile, false);
+  assert.equal('xp' in state.me.profile, false);
   assert.deepEqual(state.me.favorites, { items: [], products: [] });
   assert.equal(state.drops.length, 1);
   assert.equal(state.drops[0].status, 'active');
