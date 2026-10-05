@@ -1503,7 +1503,8 @@ app.delete('/api/portfolio/control/drops/:id',portfolioControl,portfolioSameOrig
 
 app.post('/api/portfolio/control/upload-ticket',portfolioControl,portfolioSameOrigin,(req,res)=>{
   const name=String(req.body?.name||'arquivo').slice(0,180),requestedPublic=req.body?.public===true,token=randomBytes(32).toString('base64url');
-  store.set(`portfolio-upload:${hash(token)}`,{userId:req.portfolioWeb?.user?.id||'',name,public:requestedPublic,expires:Date.now()+5*60000});
+  const purpose=z.enum(['library','fivem-source']).catch('library').parse(req.body?.purpose||'library');
+  store.set(`portfolio-upload:${hash(token)}`,{userId:req.portfolioWeb?.user?.id||'',name,public:requestedPublic,purpose,expires:Date.now()+5*60000});
   const uploadUrl=new URL(`/api/portfolio/upload/${encodeURIComponent(token)}`,portfolioBackendOrigin);
   res.json({token,uploadUrl:uploadUrl.toString(),expiresIn:300});
 });
@@ -1574,7 +1575,8 @@ app.put('/api/portfolio/upload/:token',portfolioDirectAssetUpload,(req,res)=>{
   if(!Buffer.isBuffer(req.body)||!req.body.length)throw new AppError('Arquivo vazio.',400);
   const visibility=ticket.public&&publicExts.has(ext)?'public':'private',id=randomUUID(),filename=`${id}.${ext}`,dir=visibility==='public'?portfolioPublicDir:portfolioPrivateDir;
   writeFileSync(join(dir,filename),req.body);
-  const asset={id,originalName:original,filename,ext,visibility,size:req.body.length,created:store.now(),publicUrl:visibility==='public'?`/portfolio-assets/${filename}`:''};
+  const temporary=ticket.purpose==='fivem-source'&&['ydd','ytd'].includes(ext);
+  const asset={id,originalName:original,filename,ext,visibility,size:req.body.length,created:store.now(),publicUrl:visibility==='public'?`/portfolio-assets/${filename}`:'',assetRole:ticket.purpose||'library',temporary};
   const assets=portfolioAssets();assets.unshift(asset);store.set('portfolio:assets',assets.slice(0,500));
   res.json(asset);
 });
