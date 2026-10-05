@@ -1120,9 +1120,8 @@ ${normalized.previewAfter}
     return[
       `**${m.displayName||m.user.username}** · <@${userId}>`,
       `**Studio K ID:** \`${profile.studioId}\``,
-      `**${profile.rank?.icon||'•'} ${profile.rank?.label||'Studio Member'}** · Level **${profile.level}** · ${profile.xp} XP`,
+      `**${profile.rank?.icon||'•'} ${profile.rank?.label||'Studio Member'}**`,
       `Título: **${profile.equippedTitle?.label||'Studio K Member'}**`,
-      `Próximo nível: **${Math.max(0,profile.nextLevelXp-profile.xp)} XP**`,
       `Badges: ${badgeLine}`,
       `Entrou no servidor: ${m.joinedTimestamp?`<t:${Math.floor(m.joinedTimestamp/1000)}:D>`:'não disponível'}`,
       `Conta criada: <t:${Math.floor(m.user.createdTimestamp/1000)}:D>`,
@@ -1410,9 +1409,7 @@ ${normalized.previewAfter}
         await localizedEdit(i,[
           `**${profile.rank?.icon||'•'} ${profile.rank?.label||'Studio Member'}**`,
           `Studio K ID: \`${profile.studioId}\``,
-          `Level **${profile.level}** · **${profile.xp} XP**`,
-          `Título equipado: **${profile.equippedTitle?.label||'Studio K Member'}**`,
-          `${Math.max(0,profile.nextLevelXp-profile.xp)} XP para o próximo level.`
+          `Título equipado: **${profile.equippedTitle?.label||'Studio K Member'}**`
         ].join('\n'));return;
       }
       if(action==='central-store'){if(store.settings().operationsLive?.storeOpen===false)throw new AppError('A loja está fechada no momento.');const products=store.products().filter(p=>p.active);await localizedEdit(i,products.length?{content:'**Loja Studio K**\nEscolha um produto:',components:[row({type:3,custom_id:'store-buy',placeholder:'Produto',options:products.slice(0,25).map(p=>({label:p.name.slice(0,100),description:`${money(p.priceCents)} · ${p.type==='service'?'Serviço':`${p.stock} em estoque`}`,value:p.id}))})]}:'Não há produtos disponíveis.');return;}
