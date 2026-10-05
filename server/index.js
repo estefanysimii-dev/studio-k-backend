@@ -268,6 +268,7 @@ const defaultPortfolioSite={
   brandTagline:'SUA IDENTIDADE. SUA CIDADE.',
   logoUrl:'/studio-assets/studio-k-logo.webp',
   homeBackgroundUrl:'/media/studio-k-home.webp',
+  homeBannerSlides:[],
   controlBackgroundUrl:'/media/studio-k-control.webp',
   heroEyebrow:'DESIGN 3D · FIVEM · MODA DIGITAL',
   heroTitle:'DESIGN ALÉM',
@@ -289,6 +290,7 @@ const portfolioSite=()=>{
   site.radio={...defaultRadio,...site.radio};
   site.assistant={...defaultPortfolioAssistant,...(site.assistant||{})};
   site.assistant.campaigns=Array.isArray(site.assistant.campaigns)?site.assistant.campaigns:defaultPortfolioAssistant.campaigns;
+  site.homeBannerSlides=Array.isArray(site.homeBannerSlides)?site.homeBannerSlides:[];
   if(!site.brandTagline||site.brandTagline==='KINETIC LOOM')site.brandTagline=defaultPortfolioSite.brandTagline;
   if(!site.logoUrl||site.logoUrl==='/media/studio-k-logo.webp')site.logoUrl=defaultPortfolioSite.logoUrl;
   if(!site.discordInviteUrl)site.discordInviteUrl=defaultPortfolioSite.discordInviteUrl;
@@ -707,6 +709,11 @@ const portfolioSiteSchema=z.object({
   brandTagline:z.string().trim().max(80).default(defaultPortfolioSite.brandTagline),
   logoUrl:z.string().max(2000).default(defaultPortfolioSite.logoUrl),
   homeBackgroundUrl:z.string().max(2000).default(defaultPortfolioSite.homeBackgroundUrl),
+  homeBannerSlides:z.array(z.object({
+    id:z.string().trim().min(1).max(80),
+    imageUrl:z.string().trim().min(1).max(2000),
+    alt:z.string().trim().max(180).default('')
+  })).max(12).default([]),
   controlBackgroundUrl:z.string().max(2000).default(defaultPortfolioSite.controlBackgroundUrl),
   heroEyebrow:z.string().max(140).default(defaultPortfolioSite.heroEyebrow),
   heroTitle:z.string().max(160).default(defaultPortfolioSite.heroTitle),
