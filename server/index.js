@@ -821,15 +821,6 @@ app.get('/api/portfolio/public-state',async(req,res)=>{
   let me={authenticated:false,canControl:false},personal={cart:[],notifications:[],missions:[],recommendations:[],leaderboardOptIn:false,restockSubscriptions:[],ticketCategories:[],activityHistory:[]};
   if(web){
     const profile=portfolioMemberProfile(web.user.id,web.member||{});
-    const badgeKey=`portfolio:member-badges:${web.user.id}`;
-    const badgeNames=(profile.badges||[]).map(badge=>String(badge?.name||badge?.label||badge?.id||badge||'')).filter(Boolean);
-    const knownBadges=store.get(badgeKey,null);
-    if(Array.isArray(knownBadges)){
-      for(const badge of badgeNames.filter(name=>!knownBadges.includes(name))){
-        recordPortfolioEvent('achievement_unlock',{sessionId:`member:${web.user.id}`,userId:web.user.id,itemKind:'page',path:'/account',meta:{title:badge}});
-      }
-    }
-    store.set(badgeKey,badgeNames);
     const missions=(commerce.missions||[]).map(mission=>({...mission,...missionProgress(store,web.user.id,web.member||{},mission)}));
     personal={
       cart:cartFor(store,web.user.id),
@@ -839,12 +830,11 @@ app.get('/api/portfolio/public-state',async(req,res)=>{
       leaderboardOptIn:store.get(`portfolio:leaderboard-optin:${web.user.id}`,false)===true,
       restockSubscriptions:products.filter(product=>(store.get(`portfolio:restock:${product.id}`,[])||[]).includes(web.user.id)).map(product=>product.id),
       ticketCategories:store.settings().tickets?.categories||[],
-      activityHistory:store.all("SELECT event,item_kind,item_id,path,meta,created FROM portfolio_events WHERE user_id=? AND event IN ('order_created','mission_claim','achievement_unlock') ORDER BY id DESC LIMIT 60",web.user.id).map(row=>{
+      activityHistory:store.all("SELECT event,item_kind,item_id,path,meta,created FROM portfolio_events WHERE user_id=? AND event IN ('order_created','mission_claim') ORDER BY id DESC LIMIT 60",web.user.id).map(row=>{
         let meta={};try{meta=JSON.parse(row.meta||'{}')}catch{}
         const labels={
           order_created:'Compra realizada',
-          mission_claim:'Missão concluída',
-          achievement_unlock:'Conquista desbloqueada'
+          mission_claim:'Missão concluída'
         };
         return{event:row.event,label:labels[row.event]||row.event,itemKind:row.item_kind||'',itemId:row.item_id||'',path:row.path||'',meta,created:row.created};
       })
@@ -893,9 +883,7 @@ app.get('/api/portfolio/me/ecosystem',(req,res)=>{
       title:profile.equippedTitle
     },
     entitlements:{
-      discountPercent:profile.discountPercent,
-      badges:profile.badges,
-      perks:profile.perks.filter(perk=>perk.unlocked).map(({progress,target,...perk})=>perk)
+      discountPercent:profile.discountPercent
     }
   });
 });
