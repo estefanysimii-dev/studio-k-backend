@@ -643,6 +643,16 @@ const portfolioItemSchema=z.object({
     modelUrl:z.string().trim().min(1).max(2000),
     posterUrl:z.string().max(2000).default('')
   })).max(20).default([]),
+  viewerModes:z.array(z.enum(['outfit','pieces'])).max(2).default([]),
+  outfitModelUrl:z.string().max(2000).default(''),
+  outfitPosterUrl:z.string().max(2000).default(''),
+  viewerPieces:z.array(z.object({
+    id:z.string().trim().min(1).max(80),
+    label:z.string().trim().min(1).max(100),
+    component:z.string().trim().max(40).default(''),
+    modelUrl:z.string().trim().min(1).max(2000),
+    posterUrl:z.string().max(2000).default('')
+  })).max(20).default([]),
   featured:z.boolean().default(false),
   published:z.boolean().default(true)
 });
