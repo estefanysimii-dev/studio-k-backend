@@ -43,7 +43,6 @@ export const missionSchema=z.object({
   type:z.enum(['view_product','favorite_products','purchases','feedbacks','join_discord','visit_path']),
   target:z.number().int().min(1).max(100000).default(1),
   targetId:z.string().trim().max(180).default(''),
-  xp:z.number().int().min(0).max(100000).default(50),
   active:z.boolean().default(true),
   startsAt:isoOrEmpty,
   endsAt:isoOrEmpty
