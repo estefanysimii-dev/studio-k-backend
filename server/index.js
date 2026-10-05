@@ -2,7 +2,7 @@ import express from 'express';
 import helmet from 'helmet';
 import rateLimit from 'express-rate-limit';
 import { randomBytes, randomUUID, scryptSync, timingSafeEqual, createHash } from 'node:crypto';
-import { readdirSync, readFileSync, mkdirSync, writeFileSync, statSync } from 'node:fs';
+import { readdirSync, readFileSync, mkdirSync, writeFileSync, statSync, existsSync, unlinkSync } from 'node:fs';
 import { join, resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawn } from 'node:child_process';
@@ -358,6 +358,99 @@ const registerPortfolioAsset=(asset)=>{
   assets.unshift(asset);
   store.set('portfolio:assets',assets.slice(0,500));
   return asset;
+};
+const portfolioAssetPath=asset=>{
+  const filename=String(asset?.filename||'');
+  if(!/^[a-zA-Z0-9._-]+$/.test(filename)||filename.includes('..'))return '';
+  return join(asset?.visibility==='public'?portfolioPublicDir:portfolioPrivateDir,filename);
+};
+const deletePortfolioAssetFile=asset=>{
+  const path=portfolioAssetPath(asset);
+  if(!path||!existsSync(path))return 0;
+  const size=Number(asset?.size||0);
+  unlinkSync(path);
+  return size;
+};
+const portfolioReferenceText=()=>{
+  const rows=store.all("SELECT key FROM kv WHERE key LIKE 'portfolio:%' AND key<>'portfolio:assets'");
+  return rows.map(row=>{
+    try{return JSON.stringify(store.get(row.key,null))}catch{return ''}
+  }).join('\n');
+};
+const portfolioAssetUsage=()=>{
+  const text=portfolioReferenceText();
+  const used=new Set();
+  for(const asset of portfolioAssets()){
+    const url=String(asset.publicUrl||'');
+    if(url&&text.includes(url))used.add(asset.id);
+  }
+  return{used,text};
+};
+const cleanupPortfolioAssets=({generatedMinAgeMs=60*60*1000,untrackedMinAgeMs=24*60*60*1000}={})=>{
+  const assets=portfolioAssets();
+  const {used,text}=portfolioAssetUsage();
+  const relatedSourceIds=new Set(assets.flatMap(asset=>Array.isArray(asset.relatedSourceAssetIds)?asset.relatedSourceAssetIds:[]));
+  const now=Date.now(),removed=[],kept=[];
+  let freedBytes=0;
+  for(const asset of assets){
+    const createdAt=Date.parse(String(asset.created||''));
+    const age=Number.isFinite(createdAt)?Math.max(0,now-createdAt):Number.POSITIVE_INFINITY;
+    const ext=String(asset.ext||'').toLowerCase();
+    const fiveMSource=['ydd','ytd'].includes(ext)&&(asset.temporary===true||relatedSourceIds.has(asset.id));
+    const temporarySource=asset.temporary===true&&age>=5*60*1000;
+    const orphanGenerated=asset.generated===true&&!used.has(asset.id)&&age>=generatedMinAgeMs;
+    if(fiveMSource||temporarySource||orphanGenerated){
+      try{freedBytes+=deletePortfolioAssetFile(asset)}catch{}
+      removed.push(asset);
+    }else kept.push(asset);
+  }
+  store.set('portfolio:assets',kept);
+  const tracked=new Set(kept.map(asset=>String(asset.filename||'')).filter(Boolean));
+  let untrackedFiles=0;
+  for(const [dir,visibility] of [[portfolioPublicDir,'public'],[portfolioPrivateDir,'private']]){
+    for(const filename of readdirSync(dir)){
+      if(tracked.has(filename))continue;
+      if(!/^[a-zA-Z0-9._-]+$/.test(filename)||filename.includes('..'))continue;
+      const path=join(dir,filename);
+      let info;
+      try{info=statSync(path)}catch{continue}
+      if(!info.isFile()||now-info.mtimeMs<untrackedMinAgeMs)continue;
+      if(visibility==='public'&&text.includes(`/portfolio-assets/${filename}`))continue;
+      try{unlinkSync(path);freedBytes+=Number(info.size||0);untrackedFiles+=1}catch{}
+    }
+  }
+  return{
+    removedAssets:removed.length,
+    removedTemporarySources:removed.filter(asset=>asset.temporary===true||['ydd','ytd'].includes(String(asset.ext||'').toLowerCase())).length,
+    removedGenerated:removed.filter(asset=>asset.generated===true).length,
+    removedUntrackedFiles:untrackedFiles,
+    freedBytes,
+    keptAssets:kept.length
+  };
+};
+const removePortfolioAssetsById=ids=>{
+  const removeSet=new Set(ids.filter(Boolean));
+  if(!removeSet.size)return{removed:0,freedBytes:0};
+  const assets=portfolioAssets(),kept=[];
+  let removed=0,freedBytes=0;
+  for(const asset of assets){
+    if(removeSet.has(asset.id)){
+      try{freedBytes+=deletePortfolioAssetFile(asset)}catch{}
+      removed+=1;
+    }else kept.push(asset);
+  }
+  store.set('portfolio:assets',kept);
+  return{removed,freedBytes};
+};
+const portfolioVisibleAssets=()=>portfolioAssets().filter(asset=>asset.temporary!==true&&asset.generatedKind!=='fivem-preview');
+const portfolioAssetStats=()=>{
+  const assets=portfolioAssets();
+  return{
+    visible:portfolioVisibleAssets().length,
+    total:assets.length,
+    temporary:assets.filter(asset=>asset.temporary===true||asset.generatedKind==='fivem-preview').length,
+    bytes:assets.reduce((sum,asset)=>sum+Number(asset.size||0),0)
+  };
 };
 const processPortfolioAsset=async(sourceId)=>{
   const source=portfolioAssets().find(asset=>asset.id===sourceId);
