@@ -197,7 +197,7 @@ export function studioIdProfile(store,userId,member={},options={}){
     }
   };
   const badgeCatalog=(config.badges||[])
-    .filter(badge=>badge.enabled!==false)
+    .filter(badge=>badge.enabled!==false&&badge.condition!=='level')
     .map(badge=>({...badge,rarity:safeRarity(badge.rarity),unlocked:badgeUnlocked(badge)}));
   const badges=config.features.badges?badgeCatalog.filter(badge=>badge.unlocked).map(({unlocked,...badge})=>badge):[];
   const titleCatalog=[
@@ -219,9 +219,7 @@ export function studioIdProfile(store,userId,member={},options={}){
     {id:'first-purchase',label:'Primeira aquisição',description:'Concluiu a primeira compra.',icon:'✦',rarity:'rare',unlocked:purchases.length>=1},
     {id:'collector',label:'Colecionador',description:`Concluiu ${th.collectorPurchases} compras no Studio K.`,icon:'◇',rarity:'epic',unlocked:purchases.length>=th.collectorPurchases},
     {id:'reviewer',label:'Sua voz conta',description:'Enviou o primeiro feedback.',icon:'✓',rarity:'rare',unlocked:feedbackCount>=1},
-    {id:'neon-lover',label:'Energia Neon',description:'Adquiriu um produto Neon/emissivo.',icon:'✧',rarity:'epic',unlocked:isNeonLover},
-    {id:'level-five',label:'Ascensão',description:'Conquista legada preservada durante a migração.',icon:'Ⅴ',rarity:'epic',unlocked:legacyLevel>=th.levelFive},
-    {id:'studio-icon',label:'Ícone Studio K',description:'Conquista legada preservada durante a migração.',icon:'★',rarity:'legendary',unlocked:legacyLevel>=th.iconLevel}
+    {id:'neon-lover',label:'Energia Neon',description:'Adquiriu um produto Neon/emissivo.',icon:'✧',rarity:'epic',unlocked:isNeonLover}
   ].map(item=>({...item,rarity:safeRarity(item.rarity)}));
   const achievementHistory=store.get(`portfolio:achievements:${userId}`,{})||{};
   let achievementsChanged=false;
@@ -241,12 +239,9 @@ export function studioIdProfile(store,userId,member={},options={}){
   })):[];
   const perks=config.features.perks?[
     {id:'ecosystem-sync',label:'Studio K Sync',description:'Identidade reconhecida pelo site e bot do Studio K.',icon:'K',rarity:'common',unlocked:true,progress:1,target:1},
-    {id:'badge-showcase',label:'Badge Showcase',description:'Exibição expandida de badges no perfil.',icon:'✦',rarity:'common',unlocked:legacyLevel>=2,progress:legacyLevel>=2?1:0,target:1},
     {id:'profile-frame',label:'Collector Frame',description:`Moldura especial para o Studio K ID após ${th.profileFramePurchases} compras.`,icon:'◇',rarity:'rare',unlocked:purchases.length>=th.profileFramePurchases,progress:Math.min(purchases.length,th.profileFramePurchases),target:th.profileFramePurchases},
     {id:'neon-aura',label:'Neon Aura',description:'Efeito Neon especial no cartão do Studio K ID.',icon:'✧',rarity:'epic',unlocked:isNeonLover,progress:isNeonLover?1:0,target:1},
-    {id:'insider-mark',label:'Insider Mark',description:'Marca legada preservada durante a migração.',icon:'◆',rarity:'epic',unlocked:legacyLevel>=th.insiderLevel,progress:legacyLevel>=th.insiderLevel?1:0,target:1},
-    {id:'priority-support',label:'Priority Support',description:'Identifica apoiadores elegíveis para fluxos prioritários de suporte.',icon:'★',rarity:'epic',unlocked:isSupporter,progress:isSupporter?1:0,target:1},
-    {id:'icon-aura',label:'Icon Aura',description:'Tratamento visual legado do Studio K ID.',icon:'K',rarity:'legendary',unlocked:legacyLevel>=th.iconLevel,progress:legacyLevel>=th.iconLevel?1:0,target:1}
+    {id:'priority-support',label:'Priority Support',description:'Identifica apoiadores elegíveis para fluxos prioritários de suporte.',icon:'★',rarity:'epic',unlocked:isSupporter,progress:isSupporter?1:0,target:1}
   ].map(perk=>({...perk,rarity:safeRarity(perk.rarity)})):[];
   const perkStateKey=`portfolio:perk-state:${userId}`;
   const previousPerks=store.get(perkStateKey,null);
