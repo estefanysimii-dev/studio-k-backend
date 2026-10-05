@@ -59,20 +59,21 @@ test('Commerce Suite applies role benefits, progressive combos and notifications
   assert.equal(notifications[0].read,true);
 });
 
-test('Commerce Suite missions grant bonus XP only once', (t) => {
+test('Commerce Suite missions can be completed without XP rewards', (t) => {
   const dir=mkdtempSync(join(tmpdir(),'studio-k-mission-'));
   const store=openStore(dir);
   t.after(()=>{store.db.close();rmSync(dir,{recursive:true,force:true});});
   const userId='333333333333333333';
   store.set(`portfolio:favorites:${userId}`,{items:[],products:['a','b','c']});
   const mission=upsertCommerce(store,'missions',{
-    title:'Favoritos',description:'Salve três peças',type:'favorite_products',target:3,targetId:'',xp:75,active:true,startsAt:'',endsAt:''
+    title:'Favoritos',description:'Salve três peças',type:'favorite_products',target:3,targetId:'',active:true,startsAt:'',endsAt:''
   });
   const progress=missionProgress(store,userId,{inGuild:true},mission);
   assert.equal(progress.complete,true);
   const claimed=claimMission(store,userId,{inGuild:true},mission.id);
   assert.equal(claimed.claimed,true);
-  assert.equal(store.get(`portfolio:xp-bonus:${userId}`,0),75);
+  assert.equal('xp' in claimed,false);
+  assert.equal(store.get(`portfolio:xp-bonus:${userId}`,0),0);
   assert.throws(()=>claimMission(store,userId,{inGuild:true},mission.id));
 });
 
