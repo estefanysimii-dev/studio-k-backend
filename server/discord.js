@@ -1089,12 +1089,10 @@ ${normalized.previewAfter}
     const o=store.one("SELECT COUNT(*) AS total,SUM(CASE WHEN status IN ('paid','delivered') THEN 1 ELSE 0 END) AS completed FROM orders WHERE user_id=?",userId);
     const v=store.one('SELECT verified_at FROM verifications WHERE user_id=?',userId);
     const latest=store.one('SELECT category,status,state,updated FROM tickets WHERE user_id=? ORDER BY created DESC LIMIT 1',userId);
-    const badgeLine=profile.badges?.length?profile.badges.slice(0,6).map(b=>`${b.icon} ${b.label}`).join(' · '):'nenhum ainda';
     return[
       `**${m.displayName||m.user.username}** · <@${userId}>`,
       `**Studio K ID:** \`${profile.studioId}\``,
       `Título: **${profile.equippedTitle?.label||'Studio K Member'}**`,
-      `Badges: ${badgeLine}`,
       `Entrou no servidor: ${m.joinedTimestamp?`<t:${Math.floor(m.joinedTimestamp/1000)}:D>`:'não disponível'}`,
       `Conta criada: <t:${Math.floor(m.user.createdTimestamp/1000)}:D>`,
       `Verificação: ${v?.verified_at?`<t:${Math.floor(Date.parse(v.verified_at)/1000)}:D>`:'não registrada'}`,
