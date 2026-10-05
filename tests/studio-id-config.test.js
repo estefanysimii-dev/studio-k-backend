@@ -33,6 +33,7 @@ test('Studio K ID profile titles are granted only by Discord roles', (t) => {
   const userId='identity-test-user';
   const noRoleProfile=studioIdProfile(store,userId,{inGuild:true,roles:[]});
   assert.deepEqual(noRoleProfile.titles.map((item)=>item.id),['member']);
+  assert.equal(noRoleProfile.titles[0].source,'default');
   assert.equal(noRoleProfile.equippedTitle.id,'member');
 
   const vipProfile=studioIdProfile(store,userId,{
