@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-const discordRoleId=z.string().regex(/^\d{17,20}$/).or(z.literal(''));
+const discordRoleId=z.string().regex(/^\d{17,20}$/);
 
 const defaultTitleSchema=z.object({
   label:z.string().trim().min(1).max(80).default('Studio K Member'),
