@@ -839,12 +839,11 @@ app.get('/api/portfolio/public-state',async(req,res)=>{
       leaderboardOptIn:store.get(`portfolio:leaderboard-optin:${web.user.id}`,false)===true,
       restockSubscriptions:products.filter(product=>(store.get(`portfolio:restock:${product.id}`,[])||[]).includes(web.user.id)).map(product=>product.id),
       ticketCategories:store.settings().tickets?.categories||[],
-      activityHistory:store.all("SELECT event,item_kind,item_id,path,meta,created FROM portfolio_events WHERE user_id=? AND event IN ('order_created','mission_claim','xp_gain','achievement_unlock') ORDER BY id DESC LIMIT 60",web.user.id).map(row=>{
+      activityHistory:store.all("SELECT event,item_kind,item_id,path,meta,created FROM portfolio_events WHERE user_id=? AND event IN ('order_created','mission_claim','achievement_unlock') ORDER BY id DESC LIMIT 60",web.user.id).map(row=>{
         let meta={};try{meta=JSON.parse(row.meta||'{}')}catch{}
         const labels={
           order_created:'Compra realizada',
           mission_claim:'Missão concluída',
-          xp_gain:'XP recebido',
           achievement_unlock:'Conquista desbloqueada'
         };
         return{event:row.event,label:labels[row.event]||row.event,itemKind:row.item_kind||'',itemId:row.item_id||'',path:row.path||'',meta,created:row.created};
@@ -891,9 +890,7 @@ app.get('/api/portfolio/me/ecosystem',(req,res)=>{
       displayName:web.user.name||web.user.username||profile.studioId,
       avatar:web.user.avatar||''
     },
-    progression:{
-      level:profile.level,
-      xp:profile.xp,
+    identityState:{
       rank:profile.rank,
       title:profile.equippedTitle
     },
@@ -992,8 +989,7 @@ app.post('/api/portfolio/me/missions/:id/claim',portfolioSameOrigin,(req,res)=>{
   const web=portfolioSession(req);if(!web?.user?.id)throw new AppError('Conecte sua conta.',401);
   const mission=(store.get('portfolio:missions',[])||[]).find(item=>item.id===req.params.id)||null;
   const result=claimMission(store,web.user.id,web.member||{},req.params.id);
-  recordPortfolioEvent('mission_claim',{sessionId:`member:${web.user.id}`,userId:web.user.id,itemKind:'page',itemId:req.params.id,path:'/account',meta:{title:mission?.title||'Missão Studio K',xp:Number(result.xp||0)}});
-  if(Number(result.xp||0)>0)recordPortfolioEvent('xp_gain',{sessionId:`member:${web.user.id}`,userId:web.user.id,itemKind:'page',itemId:req.params.id,path:'/account',meta:{source:'mission',title:mission?.title||'Missão Studio K',xp:Number(result.xp||0)}});
+  recordPortfolioEvent('mission_claim',{sessionId:`member:${web.user.id}`,userId:web.user.id,itemKind:'page',itemId:req.params.id,path:'/account',meta:{title:mission?.title||'Missão Studio K'}});
   res.json({result,profile:portfolioMemberProfile(web.user.id,web.member||{})});
 });
 app.put('/api/portfolio/me/leaderboard',portfolioSameOrigin,(req,res)=>{const web=portfolioSession(req);if(!web?.user?.id)throw new AppError('Conecte sua conta.',401);store.set(`portfolio:leaderboard-optin:${web.user.id}`,req.body?.enabled===true);res.json({enabled:req.body?.enabled===true});});
