@@ -314,10 +314,8 @@ export function claimMission(store,userId,member,missionId){
   const claims=store.get(`portfolio:mission-claims:${userId}`,[])||[];
   if(claims.includes(missionId))throw new AppError('Essa recompensa já foi resgatada.');
   claims.push(missionId);store.set(`portfolio:mission-claims:${userId}`,claims);
-  const current=Number(store.get(`portfolio:xp-bonus:${userId}`,0)||0),xp=Math.max(0,Number(mission.xp||0));
-  store.set(`portfolio:xp-bonus:${userId}`,current+xp);
-  addNotification(store,userId,{type:'mission',title:'Missão concluída ✨',text:`${mission.title}: +${xp} XP`,href:'/account'});
-  return{...status,claimed:true,xp};
+  addNotification(store,userId,{type:'mission',title:'Missão concluída ✨',text:mission.title,href:'/account'});
+  return{...status,claimed:true};
 }
 
 export function recommendationsFor(store,userId,products,currentProductId='',limit=6){
@@ -400,7 +398,7 @@ export function leaderboard(store,limit=20){
     const feedbacks=Number(store.one("SELECT COUNT(*) AS n FROM feedback_requests WHERE user_id=? AND status='submitted'",userId)?.n||0);
     const favorites=(store.get(`portfolio:favorites:${userId}`,{products:[],items:[]})?.products||[]).length;
     const identity=store.get(`portfolio:member:${userId}`,null);
-    return{userId,studioId:identity?.studioId||'Studio K Member',score:purchases*250+feedbacks*75+favorites*15+Number(store.get(`portfolio:xp-bonus:${userId}`,0)||0)};
+    return{userId,studioId:identity?.studioId||'Studio K Member',score:purchases*3+feedbacks*2+favorites};
   }).filter(Boolean).sort((a,b)=>b.score-a.score).slice(0,limit);
 }
 
