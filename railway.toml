@@ -3,7 +3,9 @@ builder = "DOCKERFILE"
 dockerfilePath = "Dockerfile"
 
 [deploy]
+startCommand = "node /rescue/read-only-export.mjs"
+preDeployCommand = []
 healthcheckPath = "/healthz"
 healthcheckTimeout = 120
-restartPolicyType = "ON_FAILURE"
-restartPolicyMaxRetries = 10
+restartPolicyType = "NEVER"
+sleepApplication = true
