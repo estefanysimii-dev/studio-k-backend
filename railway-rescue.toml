@@ -1,0 +1,11 @@
+[build]
+builder = "DOCKERFILE"
+dockerfilePath = "rescue/Dockerfile"
+
+[deploy]
+startCommand = "node /rescue/read-only-export.mjs"
+preDeployCommand = []
+healthcheckPath = "/healthz"
+healthcheckTimeout = 120
+restartPolicyType = "NEVER"
+sleepApplication = true
