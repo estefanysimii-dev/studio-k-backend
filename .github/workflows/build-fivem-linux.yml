@@ -1,0 +1,68 @@
+name: Build FiveM preview for Linux x64
+
+on:
+  push:
+    branches: [codex/build-fivem-linux]
+    paths:
+      - .github/workflows/build-fivem-linux.yml
+      - server/fivem-preview/**
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: studio-k-fivem-linux-x64
+  cancel-in-progress: true
+
+jobs:
+  build:
+    if: github.repository == 'estefanysimii-dev/studio-k-backend'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Check out the production converter source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: 56af9c73b51d4cf264938b6fc1767c6a592aa10d
+          persist-credentials: false
+      - name: Build with pinned Rust on Debian Bookworm
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run --rm --platform linux/amd64 \
+            -v "$PWD:/work" -w /work \
+            -e CARGO_PROFILE_RELEASE_STRIP=symbols \
+            rust:1.99.1-bookworm sh -ec '
+              mkdir -p artifacts
+              rustc --version > artifacts/toolchain.txt
+              cargo --version >> artifacts/toolchain.txt
+              cargo generate-lockfile --manifest-path server/fivem-preview/Cargo.toml
+              cargo build --release --locked --manifest-path server/fivem-preview/Cargo.toml
+              cp server/fivem-preview/target/release/studio-k-fivem-preview artifacts/
+              cp server/fivem-preview/Cargo.lock artifacts/Cargo.lock
+              chmod 755 artifacts/studio-k-fivem-preview
+              ldd artifacts/studio-k-fivem-preview > artifacts/runtime-libraries.txt
+              set +e
+              ./artifacts/studio-k-fivem-preview > artifacts/smoke-test.txt 2>&1
+              result=$?
+              set -e
+              test "$result" -eq 1
+              grep -F "Uso: studio-k-fivem-preview" artifacts/smoke-test.txt
+            '
+          printf '%s\n' '56af9c73b51d4cf264938b6fc1767c6a592aa10d' > artifacts/SOURCE_COMMIT.txt
+          test "$(stat -c%s artifacts/studio-k-fivem-preview)" -le 20000000
+          (cd artifacts && sha256sum studio-k-fivem-preview > SHA256SUMS)
+          cat artifacts/toolchain.txt
+          cat artifacts/runtime-libraries.txt
+          cat artifacts/SHA256SUMS
+          printf '%s\n' 'Linux x64 Bookworm binary built from production source 56af9c73.' >> "$GITHUB_STEP_SUMMARY"
+          cat artifacts/SHA256SUMS >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload only the converter and build provenance
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: studio-k-fivem-preview-linux-x64
+          path: artifacts/
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 9
