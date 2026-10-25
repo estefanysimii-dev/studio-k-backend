@@ -30,10 +30,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          mkdir -p artifacts
           docker run --rm --platform linux/amd64 \
             -v "$PWD:/work" -w /work \
             -e CARGO_PROFILE_RELEASE_STRIP=symbols \
-            rust:1.99.1-bookworm sh -ec '
+            rust:1.99.1-bookworm@sha256:48b7f435b8fc6378ce43b44f15e3a47fd8919b2825f835c39bd4bd3da50af5b8 sh -ec '
               mkdir -p artifacts
               rustc --version > artifacts/toolchain.txt
               cargo --version >> artifacts/toolchain.txt
