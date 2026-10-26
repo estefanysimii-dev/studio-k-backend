@@ -48,6 +48,9 @@ A instalação limita seus subprocessos a uma meta média de 12% de um núcleo, 
 o contador de CPU do cgroup e pausando somente seus próprios processos. As proteções
 da hospedagem continuam ativas. A primeira tentativa sem esse controle foi interrompida
 pelo provedor por CPU alta; por isso a preparação pode demorar mais no plano Free.
+As URLs dos pacotes são resolvidas em uma única consulta APT autenticada; os downloads
+seguem um por vez, somente de HTTPS oficial Debian, com tamanho limitado e SHA256
+verificado. Isso evita reler todo o índice APT para cada pacote pequeno.
 
 Uma instalação interrompida pode ser retomada explicitamente com
 `--stream-resume all --stage CAMINHO --plan PLANO.json --journal REGISTRO.jsonl`.

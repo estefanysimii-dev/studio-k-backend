@@ -7,6 +7,8 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { spawn, spawnSync } from 'node:child_process';
 import assert from 'node:assert/strict';
+import { Readable } from 'node:stream';
+import { pipeline } from 'node:stream/promises';
 
 const MiB = 1024 * 1024;
 const BASE = '/home/container';
@@ -301,7 +303,7 @@ async function createPlan(targets) {
 }
 async function sha256(filename) {
   const hash = crypto.createHash('sha256');
-  for await (const chunk of fs.createReadStream(filename)) hash.update(chunk);
+  for await (const chunk of fs.createReadStream(filename)) { hash.update(chunk); await coolCpu(); }
   return hash.digest('hex');
 }
 function extractedPath(candidate, root, realpath = fs.realpathSync) {
@@ -578,6 +580,39 @@ async function resumePlan(planFilename, journalFilename, targets) {
   log(`Resume: ${receipts.length}/${plan.packages.length} earlier packages already verified; remaining peak extra=${extraBytesRequired}; fits=${fits}.`);
   return { ...plan, fits, extraBytesRequired, previousReceipts: receipts, resumedFrom: withinStage(path.resolve(journalFilename)) };
 }
+function parseDownloadUris(text, packages) {
+  const result = new Map();
+  for (const line of text.split('\n')) {
+    if (!line.startsWith("'")) continue;
+    const match = line.match(/^'([^']+)'\s+(\S+)\s+(\d+)(?:\s+.*)?$/);
+    if (!match) fail('Unexpected APT download URI line.');
+    const url = new URL(match[1]);
+    const filename = decodeURIComponent(url.pathname.split('/').pop());
+    const name = filename.split('_')[0], expected = packages.find(item => item.name === name);
+    if (url.protocol !== 'https:' || !['deb.debian.org', 'security.debian.org'].includes(url.hostname) || url.username || url.password || url.port || url.search || url.hash || !/^[A-Za-z0-9_%.+:~=-]+\.deb$/.test(filename) || !expected || Number(match[3]) !== expected.downloadBytes || result.has(name)) fail('APT URI does not match the authenticated archive/official HTTPS repository.');
+    result.set(name, url.href);
+  }
+  if (result.size !== packages.length) fail('APT did not print exactly one download URI per remaining package.');
+  return result;
+}
+async function downloadSignedArchive(url, filename, expected) {
+  log(`Download authenticated archive ${expected.name}: ${expected.downloadBytes} bytes.`);
+  const response = await fetch(url, { redirect: 'error', signal: AbortSignal.timeout(5 * 60000) });
+  if (response.status !== 200 || !response.body) fail(`Official archive download failed for ${expected.name}: HTTP ${response.status}.`);
+  const declared = response.headers.get('content-length');
+  if (declared && Number(declared) !== expected.downloadBytes) fail('Archive Content-Length differs from signed metadata.');
+  let total = 0;
+  async function* boundedBody() {
+    for await (const chunk of response.body) {
+      total += chunk.length;
+      if (total > expected.downloadBytes) fail('Archive exceeds its signed size; partial file retained.');
+      await coolCpu();
+      yield chunk;
+    }
+  }
+  await pipeline(Readable.from(boundedBody()), fs.createWriteStream(filename, { flags: 'wx', mode: 0o600 }));
+  if (total !== expected.downloadBytes) fail('Archive is incomplete; partial file retained.');
+}
 async function streamInstall(plan) {
   if (!plan.fits) fail('Streaming plan exceeds actual quota/reserve. No binary archives were downloaded; inspect the new plan.');
   budget(plan.extraBytesRequired);
@@ -589,13 +624,17 @@ async function streamInstall(plan) {
   recordStream({ event: 'begin', resumedFrom: plan.resumedFrom || null, previousReceipts: plan.previousReceipts || [], cpuShareTarget: CPU_SHARE, policy: 'Largest compressed archive first; signed SHA256 before extraction; complete payload SHA256/type/link verification before deleting only the new generated .deb.' });
   let deletedBytes = 0, deletedArchives = 0;
   const receipts = [...(plan.previousReceipts || [])];
+  // Resolve all official archive URLs once. Re-reading the full APT index for
+  // every tiny package wastes CPU on this host. APT authenticates the metadata;
+  // each fetched byte stream still requires its exact signed SHA256 below.
+  const remaining = plan.packages.slice(receipts.length);
+  const uris = parseDownloadUris(await checkedRun('/usr/bin/apt-get', ['--print-uris', 'download', ...remaining.map(item => `${item.name}=${item.version}`)], 120000), remaining);
   for (const [index, expected] of plan.packages.entries()) {
     if (index < (plan.previousReceipts?.length || 0)) continue;
     const packageDirectory = withinStage(path.join(cacheRoot, `${String(index).padStart(3, '0')}-${expected.name}`));
     mkdirNew(packageDirectory);
     budget(expected.downloadBytes + Math.ceil(expected.installedBytesEstimate * STREAM_SLACK) + MARGIN);
-    // 'download' fetches exactly one package and never invokes the package manager/install scripts.
-    await checkedRun('/usr/bin/apt-get', ['download', `${expected.name}=${expected.version}`], 10 * 60000, packageDirectory);
+    await downloadSignedArchive(uris.get(expected.name), withinStage(path.join(packageDirectory, `${expected.name}.deb`)), expected);
     const archives = fs.readdirSync(packageDirectory).filter(name => name.endsWith('.deb'));
     if (archives.length !== 1 || fs.readdirSync(packageDirectory).length !== 1) fail('Expected exactly one new generated .deb in the empty per-package cache.');
     const filename = withinStage(path.join(packageDirectory, archives[0]));
@@ -665,7 +704,14 @@ function selfTest() {
   assert.throws(() => verifiedPrefix([...journal, { event: 'complete' }], [pkg]), /completed installation/);
   assert.equal(verifiedPrefix([{ event: 'begin', previousReceipts: verifiedPrefix(journal, [pkg]) }], [pkg]).length, 1);
   assert.throws(() => verifiedPrefix([{ event: 'begin', previousReceipts: [{ package: 'other' }] }], [pkg]), /authenticated package plan/);
-  log('Symlink/cache confinement, CPU pacing arithmetic, strict resume receipts, streaming peak estimate, verifier, parser and core-package guards passed; no filesystem writes, network, or subprocesses used.');
+  const uriLine="'https://deb.debian.org/debian/pool/main/d/demo/demo_1.0_amd64.deb' demo_1.0_amd64.deb 100 SHA256:"+pkg.sha256;
+  assert.equal(parseDownloadUris(uriLine,[pkg]).get('demo'),'https://deb.debian.org/debian/pool/main/d/demo/demo_1.0_amd64.deb');
+  assert.throws(()=>parseDownloadUris(uriLine.replace('https:','http:'),[pkg]),/official HTTPS/);
+  assert.throws(()=>parseDownloadUris(uriLine.replace('deb.debian.org','untrusted.invalid'),[pkg]),/official HTTPS/);
+  assert.throws(()=>parseDownloadUris(uriLine.replace(' 100 ',' 101 '),[pkg]),/authenticated archive/);
+  assert.throws(()=>parseDownloadUris(uriLine+'\n'+uriLine,[pkg]),/authenticated archive/);
+  assert.throws(()=>parseDownloadUris('',[pkg]),/exactly one/);
+  log('Symlink/cache confinement, official HTTPS URI validation, CPU pacing arithmetic, strict resume receipts, streaming peak estimate, verifier, parser and core-package guards passed; no filesystem writes, network, or subprocesses used.');
 }
 
 const [mode, selection = 'all', ...extra] = process.argv.slice(2);
