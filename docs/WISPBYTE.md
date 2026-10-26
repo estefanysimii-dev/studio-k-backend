@@ -71,6 +71,8 @@ evitando que uma falha de conversão ocupe a pequena cota de disco.
 O wrapper do Blender relocacionado aponta `BLENDER_SYSTEM_RESOURCES` para seus
 recursos extraídos e `BLENDER_SYSTEM_PYTHON=/usr` para o Python 3.13 da imagem trixie.
 O instalador recusa essa configuração se a biblioteca padrão do host estiver ausente.
+O wrapper também limita `PYTHONPATH` aos pacotes Debian extraídos e verificados,
+incluindo NumPy, e desativa pacotes Python do usuário e caminhos inseguros.
 
 ## Operação gratuita
 
