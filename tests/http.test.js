@@ -11,7 +11,7 @@ import { openStore } from '../server/store.js';
 test('HTTP access, CSRF, persistence, sales and disconnected Discord behavior',async t=>{
   const listener=createServer();await new Promise(r=>listener.listen(0,'127.0.0.1',r));const port=listener.address().port;await new Promise(r=>listener.close(r));
   const dir=mkdtempSync(join(tmpdir(),'studio-k-http-')),origin=`http://127.0.0.1:${port}`;
-  const child=spawn(process.execPath,['server/index.js'],{cwd:resolve('.'),env:{...process.env,STUDIO_DEMO:'false',HOST:'127.0.0.1',PORT:String(port),PUBLIC_URL:origin,COOKIE_SECURE:'false',DATA_DIR:dir,DISCORD_TOKEN:'',DISCORD_GUILD_ID:'',INTEGRATION_KEY:''},stdio:'pipe'});
+  const child=spawn(process.execPath,['server/index.js'],{cwd:resolve('.'),env:{...process.env,STUDIO_DEMO:'false',HOST:'127.0.0.1',PORT:String(port),PUBLIC_URL:origin,TRANSLATION_PROVIDER:'cloudflare',CLOUDFLARE_ACCOUNT_ID:'b'.repeat(32),CLOUDFLARE_API_TOKEN:'fixture-cloudflare-http-token',COOKIE_SECURE:'false',DATA_DIR:dir,DISCORD_TOKEN:'',DISCORD_GUILD_ID:'',INTEGRATION_KEY:''},stdio:'pipe'});
   let output='';child.stdout.on('data',d=>output+=d);child.stderr.on('data',d=>output+=d);
   t.after(async()=>{child.kill();await new Promise(r=>child.exitCode!==null?r():child.once('exit',r));rmSync(dir,{recursive:true,force:true});});
   let ready=false;for(let i=0;i<100;i++){try{const r=await fetch(origin+'/api/auth');if(r.ok){ready=true;break;}}catch{}await delay(50);}assert.ok(ready,output);
@@ -27,7 +27,7 @@ test('HTTP access, CSRF, persistence, sales and disconnected Discord behavior',a
   assert.equal((await request('/setup','POST',{password:'local-test-password'},{Origin:'https://foreign.example'})).status,403);
   const setup=await request('/setup','POST',{password:'local-test-password'},{Origin:origin});assert.equal(setup.status,200);const csrf=(await setup.json()).csrf,cookie=setup.headers.get('set-cookie').split(';')[0],headers={Origin:origin,Cookie:cookie,'X-CSRF-Token':csrf};
   assert.equal((await request('/setup','POST',{password:'another-password'},{Origin:origin})).status,409);
-  let state=await(await request('/state','GET',undefined,headers)).json();assert.equal(state.demo,false);assert.equal(state.products.length,0);assert.equal(state.settings.welcome.embed.fields.length,0);
+  let state=await(await request('/state','GET',undefined,headers)).json();assert.equal(state.demo,false);assert.deepEqual(state.integrations.translation,{configured:true,enabled:false,ready:false,provider:'Cloudflare Workers AI'});assert.ok(!JSON.stringify(state.integrations).includes('fixture-cloudflare-http-token'));assert.equal(state.products.length,0);assert.equal(state.settings.welcome.embed.fields.length,0);
   assert.equal((await request('/settings','PUT',state.settings,{Origin:origin,Cookie:cookie})).status,403);
   state.settings.brand.name='Studio Teste';const settingsResponse=await request('/settings','PUT',state.settings,headers);assert.equal(settingsResponse.status,200);assert.equal((settingsResponse.headers.get('content-type')||'').includes('application/json'),true);assert.deepEqual(await settingsResponse.json(),{ok:true});
   const product=await request('/products','POST',{name:'Licença teste',priceCents:5000,type:'digital'},headers);assert.equal(product.status,200);const pid=(await product.json()).id;

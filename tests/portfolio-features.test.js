@@ -192,4 +192,16 @@ test('Studio K ID, favorites, live drops and behavior tracking stay integrated',
   assert.equal(events[1].item_kind, 'product');
   assert.equal(events[1].item_id, 'produto-neon');
   inspect.db.close();
+  const purchase=async(path,body)=>request(path,{method:'POST',body:JSON.stringify(body),headers:{Cookie:cookie,Origin:origin}});
+  const firstCheckout=await purchase('/products/produto-neon/order',{couponCode:'',idempotencyKey:'single-order-retry-fixture'});
+  assert.equal(firstCheckout.status,200);const firstOrder=await firstCheckout.json();
+  const retryCheckout=await purchase('/products/produto-neon/order',{couponCode:'',idempotencyKey:'single-order-retry-fixture'});
+  assert.equal(retryCheckout.status,200);assert.deepEqual(await retryCheckout.json(),firstOrder);
+  assert.equal((await purchase('/products/produto-neon/order',{couponCode:'OTHER',idempotencyKey:'single-order-retry-fixture'})).status,409);
+  await request('/me/cart',{method:'PUT',body:JSON.stringify({items:[{productId:'produto-neon',quantity:1}]}),headers:{Cookie:cookie,Origin:origin}});
+  const firstCart=await purchase('/me/cart/checkout',{couponCode:'',idempotencyKey:'cart-order-retry-fixture'});
+  assert.equal(firstCart.status,200);const cartCheckout=await firstCart.json();
+  const retryCart=await purchase('/me/cart/checkout',{couponCode:'',idempotencyKey:'cart-order-retry-fixture'});
+  assert.equal(retryCart.status,200);assert.deepEqual(await retryCart.json(),cartCheckout);
+  const finalStore=openStore(dir);assert.equal(finalStore.one('SELECT COUNT(*) n FROM orders WHERE user_id=?',userId).n,2);finalStore.db.close();
 });
