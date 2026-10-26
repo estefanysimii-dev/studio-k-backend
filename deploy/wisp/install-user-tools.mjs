@@ -140,7 +140,11 @@ function withinStage(candidate) {
 }
 async function checkedRun(command, args, timeout = 10 * 60000, workingDirectory = stage, label = null) {
   log(label || `${path.basename(command)} ${args.join(' ')}`);
-  budget();
+  // Stream extraction has an exact signed-size/payload allocation guard in its
+  // caller. Read-only field/inspect/verify commands do not need repeated du scans.
+  // Keep live disk monitoring for APT metadata and the legacy bulk download.
+  const watchDisk = command === '/usr/bin/apt-get' && (args[0] === 'update' || args.includes('--download-only'));
+  if (watchDisk) budget();
   await coolCpu();
   return await new Promise((resolve, reject) => {
     const child = spawn(command, args, { env: aptEnv || cleanEnv, cwd: withinStage(workingDirectory), detached: true, stdio: ['ignore', 'pipe', 'pipe'] });
@@ -167,7 +171,7 @@ async function checkedRun(command, args, timeout = 10 * 60000, workingDirectory 
         }
       } catch (error) { if (error.code !== 'ESRCH') stop(error.message); }
     }, 100);
-    const monitor = setInterval(() => { try { budget(); } catch (error) { stop(error.message); } }, 5000);
+    const monitor = watchDisk ? setInterval(() => { try { budget(); } catch (error) { stop(error.message); } }, 5000) : null;
     const timer = setTimeout(() => stop('Command time limit reached.'), timeout);
     child.once('error', error => { clearInterval(cpuMonitor); clearInterval(monitor); clearTimeout(timer); if (forceTimer) clearTimeout(forceTimer); reject(error); });
     child.once('close', code => {
@@ -176,7 +180,7 @@ async function checkedRun(command, args, timeout = 10 * 60000, workingDirectory 
       if (forceTimer) clearTimeout(forceTimer);
       if (stopReason || code !== 0) { try { process.kill(-child.pid, 'SIGKILL'); } catch { /* Group has exited. */ } }
       if (stopReason || code !== 0) reject(new Error(`${stopReason || `${path.basename(command)} exit ${code}`}\n${errors.slice(-4000)}\nOriginal data is untouched. Staging and journal preserved at ${stage}`));
-      else { try { budget(); resolve(output); } catch (error) { reject(error); } }
+      else { try { if (watchDisk) budget(); resolve(output); } catch (error) { reject(error); } }
     });
   });
 }
