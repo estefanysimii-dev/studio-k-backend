@@ -87,7 +87,7 @@ function fixtureBytes(directory) {
 async function execute({ name, command, args = [], timeoutMs, env, directory, expectedCode = 0, validate, inspectOutput }) {
   const started = performance.now();
   let stdout = '', stderr = '', stdoutBytes = 0, stderrBytes = 0;
-  let timedOut = false, stoppedForFixtureLimit = false, peakRss = 0, peakHwm = 0, samplingAvailable = false;
+  let timedOut = false, stoppedForFixtureLimit = false, stoppedForMemoryLimit = false, peakRss = 0, peakHwm = 0, samplingAvailable = false;
   return await new Promise(resolve => {
     const child = spawn(command, args, { cwd: directory, env, detached: true, stdio: ['ignore', 'pipe', 'pipe'] });
     let completed = false, stopping = false;
@@ -107,6 +107,10 @@ async function execute({ name, command, args = [], timeoutMs, env, directory, ex
     const timer = setTimeout(() => { timedOut = true; stop(); }, timeoutMs);
     const monitor = setInterval(() => {
       sample();
+      if (peakRss >= 384 * 1024 * 1024) {
+        stoppedForMemoryLimit = true; stopping = true;
+        try { process.kill(-child.pid, 'SIGKILL'); } catch { /* Already exited. */ }
+      }
       try { if (fixtureBytes(directory) > FIXTURE_CEILING_BYTES) { stoppedForFixtureLimit = true; stop(); } }
       catch { stoppedForFixtureLimit = true; stop(); }
     }, SAMPLE_INTERVAL_MS);
@@ -118,7 +122,7 @@ async function execute({ name, command, args = [], timeoutMs, env, directory, ex
       if (stopping) { try { process.kill(-child.pid, 'SIGKILL'); } catch { /* No descendants remain. */ } }
       const result = {
         test: name, status: 'fail', elapsedMs: Math.round(performance.now() - started), exitCode: code,
-        signal: signal || null, timedOut, stoppedForFixtureLimit,
+        signal: signal || null, timedOut, stoppedForFixtureLimit, stoppedForMemoryLimit,
         peakSampledRssBytes: samplingAvailable ? peakRss : null,
         peakSampledTreeHighWaterSumBytes: samplingAvailable ? peakHwm : null,
         rssSamplingIntervalMs: SAMPLE_INTERVAL_MS,
@@ -126,6 +130,7 @@ async function execute({ name, command, args = [], timeoutMs, env, directory, ex
       };
       if (spawnError) result.reason = spawnError.code || 'process-start-failed';
       else if (timedOut) result.reason = 'timeout';
+      else if (stoppedForMemoryLimit) result.reason = 'synthetic-converter-memory-limit';
       else if (stoppedForFixtureLimit) result.reason = 'fixture-space-limit';
       else if (code !== expectedCode) result.reason = 'unexpected-exit-code';
       else {
@@ -164,6 +169,8 @@ async function main() {
   // Pass converter path settings only. Application/OAuth/payment/Discord secrets are excluded.
   for (const name of ['LD_LIBRARY_PATH', 'BLENDER_SYSTEM_RESOURCES', 'BLENDER_SYSTEM_SCRIPTS', 'BLENDER_SYSTEM_DATAFILES', 'BLENDER_SYSTEM_PYTHON', 'MAGICK_CONFIGURE_PATH', 'MAGICK_CODER_MODULE_PATH', 'MAGICK_FILTER_MODULE_PATH', 'FONTCONFIG_PATH', 'FONTCONFIG_FILE']) if (process.env[name]) env[name] = process.env[name];
   Object.assign(env, {
+    OMP_NUM_THREADS: '1', OPENBLAS_NUM_THREADS: '1', MAGICK_THREAD_LIMIT: '1',
+    MAGICK_MEMORY_LIMIT: '48MiB', MAGICK_MAP_LIMIT: '64MiB', MAGICK_DISK_LIMIT: '32MiB',
     TMPDIR: path.join(directory, 'tmp'), TEMP: path.join(directory, 'tmp'), TMP: path.join(directory, 'tmp'),
     XDG_CONFIG_HOME: path.join(directory, 'config'), XDG_CACHE_HOME: path.join(directory, 'cache'), XDG_RUNTIME_DIR: path.join(directory, 'runtime'),
     BLENDER_USER_CONFIG: path.join(directory, 'blender-config'), BLENDER_USER_SCRIPTS: path.join(directory, 'blender-scripts'), BLENDER_USER_DATAFILES: path.join(directory, 'blender-datafiles'),
@@ -177,7 +184,7 @@ async function main() {
   fs.writeFileSync(triangle, 'o SmokeTriangle\nv 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n', { flag: 'wx', mode: 0o600 });
   const tests = [];
   if (!regularFile(BLENDER_SCRIPT)) tests.push(skip('blender-obj-to-glb', 'backend-conversion-script-missing'));
-  else tests.push(await execute({ name: 'blender-obj-to-glb', command: 'blender', args: ['--background', '--factory-startup', '--python', BLENDER_SCRIPT, '--', triangle, glb, 'obj'], timeoutMs: 90000, env, directory, validate: () => inspectGlb(glb) }));
+  else tests.push(await execute({ name: 'blender-obj-to-glb', command: 'blender', args: ['--background', '--threads', '1', '--factory-startup', '--disable-autoexec', '--python', BLENDER_SCRIPT, '--', triangle, glb, 'obj'], timeoutMs: 90000, env, directory, validate: () => inspectGlb(glb) }));
 
   const sourcePng = await execute({ name: 'imagemagick-create-png', command: 'convert', args: ['-size', '32x32', 'xc:#663399', png], timeoutMs: 30000, env, directory, validate: () => inspectPng(png) });
   tests.push(sourcePng);

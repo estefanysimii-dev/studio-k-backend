@@ -64,6 +64,8 @@ de 1 GiB com os dados restaurados. Recalcule após qualquer aumento relevante de
 um plano recusado não deve ser forçado. As bibliotecas ficam restritas aos wrappers.
 Depois da instalação, use `converter-smoke.mjs --run` com o PATH da instalação para
 validar OBJ→GLB, PSD→PNG e o carregamento do binário FiveM antes de ativar o startup.
+Esse teste usa uma thread e interrompe conversores que atinjam 384 MiB de RSS,
+deixando margem para o próprio diagnóstico no limite base de memória.
 
 ## Operação gratuita
 
