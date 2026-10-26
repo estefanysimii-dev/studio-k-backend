@@ -20,7 +20,7 @@ const MARGIN = 16 * MiB;
 const STREAM_SLACK = 1.05;
 const KNOWN_DATA_BYTES = 149507031;
 const RESTORED_DATA = path.join(BASE, 'data');
-const TARGETS = { all: ['blender', 'imagemagick-7.q16'], blender: ['blender'], imagemagick: ['imagemagick-7.q16'] };
+const TARGETS = { all: ['blender', 'python3-numpy', 'imagemagick-7.q16'], blender: ['blender', 'python3-numpy'], imagemagick: ['imagemagick-7.q16'], numpy: ['python3-numpy'] };
 const forbiddenPackages = /^(libc6|libc-bin|libc-dev-bin|libc6-dev|base-files|apt|dpkg|systemd|init-system-helpers|debian-archive-keyring)$/;
 const cleanEnv = { PATH: '/usr/local/bin:/usr/bin:/bin', LANG: 'C', LC_ALL: 'C', DEBIAN_FRONTEND: 'noninteractive' };
 let stage = null;
@@ -228,6 +228,18 @@ function configureApt(reuseStage = null, resume = false) {
   }
   const configFile = path.join(stage, `apt/config-${runId}`);
   const sourceFile = path.join(stage, `apt/sources-${runId}.list`);
+  // A small supplemental install may refresh the existing authenticated indexes
+  // instead of retaining a second full copy inside a 1 GiB quota.
+  let listsDirectory = `${stage}/apt/lists`;
+  if (selection === 'numpy' && process.env.STUDIO_TOOL_METADATA_STAGE) {
+    const metadataStage = path.resolve(process.env.STUDIO_TOOL_METADATA_STAGE);
+    if (path.dirname(metadataStage) !== TOOLS || !path.basename(metadataStage).startsWith('run-') || fs.realpathSync(metadataStage) !== metadataStage) fail('Unsafe supplemental metadata stage.');
+    const completed = JSON.parse(fs.readFileSync(path.join(metadataStage, 'result.json'), 'utf8'));
+    if (completed.stage !== metadataStage || !completed.preservedOriginals || !completed.receipts?.length) fail('Supplemental metadata must belong to a completed verified installation.');
+    listsDirectory = path.join(metadataStage, 'apt/lists');
+    if (fs.realpathSync(listsDirectory) !== listsDirectory || !fs.lstatSync(listsDirectory).isDirectory()) fail('Unsafe metadata index directory.');
+    log(`Refreshing signed indexes from completed stage: ${metadataStage}; extracted binaries stay unchanged.`);
+  }
   const config = [
     `Dir::Etc::main "/dev/null";`,
     `Dir::Etc::parts "${stage}/apt/empty-parts";`,
@@ -237,7 +249,7 @@ function configureApt(reuseStage = null, resume = false) {
     `Dir::Etc::trustedparts "${stage}/apt/empty-trusted";`,
     `Dir::State::status "/var/lib/dpkg/status";`,
     `Dir::State::extended_states "${stage}/apt/extended_states";`,
-    `Dir::State::lists "${stage}/apt/lists";`,
+    `Dir::State::lists "${listsDirectory}";`,
     `Dir::Cache::archives "${stage}/apt/archives";`,
     `Dir::Cache::pkgcache ""; Dir::Cache::srcpkgcache "";`,
     `Dir::Log "${stage}/apt";`,
@@ -334,7 +346,7 @@ function createWrappers() {
   const root = path.join(stage, 'root');
   extractedPath(root, root);
   const safe = candidate => extractedPath(candidate, root);
-  const libraries = [path.join(root, 'usr/lib/x86_64-linux-gnu'), path.join(root, 'lib/x86_64-linux-gnu'), path.join(root, 'usr/lib')].filter(filename => fs.existsSync(filename)).map(safe).join(':');
+  const libraries = [path.join(root, 'usr/lib/x86_64-linux-gnu/blas'), path.join(root, 'usr/lib/x86_64-linux-gnu/lapack'), path.join(root, 'usr/lib/x86_64-linux-gnu'), path.join(root, 'lib/x86_64-linux-gnu'), path.join(root, 'usr/lib')].filter(filename => fs.existsSync(filename)).map(safe).join(':');
   const preamble = `#!/bin/sh\nset -eu\nexport LD_LIBRARY_PATH=${shQuote(libraries)}\n`;
   const wrappers = [];
   let blender = path.join(root, 'usr/bin/blender');

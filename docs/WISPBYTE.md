@@ -73,6 +73,12 @@ recursos extraídos e `BLENDER_SYSTEM_PYTHON=/usr` para o Python 3.13 da imagem 
 O instalador recusa essa configuração se a biblioteca padrão do host estiver ausente.
 O wrapper também limita `PYTHONPATH` aos pacotes Debian extraídos e verificados,
 incluindo NumPy, e desativa pacotes Python do usuário e caminhos inseguros.
+As seleções `all` e `blender` incluem explicitamente `python3-numpy`, necessário
+ao exportador glTF. Para uma instalação anterior sem essa dependência, `numpy`
+prepara somente o complemento em outro estágio. `STUDIO_TOOL_METADATA_STAGE`
+pode apontar para um estágio completo verificado: apenas seus índices APT são
+atualizados e autenticados novamente, sem duplicar o índice ou alterar seus binários.
+O complemento não ativa wrappers; valide a configuração combinada antes de usá-la.
 
 ## Operação gratuita
 
