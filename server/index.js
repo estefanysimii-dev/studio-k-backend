@@ -10,6 +10,7 @@ import { z } from 'zod';
 import { openStore, AppError } from './store.js';
 import { installClothTool } from './clothtool.js';
 import { createBot } from './discord.js';
+import { createPurinCash, installPurinCashWebhook } from './purincash.js';
 import { defaultRadio, radioSchema, normalizeRadio, radioSnapshot } from './radio.js';
 import { settingsSchema, productSchema, messageSchema, templateSchema, giveawaySchema, eventSchema, id } from './schema.js';
 import { studioIdConfig, saveStudioIdConfig, studioIdConfigSchema, studioIdentityFor, studioFavoritesFor, studioProfilePrefsFor, studioIdProfile } from './studio-id.js';
@@ -21,10 +22,12 @@ import {
 const demo=process.env.STUDIO_DEMO==='true',port=Number(process.env.PORT||3210),host=demo?'127.0.0.1':process.env.HOST||'127.0.0.1';
 const base=new URL(process.env.PUBLIC_URL||`http://localhost:${port}`);
 const root=resolve(dirname(fileURLToPath(import.meta.url)),'..');
-const store=openStore(process.env.DATA_DIR||join(root,'data')),bot=createBot(store);
+const store=openStore(process.env.DATA_DIR||join(root,'data'));
+const payments=createPurinCash({store,wake:()=>bot.tick()}),bot=createBot(store,process.env,{payments});
 const app=express(); app.disable('x-powered-by');
 if(process.env.TRUST_PROXY){const value=Number(process.env.TRUST_PROXY);app.set('trust proxy',Number.isFinite(value)?value:process.env.TRUST_PROXY==='true');}
 app.use(helmet({contentSecurityPolicy:{directives:{defaultSrc:["'self'"],scriptSrc:["'self'","https://unpkg.com"],styleSrc:["'self'","'unsafe-inline'","https://fonts.googleapis.com"],fontSrc:["'self'","https://fonts.gstatic.com",'data:'],imgSrc:["'self'",'data:','https:','blob:'],mediaSrc:["'self'","https:",'blob:'],workerSrc:["'self'",'blob:'],connectSrc:["'self'"],upgradeInsecureRequests:process.env.COOKIE_SECURE==='true'?[]:null}},strictTransportSecurity:process.env.COOKIE_SECURE==='true'?undefined:false}));
+installPurinCashWebhook(app,payments);
 app.use(express.json({limit:'10mb'}));
 app.use('/api',(req,res,next)=>{res.setHeader('Cache-Control','no-store');next();});
 app.use('/api',rateLimit({windowMs:60000,limit:200,standardHeaders:'draft-8',legacyHeaders:false,message:{error:'Muitas solicitações. Aguarde um minuto.'}}));
@@ -53,6 +56,25 @@ function portfolioSameOrigin(req,res,next){
   const allowed=new Set([base.origin,portfolioPublicOrigin.origin]);
   if(host==='127.0.0.1'){allowed.add(`http://127.0.0.1:${port}`);allowed.add(`http://localhost:${port}`);}
   if(!allowed.has(req.headers.origin))return res.status(403).json({error:'Origem não autorizada.'});
+  next();
+}
+function checkoutIdempotency(req,res,next){
+  const web=portfolioSession(req);if(!web?.user?.id)return next();
+  const raw=req.body?.idempotencyKey;
+  if(!raw&&!payments.enabled)return next();
+  if(typeof raw!=='string'||!/^[a-zA-Z0-9_-]{16,100}$/.test(raw))return res.status(400).json({error:'Atualize a página para iniciar um novo pedido.'});
+  const key=`checkout-attempt:${web.user.id}:${raw}`,fingerprint=hash(JSON.stringify({path:req.path,body:req.body})),existing=store.get(key);
+  if(existing){
+    if(existing.fingerprint!==fingerprint)return res.status(409).json({error:'Esta tentativa pertence a outro pedido. Atualize a página.'});
+    if(existing.response){
+      const orderId=existing.response.id||existing.response.orderIds?.[0],payment=orderId?payments.existingForOrder(orderId):null;
+      return res.status(existing.status||200).json(payment?{...existing.response,payment}:existing.response);
+    }
+    return res.status(409).json({error:'Seu pedido está em processamento. Aguarde e consulte Minha Conta antes de criar outro.'});
+  }
+  store.set(key,{fingerprint,created:store.now()});
+  const json=res.json.bind(res);
+  res.json=body=>{store.set(key,{fingerprint,created:store.now(),status:res.statusCode,response:body});return json(body);};
   next();
 }
 app.get('/healthz',(req,res)=>res.json({ok:true}));
@@ -1026,7 +1048,7 @@ app.put('/api/portfolio/me/cart',portfolioSameOrigin,(req,res)=>{
   recordPortfolioEvent('cart_update',{sessionId:`member:${web.user.id}`,userId:web.user.id,itemKind:'page',path:'/cart',meta:{items:items.length}});
   res.json({cart:cartFor(store,web.user.id),quote:quoteCart(store,web.user.id,web.member||{},portfolioProducts().filter(x=>x.published!==false),String(req.body?.couponCode||''),Math.max(0,Math.min(100,Number(portfolioSite().memberDiscountPercent||0))))});
 });
-app.post('/api/portfolio/me/cart/checkout',portfolioSameOrigin,async(req,res)=>{
+app.post('/api/portfolio/me/cart/checkout',portfolioSameOrigin,checkoutIdempotency,async(req,res)=>{
   const web=portfolioSession(req);if(!web?.user?.id)throw new AppError('Conecte sua conta do Discord para finalizar o carrinho.',401);
   if(!demo)await bot.member(web.user.id);
   const products=portfolioProducts().filter(x=>x.published!==false),couponCode=String(req.body?.couponCode||'').trim().slice(0,40),quote=quoteCart(store,web.user.id,web.member||{},products,couponCode,Math.max(0,Math.min(100,Number(portfolioSite().memberDiscountPercent||0))));
@@ -1069,8 +1091,8 @@ app.post('/api/portfolio/me/cart/checkout',portfolioSameOrigin,async(req,res)=>{
   }
   addNotification(store,web.user.id,{type:'order',title:'Carrinho convertido em pedido 💜',text:`${orderIds.length} item(ns) · total R$ ${(quote.total/100).toFixed(2).replace('.',',')}`,href:'/account'});
   recordPortfolioEvent('cart_checkout',{sessionId:`member:${web.user.id}`,userId:web.user.id,itemKind:'page',path:'/cart',meta:{groupId,items:orderIds.length,total:quote.total}});
-  const sales=store.settings().sales||{};
-  res.json({groupId,orderIds,total:quote.total,quote,payment:{pixKey:sales.pixKey||'',recipient:sales.recipient||'',instructions:sales.instructions||''}});
+  const payment=await payments.forCheckout(orderIds);
+  res.json({groupId,orderIds,total:quote.total,quote,payment});
 });
 app.get('/api/portfolio/me/notifications',(req,res)=>{const web=portfolioSession(req);if(!web?.user?.id)throw new AppError('Conecte sua conta.',401);res.json({notifications:notificationsFor(store,web.user.id)});});
 app.put('/api/portfolio/me/notifications/:id',portfolioSameOrigin,(req,res)=>{const web=portfolioSession(req);if(!web?.user?.id)throw new AppError('Conecte sua conta.',401);res.json({notifications:markNotification(store,web.user.id,req.params.id,req.body?.read!==false)});});
@@ -1190,7 +1212,7 @@ app.get('/api/portfolio/me/orders/:id/delivery',(req,res)=>{
   if(!unit?.secret)throw new AppError('Entrega digital não encontrada. Use o suporte do Studio K.',404);
   res.json({delivery:store.decrypt(unit.secret),instructions:product.delivery||'',productName:product.name||'Produto Studio K'});
 });
-app.post('/api/portfolio/products/:id/order',portfolioSameOrigin,async(req,res)=>{
+app.post('/api/portfolio/products/:id/order',portfolioSameOrigin,checkoutIdempotency,async(req,res)=>{
   const web=portfolioSession(req);
   if(!web?.user?.id)throw new AppError('Conecte sua conta do Discord antes de iniciar uma compra.',401);
   let product=portfolioProducts().find(item=>item.id===req.params.id&&item.published!==false);
@@ -1227,19 +1249,21 @@ app.post('/api/portfolio/products/:id/order',portfolioSameOrigin,async(req,res)=
     }
   }
   recordPortfolioEvent('order_created',{sessionId:`member:${web.user.id}`,userId:web.user.id,itemKind:'product',itemId:product.id,path:`/products/${product.id}`,meta:{orderId:order.id,price:Number(order.price||0)}});
-  const sales=store.settings().sales||{};
   res.json({
     id:order.id,
     status:order.status,
     price:Number(order.price||0),
     expires:order.expires,
     productName:product.name,
-    payment:{
-      pixKey:sales.pixKey||'',
-      recipient:sales.recipient||'',
-      instructions:sales.instructions||''
-    }
+    payment:await payments.forCheckout([order.id])
   });
+});
+app.post('/api/portfolio/me/orders/:id/payment',portfolioSameOrigin,async(req,res)=>{
+  const web=portfolioSession(req);if(!web?.user?.id)throw new AppError('Conecte sua conta.',401);
+  const order=store.one('SELECT id FROM orders WHERE id=? AND user_id=?',req.params.id,web.user.id);
+  if(!order)throw new AppError('Pedido não encontrado.',404);
+  const existing=payments.existingForOrder(order.id);
+  res.json({payment:existing||await payments.forOrders([order.id])});
 });
 const portfolioControl=async(req,res,next)=>{const web=portfolioSession(req);if(!await portfolioCanControl(req,web))return res.status(403).json({error:'A Central de Controle é exclusiva para membros com cargo de Staff no Discord do Studio K.'});req.portfolioWeb=web;next()};
 installClothTool(app,{store,control:portfolioControl,sameOrigin:portfolioSameOrigin,
@@ -1611,7 +1635,7 @@ app.get('/api/state',(req,res)=>{
     openAlerts:store.one("SELECT COUNT(*) AS n FROM alerts WHERE status='open'")?.n||0
   };
   const staffMetrics=store.all("SELECT staff_id,COUNT(*) AS actions,SUM(CASE WHEN action='claim' THEN 1 ELSE 0 END) AS claimed,SUM(CASE WHEN action='close' THEN 1 ELSE 0 END) AS closed,SUM(CASE WHEN action='transfer' THEN 1 ELSE 0 END) AS transferred FROM staff_actions WHERE created>=? GROUP BY staff_id ORDER BY closed DESC,actions DESC LIMIT 50",new Date(Date.now()-30*86400000).toISOString());
-  res.json({demo,status:bot.status(),oauth:{configured:!!(process.env.DISCORD_CLIENT_ID&&process.env.DISCORD_CLIENT_SECRET),redirectUri:oauthRedirect},integrations:{youtube:{configured:!!(process.env.GOOGLE_CLIENT_ID&&process.env.GOOGLE_CLIENT_SECRET),redirectUri:googleRedirect},translation:{configured:!!process.env.LIBRETRANSLATE_URL,provider:'LibreTranslate'}},settings,products,orders,summary,ops,staffMetrics,tickets,coupons:store.all('SELECT * FROM coupons ORDER BY created DESC LIMIT 200'),alerts:store.all("SELECT * FROM alerts ORDER BY created DESC LIMIT 100"),giveaways:store.all('SELECT * FROM giveaways ORDER BY created DESC LIMIT 100').map(g=>({...g,data:JSON.parse(g.data),entries:store.one('SELECT COUNT(*) AS n FROM entries WHERE giveaway_id=?',g.id).n,attempts:store.one('SELECT COUNT(*) AS n FROM giveaway_attempts WHERE giveaway_id=?',g.id).n,incomplete:store.one("SELECT COUNT(*) AS n FROM giveaway_attempts WHERE giveaway_id=? AND status='incomplete'",g.id).n})),events:store.all('SELECT * FROM events ORDER BY created DESC LIMIT 100').map(e=>({...e,data:JSON.parse(e.data)})),logs:store.all('SELECT * FROM logs ORDER BY id DESC LIMIT 200').map(l=>({...l,meta:(()=>{try{return JSON.parse(l.meta||'{}')}catch{return {}}})()})),feedbacks:store.all("SELECT id,type,source_id,user_id,status,rating,comment,meta,created,submitted_at FROM feedback_requests WHERE status='submitted' ORDER BY submitted_at DESC LIMIT 100").map(f=>({...f,meta:JSON.parse(f.meta||'{}')})),templates:store.all('SELECT * FROM templates ORDER BY name').map(t=>({...t,data:JSON.parse(t.data)})),lastBackup:store.get('lastBackup'),backups:readdirSync(join(store.dir,'backups')).filter(f=>f.endsWith('.json')).sort().reverse()});
+  res.json({demo,status:bot.status(),oauth:{configured:!!(process.env.DISCORD_CLIENT_ID&&process.env.DISCORD_CLIENT_SECRET),redirectUri:oauthRedirect},integrations:{youtube:{configured:!!(process.env.GOOGLE_CLIENT_ID&&process.env.GOOGLE_CLIENT_SECRET),redirectUri:googleRedirect},translation:bot.translationStatus()},settings,products,orders,summary,ops,staffMetrics,tickets,coupons:store.all('SELECT * FROM coupons ORDER BY created DESC LIMIT 200'),alerts:store.all("SELECT * FROM alerts ORDER BY created DESC LIMIT 100"),giveaways:store.all('SELECT * FROM giveaways ORDER BY created DESC LIMIT 100').map(g=>({...g,data:JSON.parse(g.data),entries:store.one('SELECT COUNT(*) AS n FROM entries WHERE giveaway_id=?',g.id).n,attempts:store.one('SELECT COUNT(*) AS n FROM giveaway_attempts WHERE giveaway_id=?',g.id).n,incomplete:store.one("SELECT COUNT(*) AS n FROM giveaway_attempts WHERE giveaway_id=? AND status='incomplete'",g.id).n})),events:store.all('SELECT * FROM events ORDER BY created DESC LIMIT 100').map(e=>({...e,data:JSON.parse(e.data)})),logs:store.all('SELECT * FROM logs ORDER BY id DESC LIMIT 200').map(l=>({...l,meta:(()=>{try{return JSON.parse(l.meta||'{}')}catch{return {}}})()})),feedbacks:store.all("SELECT id,type,source_id,user_id,status,rating,comment,meta,created,submitted_at FROM feedback_requests WHERE status='submitted' ORDER BY submitted_at DESC LIMIT 100").map(f=>({...f,meta:JSON.parse(f.meta||'{}')})),templates:store.all('SELECT * FROM templates ORDER BY name').map(t=>({...t,data:JSON.parse(t.data)})),lastBackup:store.get('lastBackup'),backups:readdirSync(join(store.dir,'backups')).filter(f=>f.endsWith('.json')).sort().reverse()});
 });
 app.get('/api/discord/metadata',async(req,res)=>res.json(await bot.metadata()));
 app.put('/api/settings',(req,res)=>{
@@ -1733,5 +1757,6 @@ const processPortfolioSchedules=async()=>{
 };
 const portfolioScheduleTimer=setInterval(()=>{void processPortfolioSchedules();processRestockSubscriptions();},30000);
 portfolioScheduleTimer.unref();
+const paymentTimer=setInterval(()=>void payments.processPending(),15000);paymentTimer.unref();
 setTimeout(()=>{void processPortfolioDrops();void processPortfolioSchedules();processRestockSubscriptions();},5000).unref();
-for(const signal of ['SIGTERM','SIGINT'])process.on(signal,async()=>{clearInterval(portfolioDropTimer);clearInterval(portfolioScheduleTimer);await bot.stop();server.close(()=>{store.db.close();process.exit(0);});});
+for(const signal of ['SIGTERM','SIGINT'])process.on(signal,async()=>{clearInterval(portfolioDropTimer);clearInterval(portfolioScheduleTimer);clearInterval(paymentTimer);await bot.stop();server.close(()=>{store.db.close();process.exit(0);});});

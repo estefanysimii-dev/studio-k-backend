@@ -1,3 +1,5 @@
+import { createTranslator } from './translation.js';
+import { SUPPORTED_LANGUAGES, normalizeLanguage, resolvePreferredLanguage } from './translation-utils.js';
 import { Client, GatewayIntentBits, Partials, Events, ChannelType, PermissionFlagsBits, ActivityType, REST, Routes, MessageFlags, GuildScheduledEventEntityType, GuildScheduledEventPrivacyLevel, ModalBuilder, TextInputBuilder, TextInputStyle, ActionRowBuilder, AuditLogEvent } from 'discord.js';
 import { randomUUID, randomBytes, createHash } from 'node:crypto';
 import { joinVoiceChannel, getVoiceConnection, VoiceConnectionStatus, entersState } from '@discordjs/voice';
@@ -51,43 +53,7 @@ const mentionPolicy=(payload={},extraUsers=[],extraRoles=[])=>{
 const safe={parse:[]};
 const money=n=>(n/100).toLocaleString('pt-BR',{style:'currency',currency:'BRL'});
 const channelSlug=value=>String(value||'ticket').normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/^-+|-+$/g,'').slice(0,80)||'ticket';
-export const SUPPORTED_LANGUAGES=[
-  {code:'pt',label:'Português (Brasil)',emoji:'🇧🇷'},
-  {code:'en',label:'English',emoji:'🇺🇸'},
-  {code:'es',label:'Español',emoji:'🇪🇸'},
-  {code:'fr',label:'Français',emoji:'🇫🇷'},
-  {code:'de',label:'Deutsch',emoji:'🇩🇪'},
-  {code:'it',label:'Italiano',emoji:'🇮🇹'},
-  {code:'ja',label:'日本語',emoji:'🇯🇵'},
-  {code:'ko',label:'한국어',emoji:'🇰🇷'},
-  {code:'zh-CN',label:'简体中文',emoji:'🇨🇳'},
-  {code:'ru',label:'Русский',emoji:'🇷🇺'}
-];
-export const normalizeLanguage=value=>{
-  const raw=String(value||'').trim(),lower=raw.toLowerCase().replace('_','-');
-  if(['pt','pt-br','pt-pt','português','portugues','portuguese'].includes(lower)||lower.startsWith('pt-'))return 'pt';
-  if(lower==='zh-cn'||lower==='zh-hans'||lower.startsWith('zh-cn')||lower.startsWith('zh-sg'))return 'zh-CN';
-  const exact=SUPPORTED_LANGUAGES.find(l=>l.code.toLowerCase()===lower);
-  if(exact)return exact.code;
-  const prefix=lower.split('-')[0],byPrefix=SUPPORTED_LANGUAGES.find(l=>l.code.toLowerCase()===prefix);
-  return byPrefix?.code||'pt';
-};
-export const resolvePreferredLanguage=(storedLanguage='',explicit=false,interactionLocale='')=>{
-  if(explicit&&storedLanguage)return normalizeLanguage(storedLanguage);
-  return normalizeLanguage(interactionLocale||'pt');
-};
-const protectedTranslationPattern=/```[\s\S]*?```|`[^`\n]+`|<(?:@!?|@&|#)\d+>|<t:\d+(?::[tTdDfFR])?>|<a?:[A-Za-z0-9_]+:\d+>|https?:\/\/[^\s)]+|[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}|[A-Za-z0-9_-]{12,}/gi;
-export const splitTranslationText=value=>{
-  const source=String(value||''),parts=[];let last=0;
-  protectedTranslationPattern.lastIndex=0;
-  for(const match of source.matchAll(protectedTranslationPattern)){
-    if(match.index>last)parts.push({text:source.slice(last,match.index),protected:false});
-    parts.push({text:match[0],protected:true});
-    last=match.index+match[0].length;
-  }
-  if(last<source.length)parts.push({text:source.slice(last),protected:false});
-  return parts.length?parts:[{text:source,protected:false}];
-};
+export { SUPPORTED_LANGUAGES, normalizeLanguage, resolvePreferredLanguage, splitTranslationText } from './translation-utils.js';
 export const TICKET_OPEN_LIMIT=2;
 export const canOpenTicket=openCount=>Number(openCount)<TICKET_OPEN_LIMIT;
 export const isSupportedInteractionKind=i=>!!(i&&(i.isChatInputCommand?.()||i.isMessageContextMenuCommand?.()||i.isButton?.()||i.isStringSelectMenu?.()||i.isUserSelectMenu?.()||i.isModalSubmit?.()));
@@ -117,7 +83,7 @@ export function youtubeChannelRef(value=''){
   return{id:'',handle:''};
 }
 
-export function createBot(store,env=process.env){
+export function createBot(store,env=process.env,{payments}={}){
   const client=new Client({intents:[GatewayIntentBits.Guilds,GatewayIntentBits.GuildMembers,GatewayIntentBits.GuildMessages,GatewayIntentBits.MessageContent,GatewayIntentBits.GuildModeration,GatewayIntentBits.GuildVoiceStates],partials:[Partials.Message,Partials.Channel]});
   let error='',busy=false,backupBusy=false,inviteCache=new Map();
   const languageSelect=(customId,current='')=>({type:3,custom_id:customId,placeholder:'Escolha seu idioma',min_values:1,max_values:1,options:SUPPORTED_LANGUAGES.map(l=>({label:l.label,value:l.code,emoji:{name:l.emoji},...(l.code===current?{default:true}:{})}))});
@@ -133,35 +99,9 @@ export function createBot(store,env=process.env){
     store.set(`language-explicit:${userId}`,{value,updatedAt:store.now()});
     return value;
   };
-  const libreTranslateUrl=()=>String(env.LIBRETRANSLATE_URL||'http://libretranslate.railway.internal:5000').replace(/\/$/,'');
-  const libreLanguage=code=>normalizeLanguage(code)==='zh-CN'?'zh-Hans':normalizeLanguage(code);
-  const translationReady=()=>!!(store.settings().translator?.enabled&&libreTranslateUrl());
-  const decodeTranslation=value=>String(value||'').replace(/&quot;/g,'"').replace(/&#39;|&#x27;/g,"'").replace(/&lt;/g,'<').replace(/&gt;/g,'>').replace(/&amp;/g,'&');
-  async function translateTexts(values,target){
-    const language=normalizeLanguage(target),source=values.map(v=>String(v||''));
-    if(language==='pt'||!source.some(Boolean))return source;
-    if(!translationReady())throw new AppError('O tradutor ainda não foi configurado no servidor.',503);
-    const cacheKey='translate:v2:'+createHash('sha256').update(language+'\n'+JSON.stringify(source)).digest('hex');
-    const cached=store.get(cacheKey);
-    if(cached?.values&&Date.now()-Number(cached.created||0)<7*86400000)return cached.values;
-
-    const split=source.map(splitTranslationText),translatable=[];
-    for(const parts of split)for(const part of parts)if(!part.protected&&part.text.trim())translatable.push(part);
-    if(!translatable.length)return source;
-
-    const response=await fetch(`${libreTranslateUrl()}/translate`,{
-      method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({q:translatable.map(part=>part.text),source:'auto',target:libreLanguage(language),format:'text'})
-    });
-    const data=await response.json().catch(()=>({}));
-    const translatedRaw=Array.isArray(data?.translatedText)?data.translatedText:(typeof data?.translatedText==='string'?[data.translatedText]:[]);
-    if(!response.ok||translatedRaw.length!==translatable.length)throw new AppError(data?.error||'Não foi possível traduzir esta mensagem agora.',502);
-    translatable.forEach((part,index)=>part.text=decodeTranslation(translatedRaw[index]));
-    const translated=split.map(parts=>parts.map(part=>part.text).join(''));
-    store.set(cacheKey,{values:translated,created:Date.now()});
-    return translated;
-  }
-  async function translatePayload(payload,target){
+  const translator=createTranslator({store,env});
+  const translationReady=translator.ready,translateTexts=translator.translateTexts;
+  async function translatePayload(payload,target,{sourceLanguage='auto'}={}){
     const clone=structuredClone(payload||{}),slots=[];
     const add=(obj,key)=>{if(obj?.[key])slots.push({obj,key,value:String(obj[key])});};
     add(clone,'content');
@@ -172,7 +112,7 @@ export function createBot(store,env=process.env){
       for(const field of e.fields||[]){add(field,'name');add(field,'value');}
     }
     if(!slots.length)return clone;
-    const values=await translateTexts(slots.map(x=>x.value),target);
+    const values=await translateTexts(slots.map(x=>x.value),target,{sourceLanguage});
     slots.forEach((slot,index)=>slot.obj[slot.key]=values[index]);
     return clone;
   }
@@ -180,8 +120,8 @@ export function createBot(store,env=process.env){
     if(!translationReady())return data;
     const language=preferredLanguage(userId,interactionLocale);if(language==='pt')return data;
     try{
-      if(typeof data==='string')return (await translateTexts([data],language))[0];
-      return await translatePayload(data,language);
+      if(typeof data==='string')return (await translateTexts([data],language,{sourceLanguage:'pt'}))[0];
+      return await translatePayload(data,language,{sourceLanguage:'pt'});
     }catch(e){store.log('aviso',`Tradução privada para ${userId}: ${String(e.message).slice(0,300)}`);return data;}
   }
   const localizedReply=async(i,data)=>i.reply(await localizeFor(i.user.id,data,i.locale||''));
@@ -832,6 +772,12 @@ ${normalized.previewAfter}
     return{id:m.id,channelId:target.id};
   }
   async function orderText(order){
+    if(payments?.enabled){
+      const payment=payments.existingForOrder(order.id)||await payments.forCheckout([order.id]);
+      const p=JSON.parse(order.product);
+      if(!payment.brCode)return `**Pedido ${order.id}**\nProduto: **${p.name}**\nValor: **${money(order.price)}**\n\n${payment.instructions}\nConsulte /pedido com este número ou abra um ticket.`;
+      return `**Pedido ${order.id}**\nProduto: **${p.name}**\nValor deste item: **${money(order.price)}**${payment.orderCount>1?`\n**PIX do carrinho inteiro: ${money(payment.amountCents)} · ${payment.orderCount} itens**\nPague este código uma única vez para todo o carrinho.`:''}\n\n${payment.sandbox?'**PIX DE TESTE — NÃO ENVIE DINHEIRO**\n':''}PIX copia e cola:\n\`${payment.brCode}\`\n\n${payment.instructions}\nValidade: <t:${Math.floor(Date.parse(payment.expiresAt)/1000)}:R>\nStatus: **Aguardando pagamento**`;
+    }
     const s=store.settings().sales,p=JSON.parse(order.product),discount=Number(order.discount||0);
     return[
       `**Pedido ${order.id}**`,
@@ -1455,7 +1401,7 @@ ${normalized.previewAfter}
         await translatedMessageEdit(i,original,language);
         return;
       }
-      if(action.startsWith('buy:')||action==='store-buy'){if(store.settings().operationsLive?.storeOpen===false)throw new AppError('A loja está fechada no momento.');if(!store.settings().sales.pixKey)throw new AppError('As vendas ainda não foram configuradas.');const pendingCoupon=store.get(`coupon-user:${i.user.id}`),couponCode=pendingCoupon&&Number(pendingCoupon.expires)>Date.now()?pendingCoupon.code:'';
+      if(action.startsWith('buy:')||action==='store-buy'){if(store.settings().operationsLive?.storeOpen===false)throw new AppError('A loja está fechada no momento.');if(!store.settings().sales.pixKey&&!payments?.enabled)throw new AppError('As vendas ainda não foram configuradas.');const pendingCoupon=store.get(`coupon-user:${i.user.id}`),couponCode=pendingCoupon&&Number(pendingCoupon.expires)>Date.now()?pendingCoupon.code:'';
         if(couponCode){
           const cp=store.one('SELECT role_id FROM coupons WHERE code=?',couponCode);
           if(cp?.role_id){const m=i.member?.roles?.cache?i.member:await requireGuild().members.fetch(i.user.id);if(!m.roles.cache.has(cp.role_id))throw new AppError('Este cupom exige um cargo específico no servidor.');}
@@ -1651,7 +1597,7 @@ ${normalized.previewAfter}
     try{const guild=requireGuild();const commands=[{name:'central',description:'Abra a Central Studio K'},{name:'perfil',description:'Veja sua conta, Studio K ID, tickets e pedidos'},{name:'id',description:'Veja seu Studio K ID'},{name:'ajuda',description:'Pesquise ajuda e perguntas frequentes',options:[{name:'busca',description:'Assunto ou palavra-chave',type:3,required:false}]},{name:'loja',description:'Veja produtos e serviços disponíveis'},{name:'cupom',description:'Aplique um cupom na próxima compra',options:[{name:'codigo',description:'Código do cupom',type:3,required:true}]},{name:'pedido',description:'Consulte um pedido e recupere sua entrega',options:[{name:'id',description:'Código completo do pedido; deixe vazio para o mais recente',type:3,required:false}]},{name:'ticket',description:'Abra um atendimento privado'},{name:'verificar',description:'Aceite as regras e receba acesso'},{name:'notificacoes',description:'Escolha quais notificações deseja receber'},{name:'idioma',description:'Escolha o idioma das mensagens privadas do Studio K'},{name:'Traduzir mensagem',type:3}];await new REST({version:'10'}).setToken(env.DISCORD_TOKEN).put(Routes.applicationGuildCommands(env.DISCORD_CLIENT_ID||client.user.id,guild.id),{body:commands});const s=store.settings().brand;client.user.setPresence({status:s.status,activities:s.activity?[{name:s.activity,type:ActivityType[s.activityType]}]:[]});await refreshInviteCache(guild);for(const state of guild.voiceStates.cache.values())if(state.member&&!state.member.user.bot&&state.channelId)startVoiceForUser(state.id,store.now());try{await applyVoicePresence();}catch(e){store.log('aviso',`Presença em call: ${e.message}`);}store.log('conexão',`Conectado ao servidor ${guild.name}.`);error='';await tick();}catch(e){error=e.message;store.log('erro',e.message);}
   });
   const timer=setInterval(()=>void tick(),30000);timer.unref();
-  return {status,client,channel,member,memberProfile,studioIdProfileFor,assignRole,verifyOAuthUser,sendMessage,openTicket,closeTicket,webTicketMessages,webTicketReply,publishPanel,publishConfiguredMessage,publishProduct,createGiveaway,evaluateGiveaway,updateSalesLive,updateOverviewLive,updateLivePanels,createEvent,applyBrand,applyVoicePresence,makeBackup,tick,
+  return {status,translationStatus:translator.status,client,channel,member,memberProfile,studioIdProfileFor,assignRole,verifyOAuthUser,sendMessage,openTicket,closeTicket,webTicketMessages,webTicketReply,publishPanel,publishConfiguredMessage,publishProduct,createGiveaway,evaluateGiveaway,updateSalesLive,updateOverviewLive,updateLivePanels,createEvent,applyBrand,applyVoicePresence,makeBackup,tick,
     async metadata(){
       const g=requireGuild();
       await Promise.all([g.channels.fetch(),g.roles.fetch(),g.emojis.fetch(),g.members.fetch()]);

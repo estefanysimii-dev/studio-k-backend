@@ -1,0 +1,74 @@
+# Run from /srv/studio-k, with this repository checked out at ./app:
+# docker compose --project-directory . --env-file .env -f app/deploy/compose.yaml config --quiet
+name: studio-k
+services:
+  backend:
+    build:
+      context: ./app
+      dockerfile: Dockerfile
+    image: studio-k-backend:local
+    init: true
+    # Bound failed preflight/crash retries; scratch copies are preserved for inspection.
+    restart: on-failure:3
+    env_file:
+      - ./.env
+    environment:
+      NODE_ENV: production
+      HOST: 0.0.0.0
+      PORT: "8080"
+      DATA_DIR: /app/data
+      COOKIE_SECURE: "true"
+      TRUST_PROXY: "1"
+    command: ["sh", "/opt/studio-k-deploy/start.sh"]
+    volumes:
+      - type: bind
+        source: ./data
+        target: /app/data
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ./app/deploy
+        target: /opt/studio-k-deploy
+        read_only: true
+        bind:
+          create_host_path: false
+    # No host port: only Caddy can reach 8080 on the Docker bridge.
+    expose: ["8080"]
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8080/healthz').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      start_period: 60s
+      retries: 3
+    stop_grace_period: 45s
+    networks: [studio]
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    environment:
+      STUDIO_DOMAIN: ${STUDIO_DOMAIN:?Configure o dominio HTTPS definitivo em .env}
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - type: bind
+        source: ./app/deploy/Caddyfile
+        target: /etc/caddy/Caddyfile
+        read_only: true
+        bind:
+          create_host_path: false
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks: [studio]
+
+networks:
+  studio:
+    driver: bridge
+volumes:
+  caddy_data:
+  caddy_config:
