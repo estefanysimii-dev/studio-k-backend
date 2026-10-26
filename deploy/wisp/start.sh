@@ -1,5 +1,6 @@
 #!/bin/sh
 set -eu
+ulimit -c 0
 
 cd /home/container/app
 : "${SERVER_PORT:?Wispbyte SERVER_PORT is required}"

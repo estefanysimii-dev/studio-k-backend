@@ -89,7 +89,7 @@ async function execute({ name, command, args = [], timeoutMs, env, directory, ex
   let stdout = '', stderr = '', stdoutBytes = 0, stderrBytes = 0;
   let timedOut = false, stoppedForFixtureLimit = false, stoppedForMemoryLimit = false, peakRss = 0, peakHwm = 0, samplingAvailable = false;
   return await new Promise(resolve => {
-    const child = spawn(command, args, { cwd: directory, env, detached: true, stdio: ['ignore', 'pipe', 'pipe'] });
+    const child = spawn('/bin/sh', ['-c', 'ulimit -c 0; exec "$@"', 'studio-k-converter', command, ...args], { cwd: directory, env, detached: true, stdio: ['ignore', 'pipe', 'pipe'] });
     let completed = false, stopping = false;
     let forceTimer;
     const sample = () => {
@@ -140,6 +140,7 @@ async function execute({ name, command, args = [], timeoutMs, env, directory, ex
           result.status = 'pass';
         } catch (error) { result.reason = error.message; }
       }
+      if (process.argv.includes('--diagnostics') && result.status !== 'pass') result.syntheticDiagnostics = { stdoutTail: stdout.slice(-3000), stderrTail: stderr.slice(-3000) };
       resolve(result);
     };
     child.stdout.on('data', chunk => { stdoutBytes += chunk.length; stdout = (stdout + chunk.toString()).slice(-16384); });
@@ -209,7 +210,7 @@ async function main() {
     kind: 'studio-k-converter-smoke', status: tests.every(test => test.status === 'pass') ? 'pass' : 'incomplete',
     timestamp: new Date().toISOString(), node: process.versions.node, architecture: process.arch,
     fixturesDirectory: directory, syntheticFixtureBytes: fixtureBytes(directory), tests,
-    privacy: { networkUsed: false, backendImported: false, applicationStarted: false, originalDataOpened: false, credentialsPassedToConverters: false, rawProcessOutputPrinted: false },
+    privacy: { networkUsed: false, backendImported: false, applicationStarted: false, originalDataOpened: false, credentialsPassedToConverters: false, rawProcessOutputPrinted: process.argv.includes('--diagnostics') },
     limitations: ['Tiny fixtures confirm basic loader/codecs/export only, not large production models or PSD memory capacity.', 'RSS is sampled for the process tree; very short peaks may be missed. Observed high-water values are also sampled from /proc.', 'Synthetic fixtures and this JSON report are retained; nothing is deleted automatically.'],
   };
   fs.writeFileSync(path.join(directory, 'report.json'), JSON.stringify(report, null, 2) + '\n', { flag: 'wx', mode: 0o600 });

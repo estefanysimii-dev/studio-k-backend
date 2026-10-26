@@ -343,7 +343,11 @@ function createWrappers() {
     const scripts = findDirectory(path.join(root, 'usr/share/blender'), '/scripts');
     const datafiles = findDirectory(path.join(root, 'usr/share/blender'), '/datafiles');
     if (!scripts || !datafiles) fail('Blender scripts/datafiles were not found after extraction; stopped without activating anything.');
-    writeNew(path.join(stage, 'bin/blender'), preamble + `export BLENDER_SYSTEM_SCRIPTS=${shQuote(scripts)}\nexport BLENDER_SYSTEM_DATAFILES=${shQuote(datafiles)}\nexec ${shQuote(blender)} "$@"\n`, 0o700);
+    // Debian's executable is relocated; point its isolated Python startup and
+    // bundled core scripts at the actual locations instead of inferred paths.
+    const resources = safe(path.dirname(scripts));
+    if (!fs.existsSync('/usr/lib/python3.13/encodings/__init__.py')) fail('The trixie host Python standard library is missing; stopped before creating the Blender wrapper.');
+    writeNew(path.join(stage, 'bin/blender'), preamble + `ulimit -c 0\nexport BLENDER_SYSTEM_RESOURCES=${shQuote(resources)}\nexport BLENDER_SYSTEM_PYTHON='/usr'\nexport BLENDER_SYSTEM_SCRIPTS=${shQuote(scripts)}\nexport BLENDER_SYSTEM_DATAFILES=${shQuote(datafiles)}\nexec ${shQuote(blender)} "$@"\n`, 0o700);
     wrappers.push('blender');
   }
   const executable = names => {

@@ -66,6 +66,11 @@ Depois da instalação, use `converter-smoke.mjs --run` com o PATH da instalaç�
 validar OBJ→GLB, PSD→PNG e o carregamento do binário FiveM antes de ativar o startup.
 Esse teste usa uma thread e interrompe conversores que atinjam 384 MiB de RSS,
 deixando margem para o próprio diagnóstico no limite base de memória.
+O startup e os testes desativam dumps de memória do kernel (`ulimit -c 0`),
+evitando que uma falha de conversão ocupe a pequena cota de disco.
+O wrapper do Blender relocacionado aponta `BLENDER_SYSTEM_RESOURCES` para seus
+recursos extraídos e `BLENDER_SYSTEM_PYTHON=/usr` para o Python 3.13 da imagem trixie.
+O instalador recusa essa configuração se a biblioteca padrão do host estiver ausente.
 
 ## Operação gratuita
 
