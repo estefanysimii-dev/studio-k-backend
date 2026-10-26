@@ -383,7 +383,7 @@ function createWrappers() {
     writeNew(path.join(stage, 'bin/convert'), environment + `exec ${shQuote(convert || magick)} "$@"\n`, 0o700);
     wrappers.push('convert');
   }
-  if (!wrappers.length) fail('No converter executable was found after extraction.');
+  if (!wrappers.length && (selection !== 'numpy' || !fs.existsSync(safe(path.join(root, 'usr/lib/python3/dist-packages/numpy/__init__.py'))))) fail('No converter executable or verified NumPy supplement was found after extraction.');
   writeNew(path.join(stage, 'env.sh'), `# Optional. Adds only wrapper commands; LD_LIBRARY_PATH is scoped inside each wrapper.\nexport PATH=${shQuote(path.join(stage, 'bin'))}:"$PATH"\n`, 0o600);
   return wrappers;
 }
@@ -594,7 +594,9 @@ async function resumePlan(planFilename, journalFilename, targets) {
     if (!record || record.SHA256?.toLowerCase() !== item.sha256 || Number(record.Size) !== item.downloadBytes || Number(record['Installed-Size']) * 1024 !== item.installedBytesEstimate) fail(`Resume metadata no longer authenticated for ${item.name}; original stage retained.`);
   }
   const receipts = verifiedPrefix(readStageJson(journalFilename, true), plan.packages);
-  if (!receipts.length || receipts.length === plan.packages.length) fail('Resume requires a nonempty, incomplete verified prefix.');
+  // All payloads may be verified while wrapper/result finalization was interrupted.
+  // configureApt still rejects result.json; verifiedPrefix rejects a complete event.
+  if (!receipts.length) fail('Resume requires a nonempty verified prefix.');
   const estimate = streamEstimate(plan.packages.slice(receipts.length));
   const current = budget();
   const extraBytesRequired = estimate.peakExtraBytes;
@@ -650,7 +652,7 @@ async function streamInstall(plan) {
   // every tiny package wastes CPU on this host. APT authenticates the metadata;
   // each fetched byte stream still requires its exact signed SHA256 below.
   const remaining = plan.packages.slice(receipts.length);
-  const uris = parseDownloadUris(await checkedRun('/usr/bin/apt-get', ['--print-uris', 'download', ...remaining.map(item => `${item.name}=${item.version}`)], 120000), remaining);
+  const uris = remaining.length ? parseDownloadUris(await checkedRun('/usr/bin/apt-get', ['--print-uris', 'download', ...remaining.map(item => `${item.name}=${item.version}`)], 120000), remaining) : new Map();
   for (const [index, expected] of plan.packages.entries()) {
     if (index < (plan.previousReceipts?.length || 0)) continue;
     const packageDirectory = withinStage(path.join(cacheRoot, `${String(index).padStart(3, '0')}-${expected.name}`));
@@ -754,7 +756,7 @@ try {
     else if (mode === '--stream-install' || resumeMode) await streamInstall(plan);
     else log(`Plan only. No converter binaries downloaded. Fits=${plan.fits}. Metadata retained at ${stage}.`);
   } else {
-    console.log('Usage: node install-user-tools.mjs --preflight | --self-test | --plan [all|blender|imagemagick|numpy] | --install [all|blender|imagemagick|numpy] | --stream-plan [all|blender|imagemagick|numpy] [--stage /home/container/.studio-host-tools/run-...] | --stream-install [all|blender|imagemagick|numpy] [--stage /home/container/.studio-host-tools/run-...]\nDefault/help makes no changes. Plan modes refresh signed metadata only. Stream mode downloads one .deb at a time, verifies signed SHA256 and every extracted payload file, then deletes ONLY that new cache archive. Original data, old installations, metadata, logs and failed current caches are retained. No app startup or automatic activation. Limits:700MiB all tools,130MiB free beyond the verified149507031-byte data allocation.');
+    console.log('Usage: node install-user-tools.mjs --preflight | --self-test | --plan [all|blender|imagemagick] | --install [all|blender|imagemagick] | --stream-plan [all|blender|imagemagick] [--stage /home/container/.studio-host-tools/run-...] | --stream-install [all|blender|imagemagick] [--stage /home/container/.studio-host-tools/run-...]\nDefault/help makes no changes. Plan modes refresh signed metadata only. Stream mode downloads one .deb at a time, verifies signed SHA256 and every extracted payload file, then deletes ONLY that new cache archive. Original data, old installations, metadata, logs and failed current caches are retained. No app startup or automatic activation. Limits:700MiB all tools,130MiB free beyond the verified149507031-byte data allocation.');
   }
 } catch (error) {
   console.error(`[host-tools] STOPPED: ${error.message}`);
