@@ -14,4 +14,11 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run check
+      - name: Validate Wispbyte preparation
+        run: |
+          node --check deploy/wisp/install-user-tools.mjs
+          node --check deploy/wisp/converter-smoke.mjs
+          node --check deploy/wisp/host-preflight.mjs
+          node deploy/wisp/install-user-tools.mjs --self-test
+          sh -n deploy/wisp/start.sh
       - run: npm test

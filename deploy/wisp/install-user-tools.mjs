@@ -26,6 +26,36 @@ let aptEnv = null;
 let streamMode = false;
 let streamJournal = null;
 const generatedDebs = new Map();
+let cpuBaseline = null;
+const CPU_SHARE = 0.12;
+const CPU_BURST_US = 20000;
+
+function cpuUsageMicros() {
+  const stat = fs.readFileSync('/sys/fs/cgroup/cpu.stat', 'utf8');
+  const value = stat.match(/^usage_usec\s+(\d+)$/m)?.[1];
+  if (!value || !Number.isSafeInteger(Number(value))) fail('A readable cgroup v2 CPU counter is required for bounded installation.');
+  return Number(value);
+}
+function cpuWaitMicros(used, elapsed) {
+  return Math.max(0, (used - CPU_BURST_US) / CPU_SHARE - elapsed);
+}
+function nextCpuBalance(balance, used, elapsed) {
+  return Math.max(-CPU_BURST_US, balance + used - elapsed * CPU_SHARE);
+}
+function cpuDebt() {
+  if (!cpuBaseline) cpuBaseline = { used: cpuUsageMicros(), at: process.hrtime.bigint(), balance: -CPU_BURST_US };
+  const usedNow = cpuUsageMicros(), atNow = process.hrtime.bigint();
+  const used = usedNow - cpuBaseline.used;
+  const elapsed = Number(atNow - cpuBaseline.at) / 1000;
+  if (used < 0) fail('CPU accounting counter moved backwards.');
+  const balance = nextCpuBalance(cpuBaseline.balance, used, elapsed);
+  cpuBaseline = { used: usedNow, at: atNow, balance };
+  return Math.max(0, balance) / CPU_SHARE;
+}
+async function coolCpu() {
+  let debt;
+  while ((debt = cpuDebt()) > 0) await new Promise(resolve => setTimeout(resolve, Math.min(1000, Math.max(20, debt / 1000))));
+}
 
 function fail(message) { throw new Error(message); }
 function log(message) { console.log(`[host-tools] ${message}`); }
@@ -109,24 +139,38 @@ function withinStage(candidate) {
 async function checkedRun(command, args, timeout = 10 * 60000, workingDirectory = stage, label = null) {
   log(label || `${path.basename(command)} ${args.join(' ')}`);
   budget();
+  await coolCpu();
   return await new Promise((resolve, reject) => {
     const child = spawn(command, args, { env: aptEnv || cleanEnv, cwd: withinStage(workingDirectory), detached: true, stdio: ['ignore', 'pipe', 'pipe'] });
-    let output = '', errors = '', stopReason = null, forceTimer = null;
+    let output = '', errors = '', stopReason = null, forceTimer = null, paused = false;
     const append = (previous, data) => (previous + String(data)).slice(-8 * MiB);
     child.stdout.on('data', data => { output = append(output, data); });
     child.stderr.on('data', data => { errors = append(errors, data); });
     const stop = reason => {
       if (stopReason) return;
       stopReason = reason;
+      try { process.kill(-child.pid, 'SIGCONT'); } catch { /* Already exited. */ }
       try { process.kill(-child.pid, 'SIGTERM'); } catch { /* Already exited. */ }
       forceTimer = setTimeout(() => { try { process.kill(-child.pid, 'SIGKILL'); } catch { /* Already exited. */ } }, 1500);
       forceTimer.unref();
     };
-    const monitor = setInterval(() => { try { budget(); } catch (error) { stop(error.message); } }, 1000);
+    // Respect the host limit by pausing only our own child process group. Never
+    // change cgroup settings, provider monitoring or account protections.
+    const cpuMonitor = setInterval(() => {
+      try {
+        const mustPause = cpuDebt() > 0;
+        if (mustPause !== paused) {
+          process.kill(-child.pid, mustPause ? 'SIGSTOP' : 'SIGCONT');
+          paused = mustPause;
+        }
+      } catch (error) { if (error.code !== 'ESRCH') stop(error.message); }
+    }, 100);
+    const monitor = setInterval(() => { try { budget(); } catch (error) { stop(error.message); } }, 5000);
     const timer = setTimeout(() => stop('Command time limit reached.'), timeout);
-    child.once('error', error => { clearInterval(monitor); clearTimeout(timer); if (forceTimer) clearTimeout(forceTimer); reject(error); });
+    child.once('error', error => { clearInterval(cpuMonitor); clearInterval(monitor); clearTimeout(timer); if (forceTimer) clearTimeout(forceTimer); reject(error); });
     child.once('close', code => {
       clearInterval(monitor); clearTimeout(timer);
+      clearInterval(cpuMonitor);
       if (forceTimer) clearTimeout(forceTimer);
       if (stopReason || code !== 0) { try { process.kill(-child.pid, 'SIGKILL'); } catch { /* Group has exited. */ } }
       if (stopReason || code !== 0) reject(new Error(`${stopReason || `${path.basename(command)} exit ${code}`}\n${errors.slice(-4000)}\nOriginal data is untouched. Staging and journal preserved at ${stage}`));
@@ -141,6 +185,7 @@ function checkHost() {
   if (!/^ID=["']?debian["']?$/m.test(release) || !/^VERSION_CODENAME=["']?trixie["']?$/m.test(release)) fail('Requires Debian trixie. Run host-preflight.mjs and review the actual distro first.');
   if (fs.realpathSync(BASE) !== BASE) fail('/home/container must be a real directory, not a symlink.');
   fs.accessSync(BASE, fs.constants.W_OK);
+  cpuDebt();
   for (const command of ['/usr/bin/apt-get', '/usr/bin/apt-cache', '/usr/bin/dpkg-deb', '/usr/bin/du', ...(streamMode ? ['/usr/bin/python3'] : [])]) fs.accessSync(command, fs.constants.X_OK);
   const verifier = availableAptVerifier();
   fs.accessSync('/usr/share/keyrings/debian-archive-keyring.gpg', fs.constants.R_OK);
@@ -149,7 +194,7 @@ function checkHost() {
   log(`Node ${process.versions.node}; constrained memory=${ram || 'unknown'}; tools ceiling700 MiB; free reserve130 MiB plus verified data allocation; panel quota assumed1 GiB.`);
   return budget();
 }
-function configureApt(reuseStage = null) {
+function configureApt(reuseStage = null, resume = false) {
   // Container UIDs may have no passwd entry. Keep APT's native sandbox policy;
   // its privileged UID-switch path only runs as root (which checkHost refuses).
   // https://sources.debian.org/src/apt/3.0.3/apt-pkg/acquire.cc/
@@ -163,7 +208,7 @@ function configureApt(reuseStage = null) {
     if (path.dirname(stage) !== TOOLS || !path.basename(stage).startsWith('run-') || !fs.lstatSync(stage).isDirectory() || fs.lstatSync(stage).isSymbolicLink() || fs.realpathSync(stage) !== stage) fail('Reuse requires a real direct run-* child of .studio-host-tools.');
     for (const name of ['root', 'bin']) {
       const directory = withinStage(path.join(stage, name));
-      if (!fs.lstatSync(directory).isDirectory() || fs.lstatSync(directory).isSymbolicLink() || fs.realpathSync(directory) !== directory || fs.readdirSync(directory).length) fail('Only a PLAN stage with empty root/bin can be reused; existing installations are never overwritten.');
+      if (!fs.lstatSync(directory).isDirectory() || fs.lstatSync(directory).isSymbolicLink() || fs.realpathSync(directory) !== directory || ((!resume || name === 'bin') && fs.readdirSync(directory).length)) fail('Reuse requires empty root/bin; explicit journal resume permits only a partial root with empty bin.');
     }
     if (fs.existsSync(path.join(stage, 'result.json'))) fail('Refused reuse of an installed stage.');
   } else {
@@ -215,7 +260,7 @@ function configureApt(reuseStage = null) {
     '',
   ].join('\n'));
   aptEnv = { ...cleanEnv, APT_CONFIG: configFile };
-  log(`${reuseStage ? 'Reused empty PLAN' : 'New'} staging: ${stage}; old installations and application data remain untouched.`);
+  log(`${resume ? 'Resuming partial' : reuseStage ? 'Reused empty PLAN' : 'New'} staging: ${stage}; application data remain untouched; CPU target12% of one core.`);
 }
 function streamEstimate(packages) {
   const order = [...packages].sort((a, b) => b.downloadBytes - a.downloadBytes || a.name.localeCompare(b.name));
@@ -470,6 +515,69 @@ async function deleteVerifiedGeneratedDeb(filename) {
   recordStream({ event: 'verified-cache-deleted', package: record.name, file: filename, bytes: stat.size });
   return stat.size;
 }
+function verifiedPrefix(events, packages) {
+  if (!events.length || events[0].event !== 'begin') fail('Resume journal must begin with a begin record.');
+  const receipts = events[0].previousReceipts || [];
+  if (!Array.isArray(receipts) || receipts.length > packages.length) fail('Invalid inherited receipts.');
+  for (const [index, receipt] of receipts.entries()) {
+    const expected = packages[index];
+    if (receipt.package !== expected.name || receipt.version !== expected.version || receipt.archiveSha256 !== expected.sha256 || receipt.payload?.ok !== true || receipt.payload?.mode !== 'verify') fail('Inherited receipt differs from the authenticated package plan.');
+  }
+  let signed = null, payload = null, intent = null;
+  for (const event of events.slice(1)) {
+    if (event.event === 'complete') fail('A completed installation cannot be resumed.');
+    const expected = packages[receipts.length];
+    if (!expected || event.package !== expected.name) fail('Journal is not a contiguous prefix of the package plan.');
+    if (event.event === 'signed-archive-verified') {
+      if (signed || payload || intent || event.sha256 !== expected.sha256 || event.bytes !== expected.downloadBytes) fail('Invalid signed archive receipt.');
+      signed = event;
+    } else if (event.event === 'payload-verified') {
+      if (!signed || payload || event.ok !== true || event.mode !== 'verify') fail('Missing successful payload verification receipt.');
+      for (const field of ['regularFiles', 'directories', 'symlinks', 'fileBytes', 'allocatedBytesEstimate']) if (!Number.isSafeInteger(event[field]) || event[field] < 0) fail('Invalid verified payload counts.');
+      payload = event;
+    } else if (event.event === 'verified-cache-delete-intent') {
+      if (!payload || intent || event.file !== signed.file || event.sha256 !== signed.sha256 || event.bytes !== signed.bytes) fail('Invalid verified cleanup intent.');
+      intent = event;
+    } else if (event.event === 'verified-cache-deleted') {
+      if (!intent || event.file !== signed.file || event.bytes !== signed.bytes) fail('Missing verified cache deletion receipt.');
+      receipts.push({ package: expected.name, version: expected.version, archiveSha256: expected.sha256, payload });
+      signed = payload = intent = null;
+    } else fail('Unknown stream journal event.');
+  }
+  return receipts;
+}
+function readStageJson(filename, jsonLines = false) {
+  const resolved = withinStage(path.resolve(filename));
+  const stat = fs.lstatSync(resolved);
+  if (!stat.isFile() || stat.isSymbolicLink() || fs.realpathSync(resolved) !== resolved || stat.size > 4 * MiB) fail('Resume inputs must be regular local stage files smaller than4 MiB.');
+  const content = fs.readFileSync(resolved, 'utf8');
+  return jsonLines ? content.trim().split('\n').map(line => JSON.parse(line)) : JSON.parse(content);
+}
+async function resumePlan(planFilename, journalFilename, targets) {
+  const plan = readStageJson(planFilename);
+  if (plan.mode !== 'stream-download-extract-verify-cache-delete' || plan.stage !== stage || JSON.stringify(plan.targets) !== JSON.stringify(targets) || !Array.isArray(plan.packages) || !plan.packages.length || plan.packages.length > 500) fail('Resume plan does not describe this stage and target selection.');
+  const names = new Set();
+  for (const item of plan.packages) {
+    if (!/^[a-z0-9][a-z0-9+.-]*$/.test(item.name) || forbiddenPackages.test(item.name) || names.has(item.name) || !/^[A-Za-z0-9.+:~_-]+$/.test(item.version) || !['amd64', 'all'].includes(item.architecture) || !/^[a-f0-9]{64}$/.test(item.sha256) || !Number.isSafeInteger(item.downloadBytes) || item.downloadBytes <= 0 || !Number.isSafeInteger(item.installedBytesEstimate) || item.installedBytesEstimate <= 0) fail('Invalid resume package metadata.');
+    names.add(item.name);
+  }
+  // Refresh signed repository metadata, then independently bind every old receipt
+  // to the exact version/hash still authenticated by APT. No stale-hash fallback.
+  await checkedRun('/usr/bin/apt-get', ['update']);
+  const metadata = parseFields(await checkedRun('/usr/bin/apt-cache', ['show', ...plan.packages.map(item => `${item.name}=${item.version}`)], 120000));
+  for (const item of plan.packages) {
+    const record = metadata.find(row => row.Package === item.name && row.Version === item.version && row.Architecture === item.architecture);
+    if (!record || record.SHA256?.toLowerCase() !== item.sha256 || Number(record.Size) !== item.downloadBytes || Number(record['Installed-Size']) * 1024 !== item.installedBytesEstimate) fail(`Resume metadata no longer authenticated for ${item.name}; original stage retained.`);
+  }
+  const receipts = verifiedPrefix(readStageJson(journalFilename, true), plan.packages);
+  if (!receipts.length || receipts.length === plan.packages.length) fail('Resume requires a nonempty, incomplete verified prefix.');
+  const estimate = streamEstimate(plan.packages.slice(receipts.length));
+  const current = budget();
+  const extraBytesRequired = estimate.peakExtraBytes;
+  const fits = current.usedTools + extraBytesRequired <= current.allowedTools && current.physicalFreeBytes >= RESERVE + current.futureDataBytes + extraBytesRequired;
+  log(`Resume: ${receipts.length}/${plan.packages.length} earlier packages already verified; remaining peak extra=${extraBytesRequired}; fits=${fits}.`);
+  return { ...plan, fits, extraBytesRequired, previousReceipts: receipts, resumedFrom: withinStage(path.resolve(journalFilename)) };
+}
 async function streamInstall(plan) {
   if (!plan.fits) fail('Streaming plan exceeds actual quota/reserve. No binary archives were downloaded; inspect the new plan.');
   budget(plan.extraBytesRequired);
@@ -478,10 +586,11 @@ async function streamInstall(plan) {
   mkdirNew(cacheRoot);
   streamJournal = withinStage(path.join(stage, `stream-journal-${session}.jsonl`));
   writeNew(streamJournal, '');
-  recordStream({ event: 'begin', policy: 'Largest compressed archive first; signed SHA256 before extraction; complete payload SHA256/type/link verification before deleting only the new generated .deb.' });
+  recordStream({ event: 'begin', resumedFrom: plan.resumedFrom || null, previousReceipts: plan.previousReceipts || [], cpuShareTarget: CPU_SHARE, policy: 'Largest compressed archive first; signed SHA256 before extraction; complete payload SHA256/type/link verification before deleting only the new generated .deb.' });
   let deletedBytes = 0, deletedArchives = 0;
-  const receipts = [];
+  const receipts = [...(plan.previousReceipts || [])];
   for (const [index, expected] of plan.packages.entries()) {
+    if (index < (plan.previousReceipts?.length || 0)) continue;
     const packageDirectory = withinStage(path.join(cacheRoot, `${String(index).padStart(3, '0')}-${expected.name}`));
     mkdirNew(packageDirectory);
     budget(expected.downloadBytes + Math.ceil(expected.installedBytesEstimate * STREAM_SLACK) + MARGIN);
@@ -507,7 +616,7 @@ async function streamInstall(plan) {
     budget();
   }
   const wrappers = createWrappers();
-  const result = { stage, wrappers, budget: budget(), streamJournal, deletedGeneratedArchives: deletedArchives, deletedGeneratedBytes: deletedBytes, deletionScope: 'Only new registered .deb cache files with matching inode, signed SHA256, and fully verified extracted payload.', preservedOriginals: true, systemModified: false, applicationModified: false, filesDeleted: true, convertersExecuted: false, status: 'Extracted and payload-verified; loader/version checks and representative conversions still required.', activation: `. ${shQuote(path.join(stage, 'env.sh'))}`, receipts };
+  const result = { stage, wrappers, budget: budget(), streamJournal, resumedFrom: plan.resumedFrom || null, previouslyVerifiedPackages: plan.previousReceipts?.length || 0, cpuShareTarget: CPU_SHARE, deletedGeneratedArchives: deletedArchives, deletedGeneratedBytes: deletedBytes, deletionScope: 'Only new registered .deb cache files with matching inode, signed SHA256, and fully verified extracted payload.', preservedOriginals: true, systemModified: false, applicationModified: false, filesDeleted: true, convertersExecuted: false, status: 'Extracted and payload-verified; loader/version checks and representative conversions still required.', activation: `. ${shQuote(path.join(stage, 'env.sh'))}`, receipts };
   writeNew(path.join(stage, 'result.json'), JSON.stringify(result, null, 2) + '\n');
   recordStream({ event: 'complete', deletedGeneratedArchives: deletedArchives, deletedGeneratedBytes: deletedBytes });
   console.log(JSON.stringify(result, null, 2));
@@ -540,23 +649,41 @@ function selfTest() {
   assert.equal(generatedDebPathAllowed(path.join(packageDirectory, 'original.tar.gz'), cacheRecord, filename => filename), false);
   assert.equal(generatedDebPathAllowed(path.resolve('/synthetic-original/package.deb'), cacheRecord, filename => filename), false);
   assert.equal(generatedDebPathAllowed(newDeb, cacheRecord, filename => filename === newDeb ? outsideCommand : filename), false);
-  log('Symlink/cache confinement, streaming peak estimate, verifier, parser and core-package guards passed; no filesystem writes, network, or subprocesses used.');
+  assert.equal(cpuWaitMicros(20000, 0), 0);
+  assert.equal(cpuWaitMicros(140000, 1000000), 0);
+  assert.equal(cpuWaitMicros(260000, 1000000), 1000000);
+  assert.equal(nextCpuBalance(-20000, 0, 60000000), -20000);
+  assert.equal(nextCpuBalance(-20000, 35000, 100000), 3000);
+  assert.equal(nextCpuBalance(3000, 0, 100000), -9000);
+  const pkg = { name: 'demo', version: '1.0', sha256: 'a'.repeat(64), downloadBytes: 100 };
+  const payload = { event: 'payload-verified', package: 'demo', ok: true, mode: 'verify', regularFiles: 1, directories: 1, symlinks: 0, fileBytes: 20, allocatedBytesEstimate: 8192 };
+  const journal = [{ event: 'begin' }, { event: 'signed-archive-verified', package: 'demo', file: '/synthetic/demo.deb', sha256: pkg.sha256, bytes: 100 }, payload, { event: 'verified-cache-delete-intent', package: 'demo', file: '/synthetic/demo.deb', sha256: pkg.sha256, bytes: 100 }, { event: 'verified-cache-deleted', package: 'demo', file: '/synthetic/demo.deb', bytes: 100 }];
+  assert.equal(verifiedPrefix(journal, [pkg]).length, 1);
+  assert.equal(verifiedPrefix(journal.slice(0, -1), [pkg]).length, 0);
+  assert.throws(() => verifiedPrefix(journal.filter(event => event.event !== 'payload-verified'), [pkg]), /cleanup intent/);
+  assert.throws(() => verifiedPrefix(journal, [{ ...pkg, sha256: 'b'.repeat(64) }]), /signed archive/);
+  assert.throws(() => verifiedPrefix([...journal, { event: 'complete' }], [pkg]), /completed installation/);
+  assert.equal(verifiedPrefix([{ event: 'begin', previousReceipts: verifiedPrefix(journal, [pkg]) }], [pkg]).length, 1);
+  assert.throws(() => verifiedPrefix([{ event: 'begin', previousReceipts: [{ package: 'other' }] }], [pkg]), /authenticated package plan/);
+  log('Symlink/cache confinement, CPU pacing arithmetic, strict resume receipts, streaming peak estimate, verifier, parser and core-package guards passed; no filesystem writes, network, or subprocesses used.');
 }
 
 const [mode, selection = 'all', ...extra] = process.argv.slice(2);
-streamMode = ['--stream-plan', '--stream-install'].includes(mode);
-const reuseStage = streamMode && extra.length === 2 && extra[0] === '--stage' ? extra[1] : null;
-const extraValid = !extra.length || Boolean(reuseStage);
+streamMode = ['--stream-plan', '--stream-install', '--stream-resume'].includes(mode);
+const resumeMode = mode === '--stream-resume';
+const resumeArgsValid = resumeMode && extra.length === 6 && extra[0] === '--stage' && extra[2] === '--plan' && extra[4] === '--journal';
+const reuseStage = streamMode && ((extra.length === 2 && extra[0] === '--stage') || resumeArgsValid) ? extra[1] : null;
+const extraValid = resumeMode ? resumeArgsValid : !extra.length || Boolean(reuseStage);
 try {
   if (mode === '--self-test' && !extra.length) selfTest();
   else if (mode === '--preflight' && !extra.length) await import('./host-preflight.mjs');
-  else if (['--plan', '--install', '--stream-plan', '--stream-install'].includes(mode) && TARGETS[selection] && extraValid) {
+  else if (['--plan', '--install', '--stream-plan', '--stream-install', '--stream-resume'].includes(mode) && TARGETS[selection] && extraValid) {
     console.log(JSON.stringify({ action: mode, targets: TARGETS[selection], reuseEmptyPlanStage: reuseStage, writesOnlyUnder: TOOLS, network: 'Explicit plan modes refresh signed Debian metadata. Install modes also download Debian archives.', policy: 'Never change system packages, run maintainer scripts, start the app, activate wrappers, or delete originals. Only --stream-install deletes its new registered .deb cache after complete verification.', limits: { toolsMiB: 700, freeReserveMiB: 130, verifiedDataBytes: KNOWN_DATA_BYTES } }, null, 2));
     log(JSON.stringify(checkHost()));
-    configureApt(reuseStage);
-    const plan = await createPlan(TARGETS[selection]);
+    configureApt(reuseStage, resumeMode);
+    const plan = resumeMode ? await resumePlan(extra[3], extra[5], TARGETS[selection]) : await createPlan(TARGETS[selection]);
     if (mode === '--install') await install(plan);
-    else if (mode === '--stream-install') await streamInstall(plan);
+    else if (mode === '--stream-install' || resumeMode) await streamInstall(plan);
     else log(`Plan only. No converter binaries downloaded. Fits=${plan.fits}. Metadata retained at ${stage}.`);
   } else {
     console.log('Usage: node install-user-tools.mjs --preflight | --self-test | --plan [all|blender|imagemagick] | --install [all|blender|imagemagick] | --stream-plan [all|blender|imagemagick] [--stage /home/container/.studio-host-tools/run-...] | --stream-install [all|blender|imagemagick] [--stage /home/container/.studio-host-tools/run-...]\nDefault/help makes no changes. Plan modes refresh signed metadata only. Stream mode downloads one .deb at a time, verifies signed SHA256 and every extracted payload file, then deletes ONLY that new cache archive. Original data, old installations, metadata, logs and failed current caches are retained. No app startup or automatic activation. Limits:700MiB all tools,130MiB free beyond the verified149507031-byte data allocation.');

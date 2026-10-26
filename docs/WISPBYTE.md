@@ -44,6 +44,18 @@ apenas seu próprio arquivo temporário de download após a verificação. Não 
 scripts de instalação nem altera pacotes do sistema. As versões são resolvidas pelos
 repositórios Debian trixie assinados. O modo `--stage` reutiliza um estágio de plano vazio.
 
+A instalação limita seus subprocessos a uma meta média de 12% de um núcleo, usando
+o contador de CPU do cgroup e pausando somente seus próprios processos. As proteções
+da hospedagem continuam ativas. A primeira tentativa sem esse controle foi interrompida
+pelo provedor por CPU alta; por isso a preparação pode demorar mais no plano Free.
+
+Uma instalação interrompida pode ser retomada explicitamente com
+`--stream-resume all --stage CAMINHO --plan PLANO.json --journal REGISTRO.jsonl`.
+O script revalida as versões e hashes contra metadados Debian assinados atualizados,
+aceita somente o prefixo contínuo que teve download, conteúdo e limpeza verificados,
+e recalcula o espaço para os pacotes restantes. Não use esse modo em uma instalação
+completa nem altere o plano ou o registro para forçar a retomada.
+
 Os limites de 700 MiB para ferramentas e 130 MiB de folga são guardas para este servidor
 de 1 GiB com os dados restaurados. Recalcule após qualquer aumento relevante de dados;
 um plano recusado não deve ser forçado. As bibliotecas ficam restritas aos wrappers.
