@@ -5,12 +5,12 @@ import { randomBytes, randomUUID, scryptSync, timingSafeEqual, createHash } from
 import { readdirSync, readFileSync, mkdirSync, writeFileSync, statSync, existsSync, unlinkSync } from 'node:fs';
 import { join, resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { spawn } from 'node:child_process';
 import { z } from 'zod';
 import { openStore, AppError } from './store.js';
 import { installClothTool } from './clothtool.js';
 import { createBot } from './discord.js';
 import { createPurinCash, installPurinCashWebhook } from './purincash.js';
+import { createPortfolioProcessRunner } from './portfolio-process.js';
 import { defaultRadio, radioSchema, normalizeRadio, radioSnapshot } from './radio.js';
 import { settingsSchema, productSchema, messageSchema, templateSchema, giveawaySchema, eventSchema, id } from './schema.js';
 import { studioIdConfig, saveStudioIdConfig, studioIdConfigSchema, studioIdentityFor, studioFavoritesFor, studioProfilePrefsFor, studioIdProfile } from './studio-id.js';
@@ -351,30 +351,7 @@ const portfolioAbsoluteUrl=value=>{
   if(!raw)return '';
   try{return new URL(raw,portfolioPublicOrigin).toString()}catch{return raw}
 };
-const runPortfolioProcess=(command,args,timeoutMs=240000)=>new Promise((resolveProcess,rejectProcess)=>{
-  const child=spawn(command,args,{stdio:['ignore','pipe','pipe']});
-  let stdout='',stderr='',settled=false;
-  const append=(current,chunk)=>{const next=current+String(chunk||'');return next.length>12000?next.slice(-12000):next};
-  child.stdout?.on('data',chunk=>{stdout=append(stdout,chunk)});
-  child.stderr?.on('data',chunk=>{stderr=append(stderr,chunk)});
-  const timer=setTimeout(()=>{
-    if(settled)return;
-    settled=true;
-    child.kill('SIGKILL');
-    rejectProcess(new AppError('O processamento do arquivo excedeu o tempo limite.',504));
-  },timeoutMs);
-  child.on('error',error=>{
-    if(settled)return;
-    settled=true;clearTimeout(timer);
-    rejectProcess(new AppError(`Não foi possível iniciar o processador: ${error.message}`,503));
-  });
-  child.on('close',code=>{
-    if(settled)return;
-    settled=true;clearTimeout(timer);
-    if(code===0)return resolveProcess({stdout,stderr});
-    rejectProcess(new AppError((stderr||stdout||`Processador finalizou com código ${code}`).slice(-1500),422));
-  });
-});
+const runPortfolioProcess=createPortfolioProcessRunner();
 const registerPortfolioAsset=(asset)=>{
   const assets=portfolioAssets();
   assets.unshift(asset);

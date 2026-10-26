@@ -8,6 +8,7 @@ export HOST=0.0.0.0
 export DATA_DIR=/home/container/data
 export OMP_NUM_THREADS=1
 export OPENBLAS_NUM_THREADS=1
+export CONVERTER_RESOURCE_PROFILE=wisp-free
 
 env_file=/home/container/.env
 tools_env=/home/container/.studio-host-tools/active-env.sh

@@ -68,6 +68,14 @@ O plano oferece 512 MiB de RAM, 1 GiB de disco e 35% de um vCPU. Não dependa de
 temporários de RAM. Modelos 3D grandes podem exceder esses recursos; o teste pequeno
 de conversão não garante capacidade para qualquer arquivo.
 
+O startup habilita `CONVERTER_RESOURCE_PROFILE=wisp-free`: permite um conversor por
+vez, limita a meta de CPU a 15% do núcleo e encerra o grupo do conversor quando o
+uso de memória do container, descontado o cache de arquivo inativo, chega a 448 MiB.
+Com 416 MiB já ocupados, uma nova conversão é recusada. Blender usa uma thread;
+ImageMagick recebe limites de memória, mapa e disco. O usuário recebe uma mensagem
+para aguardar ou enviar uma versão menor/já convertida. A amostragem de 100 ms reduz
+o risco de esgotamento, mas não garante capturar todos os picos de alocação.
+
 A [página oficial](https://wispbyte.com/) e o [detalhamento do Free](https://wispbyte.com/blog/free-hosting-comparison)
 pedem login manual no painel a cada 14 dias. O guia inicial ainda menciona um mês;
 adote o prazo menor. Os anúncios de renovação são descritos como opcionais, mas a
