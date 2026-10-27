@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {mkdtempSync,rmSync} from 'node:fs';
 import {join} from 'node:path';
 import {tmpdir} from 'node:os';
-import {ChannelType,PermissionFlagsBits as P} from 'discord.js';
+import {ChannelType,OverwriteType,PermissionOverwrites,PermissionFlagsBits as P} from 'discord.js';
 import {openStore} from '../server/store.js';
 import {createTicketWorkspace,ticketParent,assertPrivateStaffChannel} from '../server/ticket-workspace.js';
 import {settingsSchema} from '../server/schema.js';
@@ -47,11 +47,23 @@ test('new internal channels are private, retain notes, and updates do not create
   const f=fixture(t);f.store.run('INSERT INTO ticket_notes VALUES(?,?,?,?,1,?)','note-1','ticket-1',STAFF,'Informação reservada',f.store.now());
   await f.workspace.sync('ticket-1');await f.workspace.sync('ticket-1');
   assert.equal(f.created.length,1);const info=f.created[0];assert.equal(info.parentId,'internal');
-  assert.deepEqual(info.creation.permissionOverwrites[0],{id:GUILD,deny:[P.ViewChannel]});assert.equal(info.creation.permissionOverwrites.some(o=>o.id===USER),false);
+  assert.deepEqual(info.creation.permissionOverwrites[0],{id:GUILD,type:OverwriteType.Role,deny:[P.ViewChannel]});assert.equal(info.creation.permissionOverwrites.some(o=>o.id===USER),false);
   assert.equal(info.sent.filter(p=>String(p.content).includes('Informação reservada')).length,1);
   assert.equal(f.customer.parentId,'support');assert.equal(f.customer.lastParentOptions.lockPermissions,false);
   assert.equal(JSON.stringify(f.customer.sent).includes('Informação reservada'),false);
   assert.equal(info.sent[0].embeds[0].fields.find(field=>field.name==='Prioridade').value,'Urgente');
+});
+
+test('destination overwrites serialize through the real Discord SDK without relying on cached users or roles',async t=>{
+  const f=fixture(t);f.cfg.roleGroups.staff=[STAFF,'777777777777777777'];
+  const bot=createBot(f.store,{DISCORD_GUILD_ID:GUILD});bot.client.isReady=()=>true;bot.client.user={id:BOT};bot.client.guilds.cache.set(GUILD,f.guild);t.after(()=>bot.stop());
+  const created=await bot.createTicketDestination({name:'Suporte',kind:'category'});
+  const overwrites=f.channels.get(created.id).creation.permissionOverwrites;
+  assert.deepEqual(overwrites.map(o=>o.id),[GUILD,BOT,STAFF]);
+  const coldGuild={roles:{resolve:()=>null},client:{users:{resolve:()=>null}}};
+  const payload=overwrites.map(o=>PermissionOverwrites.resolve(o,coldGuild));
+  assert.deepEqual(payload.map(o=>o.type),[OverwriteType.Role,OverwriteType.Member,OverwriteType.Role]);
+  assert.ok(BigInt(payload[0].deny)&P.ViewChannel);assert.ok(BigInt(payload[2].allow)&P.ViewChannel);
 });
 test('a future ticket type can have its own category and existing private overwrites stay unlocked',async t=>{
   const f=fixture(t);f.makeChannel('future',{type:ChannelType.GuildCategory});f.cfg.tickets.categoryRoutes=[{name:'Modelagem avançada',categoryId:'future'}];

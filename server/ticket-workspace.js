@@ -1,5 +1,5 @@
 import {createHash} from 'node:crypto';
-import {ChannelType,PermissionFlagsBits as P} from 'discord.js';
+import {ChannelType,OverwriteType,PermissionFlagsBits as P} from 'discord.js';
 import {AppError} from './store.js';
 import {TICKET_LOG_FIELDS,ticketParent} from './ticket-config.js';
 export {TICKET_LOG_FIELDS,ticketParent} from './ticket-config.js';
@@ -9,9 +9,9 @@ const hash=value=>createHash('sha256').update(value).digest('hex');
 const stateLabel=value=>({waiting_staff:'Aguardando equipe',in_progress:'Em atendimento',waiting_customer:'Aguardando cliente',escalated:'Escalado',closed:'Finalizado'}[value]||value);
 const priorityLabel=value=>({low:'Baixa',normal:'Normal',high:'Alta',urgent:'Urgente'}[value]||value);
 const staffOverwrites=(guild,botId,roles)=>[
-  {id:guild.id,deny:[P.ViewChannel]},
-  {id:botId,allow:[P.ViewChannel,P.SendMessages,P.ReadMessageHistory,P.ManageChannels,P.ManageMessages,P.AttachFiles]},
-  ...roles.map(id=>({id,allow:[P.ViewChannel,P.SendMessages,P.ReadMessageHistory,P.AttachFiles]}))
+  {id:guild.id,type:OverwriteType.Role,deny:[P.ViewChannel]},
+  {id:botId,type:OverwriteType.Member,allow:[P.ViewChannel,P.SendMessages,P.ReadMessageHistory,P.ManageChannels,P.ManageMessages,P.AttachFiles]},
+  ...roles.map(id=>({id,type:OverwriteType.Role,allow:[P.ViewChannel,P.SendMessages,P.ReadMessageHistory,P.AttachFiles]}))
 ];
 export async function assertPrivateStaffChannel(channel,guild,roles,botId){
   if(!channel||channel.guild?.id!==guild.id||![ChannelType.GuildText,ChannelType.GuildCategory].includes(channel.type))throw new AppError('Escolha um canal/categoria deste servidor.',400);
@@ -62,6 +62,10 @@ export function ticketSummary(ticket,{notes=[],fields=TICKET_LOG_FIELDS,transcri
 export function createTicketWorkspace({store,getGuild,getChannel,botId,staffRoles,renderControls=()=>({})}){
   const tasks=new Map(),closing=new Map(),nextTry=new Map();let maintenanceBusy=false;
   const jobKey=id=>`ticket-close-job:${id}`;
+  async function existingStaffRoles(guild){
+    const current=await guild.roles.fetch();
+    return staffRoles().filter(id=>id!==guild.id&&current.has(id));
+  }
   const infoTopic=id=>`studio-k-ticket-info:${id}`;
   const notesFor=id=>store.all('SELECT * FROM ticket_notes WHERE ticket_id=? AND private=1 ORDER BY created,id',id);
   const eventsFor=id=>{
@@ -75,14 +79,14 @@ export function createTicketWorkspace({store,getGuild,getChannel,botId,staffRole
   }
   async function validate(settings){
     for(const id of new Set([settings.categoryId,...(settings.categoryRoutes||[]).map(route=>route.categoryId)].filter(Boolean)))await category(id);
-    const guild=getGuild(),roles=staffRoles();
+    const guild=getGuild(),roles=await existingStaffRoles(guild);
     if(settings.panelChannelId){const c=await getChannel(settings.panelChannelId);if(c.type!==ChannelType.GuildText||c.guild.id!==guild.id)throw new AppError('Escolha um canal de texto para o painel público.',400);}
     if(settings.staffInfoCategoryId)await assertPrivateStaffChannel(await category(settings.staffInfoCategoryId),guild,roles,botId());
     const logId=settings.logChannelId||store.settings().logs.ticketsChannelId||store.settings().logs.channelId;
     if(logId){const c=await getChannel(logId);if(c.type!==ChannelType.GuildText)throw new AppError('Escolha um canal de texto para os logs.',400);await assertPrivateStaffChannel(c,guild,roles,botId());}
   }
   async function createDestination({name,kind,parentId=''}){
-    const guild=getGuild(),roles=staffRoles();
+    const guild=getGuild(),roles=await existingStaffRoles(guild);
     if(!roles.length)throw new AppError('Configure os cargos da equipe antes de criar categorias privadas.',400);
     await guild.channels.fetch();
     const type=kind==='category'?ChannelType.GuildCategory:ChannelType.GuildText;
@@ -104,7 +108,7 @@ export function createTicketWorkspace({store,getGuild,getChannel,botId,staffRole
       if(customer.parentId!==destination)await customer.setParent(destination,{lockPermissions:false,reason:'Categoria configurada para este tipo de atendimento.'});
     }
     if(!settings.staffInfoCategoryId&&!ticket.staff_channel_id)return;
-    const guild=getGuild(),roles=staffRoles();
+    const guild=getGuild(),roles=await existingStaffRoles(guild);
     if(!roles.length)throw new AppError('Cargos da equipe não configurados.',400);
     let channel;
     if(ticket.staff_channel_id){try{channel=await getChannel(ticket.staff_channel_id);}catch(error){if(error.code!==10003&&error.status!==404)throw error;}}
