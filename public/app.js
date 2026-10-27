@@ -536,7 +536,10 @@ document.addEventListener('submit',async e=>{
     e.preventDefault();const button=e.submitter;button.disabled=true;
     try{
       const form=new FormData(e.target),kind=String(form.get('destinationKind')),created=await api('/tickets/destinations','POST',{kind,name:String(form.get('destinationName')||''),parentId:kind==='log'?String(form.get('destinationParent')||''):''});
-      metadata=await api('/discord/metadata');
+      // Creation already returns the new destination. Do not refetch every guild
+      // member here: repeated creations can hit the Discord gateway rate limit.
+      const createdType=kind==='category'?4:0;
+      metadata.channels=[...(metadata.channels||[]).filter(channel=>channel.id!==created.id),{id:created.id,name:created.name,type:createdType}];
       for(const input of document.querySelectorAll(`select[data-ticket-destination="${kind}"]`)){
         if(![...input.options].some(option=>option.value===created.id)){const option=document.createElement('option');option.value=created.id;option.textContent=created.name;input.append(option);}
       }
