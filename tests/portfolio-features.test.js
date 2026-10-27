@@ -28,12 +28,12 @@ test('Studio K ID, favorites, live drops and behavior tracking stay integrated',
       id: userId,
       username: 'kiki-test',
       name: 'Kiki Test',
-      avatar: ''
+      avatar: 'https://cdn.discordapp.com/avatars/222222222222222222/old.png'
     },
     member: {
       inGuild: true,
       name: 'Kiki Test',
-      avatar: '',
+      avatar: 'https://cdn.discordapp.com/avatars/222222222222222222/current.png',
       roles: []
     },
     created: Date.now(),
@@ -117,7 +117,7 @@ test('Studio K ID, favorites, live drops and behavior tracking stay integrated',
   });
 
   let ready = false;
-  for (let attempt = 0; attempt < 100; attempt++) {
+  for (let attempt = 0; attempt < 400; attempt++) {
     try {
       const response = await fetch(origin + '/healthz');
       if (response.ok) {
@@ -142,6 +142,9 @@ test('Studio K ID, favorites, live drops and behavior tracking stay integrated',
   assert.equal(publicStateResponse.status, 200);
   const state = await publicStateResponse.json();
   assert.equal(state.me.authenticated, true);
+  assert.equal(state.me.user.avatar, 'https://cdn.discordapp.com/avatars/222222222222222222/current.png');
+  const refreshedState = await (await request('/public-state', { headers: { Cookie: cookie } })).json();
+  assert.equal(refreshedState.me.user.avatar, state.me.user.avatar);
   assert.equal(state.me.profile.studioId, 'SK-00001');
   assert.equal('level' in state.me.profile, false);
   assert.equal('xp' in state.me.profile, false);

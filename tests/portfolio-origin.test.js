@@ -30,7 +30,7 @@ test('website OAuth uses an independent backend origin and keeps legacy OAuth', 
     child.kill(); await new Promise(resolve => child.exitCode !== null ? resolve() : child.once('exit', resolve));
     rmSync(dataDir, { recursive: true, force: true });
   });
-  for (let i = 0; i < 100; i++) {
+  for (let i = 0; i < 400; i++) {
     try { if ((await fetch(origin + '/healthz')).ok) break; } catch {}
     await delay(50);
   }
@@ -45,5 +45,14 @@ test('website OAuth uses an independent backend origin and keeps legacy OAuth', 
   assert.match(bridge.headers.get('set-cookie'), /HttpOnly/);
   assert.match(bridge.headers.get('set-cookie'), /Path=\/api\/oauth\/discord/);
   const legacy = await fetch(origin + '/api/oauth/discord/start', { redirect: 'manual' });
-  assert.equal(new URL(legacy.headers.get('location')).searchParams.get('redirect_uri'), 'https://legacy.example/api/oauth/discord/callback');
+  const verificationTarget = new URL(legacy.headers.get('location'));
+  assert.equal(legacy.status, 302);
+  assert.equal(verificationTarget.origin, 'https://discord.com');
+  assert.equal(verificationTarget.searchParams.get('redirect_uri'), 'https://legacy.example/api/oauth/discord/callback');
+  assert.equal(verificationTarget.searchParams.get('scope'), 'identify guilds.join');
+  assert.ok(verificationTarget.searchParams.get('state'));
+  assert.match(legacy.headers.get('set-cookie'), /studio_oauth_state=/);
+  assert.match(legacy.headers.get('set-cookie'), /HttpOnly/);
+  const unboundCallback = await fetch(origin + '/api/oauth/discord/callback?code=untrusted&state=wrong');
+  assert.equal(unboundCallback.status, 403);
 });
