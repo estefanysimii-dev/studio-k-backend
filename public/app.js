@@ -1,4 +1,5 @@
 import {ticketOrganizationSettings} from './ticket-settings.js?v=studio-k-tickets-20261027';
+import {fetchPanelResponse} from './panel-request.js?v=studio-k-panel-cache-20261027';
 const $=s=>document.querySelector(s), $$=s=>[...document.querySelectorAll(s)];
 const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const paths={home:'M3 10 12 3l9 7v11h-6v-7H9v7H3z',message:'M21 11a8 8 0 0 1-8 8H7l-4 3V7a4 4 0 0 1 4-4h10a4 4 0 0 1 4 4z M7 8h10 M7 12h7',users:'M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2 M9 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8 M20 21v-2a4 4 0 0 0-3-3.87 M16 3.13a4 4 0 0 1 0 7.75',ticket:'M3 7h18v4a2 2 0 0 0 0 4v4H3v-4a2 2 0 0 0 0-4z M15 7v3 M15 13v2 M15 18v1',shop:'M3 9h18l-2-6H5z M4 9v12h16V9 M9 21v-7h6v7',bag:'M5 7h14l2 14H3z M8 8V6a4 4 0 0 1 8 0v2',gift:'M3 8h18v4H3z M5 12v9h14v-9 M12 8v13 M12 8H8a3 3 0 1 1 3-3z M12 8h4a3 3 0 1 0-3-3z',calendar:'M4 5h16v16H4z M16 3v4 M8 3v4 M4 11h16 M8 15h2 M14 15h2',shield:'m12 3 8 3v6c0 5-8 10-8 10S4 17 4 12V6z m-4 9 3 3 5-6',backup:'M20 16a4 4 0 0 0-1-8 7 7 0 0 0-13-1 5 5 0 0 0 0 10 M12 21V11 m-4 4 4-4 4 4',log:'M5 3h14v18H5z M9 7h6 M9 11h6 M9 15h4',settings:'M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8 M9 3h6l1 3 3 1 2 5-2 5-3 1-1 3H9l-1-3-3-1-2-5 2-5 3-1z',plus:'M12 5v14 M5 12h14',chevron:'m9 5 7 7-7 7',arrow:'M5 12h14 m-5-5 5 5-5 5',check:'m5 12 4 4L19 6',close:'m6 6 12 12 M6 18 18 6',send:'m22 2-7 20-4-9L2 9z M22 2 11 13',edit:'m15 4 5 5 M3 21l5-1L21 7l-5-5L3 15z',wallet:'M3 5h17v15H3z M20 10h-6v5h6 M3 5V3h14',refresh:'M20 7v5h-5 M4 17v-5h5 M6 6a8 8 0 0 1 14 6 M18 18a8 8 0 0 1-14-6',info:'M12 8h.01 M12 11v6 M22 12a10 10 0 1 1-20 0 10 10 0 0 1 20 0',download:'M12 3v12 m-5-5 5 5 5-5 M4 16v5h16v-5',menu:'M4 6h16 M4 12h16 M4 18h16',logout:'M9 3H3v18h6 M8 12h13 m-5-5 5 5-5 5',spark:'m12 3 2 7 7 2-7 2-2 7-2-7-7-2 7-2z'};
@@ -11,12 +12,11 @@ let editor={target:'channel',targetId:'',content:'',webhookName:'',webhookAvatar
 let toastTimer;
 function toast(text,error=false){$('#toast').textContent=text;$('#toast').className=`show${error?' error':''}`;clearTimeout(toastTimer);toastTimer=setTimeout(()=>$('#toast').className='',error?9000:4500);}
 async function api(path,method='GET',body,extraHeaders={}){
-  const response=await fetch(`/api${path}`,{
+  const {response,text}=await fetchPanelResponse(path,{
     method,
     headers:{'Content-Type':'application/json','Accept':'application/json',...(csrf?{'X-CSRF-Token':csrf}:{}),...extraHeaders},
     ...(body===undefined?{}:{body:JSON.stringify(body)})
   });
-  const text=await response.text(),contentType=response.headers.get('content-type')||'';
   let data={};
   if(text){
     try{data=JSON.parse(text);}
@@ -24,7 +24,7 @@ async function api(path,method='GET',body,extraHeaders={}){
       const looksHtml=/<\s*!doctype|<\s*html/i.test(text);
       if(!response.ok||looksHtml){
         if(response.status===401&&path!=='/login')void boot();
-        throw new Error(looksHtml?'O servidor retornou uma página em vez de dados. Atualize o painel e tente novamente.':'A resposta do servidor não pôde ser interpretada.');
+        throw new Error(looksHtml?'A hospedagem retornou uma página de erro. Tente novamente em instantes.':'A resposta do servidor não pôde ser interpretada.');
       }
       data={ok:true};
     }
