@@ -1,4 +1,6 @@
 import { createTranslator } from './translation.js';
+import {createTicketWebBridge} from './ticket-web.js';
+import {createTicketWorkspace,ticketParent} from './ticket-workspace.js';
 import { SUPPORTED_LANGUAGES, normalizeLanguage, resolvePreferredLanguage } from './translation-utils.js';
 import { Client, GatewayIntentBits, Partials, Events, ChannelType, PermissionFlagsBits, ActivityType, REST, Routes, MessageFlags, GuildScheduledEventEntityType, GuildScheduledEventPrivacyLevel, ModalBuilder, TextInputBuilder, TextInputStyle, ActionRowBuilder, AuditLogEvent } from 'discord.js';
 import { randomUUID, randomBytes, createHash } from 'node:crypto';
@@ -85,7 +87,7 @@ export function youtubeChannelRef(value=''){
 
 export function createBot(store,env=process.env,{payments}={}){
   const client=new Client({intents:[GatewayIntentBits.Guilds,GatewayIntentBits.GuildMembers,GatewayIntentBits.GuildMessages,GatewayIntentBits.MessageContent,GatewayIntentBits.GuildModeration,GatewayIntentBits.GuildVoiceStates],partials:[Partials.Message,Partials.Channel]});
-  let error='',busy=false,backupBusy=false,inviteCache=new Map();
+  let error='',busy=false,backupBusy=false,inviteCache=new Map(),ticketWorkspace;
   const languageSelect=(customId,current='')=>({type:3,custom_id:customId,placeholder:'Escolha seu idioma',min_values:1,max_values:1,options:SUPPORTED_LANGUAGES.map(l=>({label:l.label,value:l.code,emoji:{name:l.emoji},...(l.code===current?{default:true}:{})}))});
   const languageLabel=code=>SUPPORTED_LANGUAGES.find(l=>l.code===normalizeLanguage(code))?.label||'Português (Brasil)';
   const languagePreference=userId=>store.one('SELECT language FROM user_preferences WHERE user_id=?',userId)||null;
@@ -533,28 +535,17 @@ ${normalized.previewAfter}
   }
   const ticketAuditKey=id=>`ticket-audit:${id}`;
   const ticketAuditRead=id=>store.get(ticketAuditKey(id),{events:[]});
-  const ticketAuditWrite=(id,data)=>store.set(ticketAuditKey(id),data);
+  const ticketAuditWrite=(id,data)=>{
+    store.transaction(()=>{
+      for(const event of data.events||[])store.run('INSERT OR IGNORE INTO ticket_events(ticket_id,fingerprint,data,created) VALUES(?,?,?,?)',id,createHash('sha256').update(JSON.stringify(event)).digest('hex'),JSON.stringify(event),event.at||store.now());
+      store.set(ticketAuditKey(id),data);
+    });
+  };
   const ticketAuditAppend=(id,event)=>{
     const data=ticketAuditRead(id),events=Array.isArray(data.events)?data.events:[];
     events.push({...event,at:event.at||store.now()});
     ticketAuditWrite(id,{...data,events:events.slice(-50)});
-  };
-  const ticketAuditFinish=id=>{const data=ticketAuditRead(id);store.run('DELETE FROM kv WHERE key=?',ticketAuditKey(id));return data;};
-  const ticketEventLine=e=>{
-    const actor=/^\d{17,20}$/.test(String(e.actor||''))?`<@${e.actor}>`:'Sistema';
-    const target=/^\d{17,20}$/.test(String(e.target||''))?`<@${e.target}>`:'';
-    if(e.action==='open')return `${actor} abriu o ticket`;
-    if(e.action==='claim')return `${actor} assumiu o atendimento de ${target}`;
-    if(e.action==='call')return `${actor} chamou ${target}${e.dmSent?' e enviou DM':''}`;
-    if(e.action==='rename')return `${actor} renomeou **${e.from}** → **${e.to}**`;
-    if(e.action==='close')return `${actor} encerrou o ticket de ${target}${e.reason?` · motivo: ${e.reason}`:''}`;
-    if(e.action==='transfer')return `${actor} transferiu o atendimento para <@${e.to}>`;
-    if(e.action==='state')return `${actor} alterou o status para **${e.state}**`;
-    if(e.action==='priority')return `${actor} alterou a prioridade para **${e.priority}**`;
-    if(e.action==='note')return `${actor} adicionou nota interna: ${String(e.note||'').slice(0,180)}`;
-    if(e.action==='tags')return `${actor} atualizou as tags: ${(e.tags||[]).join(', ')||'nenhuma'}`;
-    if(e.action==='reopen')return `${actor} reabriu o atendimento a partir do ticket anterior`;
-    return e.label||e.action||'Ação registrada';
+    if(client.isReady())void ticketWorkspace?.sync(id).catch(e=>store.log('aviso',`Informações internas ${id.slice(0,8)}: ${String(e.message).slice(0,180)}`));
   };
   const ticketRuntimeLine=t=>`📌 **Status:** ${ticketStateLabel(t?.state)} · **Prioridade:** ${ticketPriorityLabel(t?.priority)} · **Responsável:** ${t?.claimed_by?`<@${t.claimed_by}>`:'Não atribuído'}`;
   const ticketRuntimeContent=(content,t)=>{
@@ -568,17 +559,39 @@ ${normalized.previewAfter}
     if(state!=='in_progress')top.push(button('Em atendimento',`status-direct:${id}:in_progress`,2));
     top.push(button('Prioridade',`priority:${id}`,2),button('Transferir',`transfer:${id}`,2));
     const bottom=[button('Nota interna',`note:${id}`,2),button('Renomear',`rename:${id}`,2),button('Chamar cliente',`call:${id}`,2),button('Tags',`tags:${id}`,2),button('Finalizar',`close:${id}`,4)];
-    return [row(...top.slice(0,5)),row(...bottom.slice(0,5))];
+    return [row(...top.slice(0,5)),row(...bottom.slice(0,5)),row(button('Alterar tipo',`ticket-type:${id}`,2))];
   };
+  const ticketWorkspaceStaffRoles=()=>[...new Set([...staffRoleIds(store.settings()),...(store.settings().permissions?.ticketManage||[]),...(store.settings().permissions?.ticketClose||[]),...(store.settings().permissions?.ticketTransfer||[])])];
+  ticketWorkspace=createTicketWorkspace({store,getGuild:requireGuild,getChannel:async id=>{
+    const destination=await requireGuild().channels.fetch(id);
+    if(!destination)throw new AppError('Canal/categoria não encontrado no servidor.',404);
+    return destination;
+  },botId:()=>client.user.id,staffRoles:ticketWorkspaceStaffRoles,renderControls:t=>{
+    const guild=requireGuild(),m=guild.members.cache.get(t.user_id),tc=guild.channels.cache.get(t.channel_id);
+    const variables={user:`<@${t.user_id}>`,username:m?.displayName||m?.user?.globalName||m?.user?.username||t.user_id,category:t.category,ticket:tc?.name||t.id.slice(0,8),channel:`<#${t.channel_id}>`,server:guild.name};
+    const payload=styledPayload(store.settings().messageStyles.ticketStaffPanel,variables,env.DISCORD_GUILD_ID);
+    return {...payload,content:ticketRuntimeContent(payload.content,t).slice(0,2000),components:[...(payload.components||[]),...ticketControlRows(t.id,t.state,!!t.claimed_by)]};
+  }});
+  const ticketBridge=createTicketWebBridge({store,getChannel:channel,getProfile:memberProfile,botId:()=>client.user.id,onReply:(id,userId)=>{
+    ticketAuditAppend(id,{action:'web-reply',actor:userId,target:userId,at:store.now()});
+    void refreshTicketControls(id).catch(e=>store.log('aviso',`Painel do atendimento: ${String(e.message).slice(0,180)}`));
+  }});
+  async function addTicketNote(id,actor,note){
+    const t=store.one("SELECT * FROM tickets WHERE id=? AND status='open'",id);if(!t)throw new AppError('Ticket aberto não encontrado.',404);
+    const noteId=randomUUID();store.run('INSERT INTO ticket_notes(id,ticket_id,actor,note,private,created) VALUES(?,?,?,?,1,?)',noteId,id,actor,note,store.now());
+    ticketAuditAppend(id,{action:'note',actor,target:t.user_id,note});store.recordStaffAction(actor,'note',id,t.user_id);return{id:noteId};
+  }
   async function refreshTicketControls(id){
+    await ticketWorkspace.sync(id).catch(e=>store.log('aviso',`Atualização interna do ticket: ${String(e.message).slice(0,180)}`));
     const t=store.one('SELECT * FROM tickets WHERE id=?',id),messageId=store.get(`ticket-controls:${id}`);if(!t||t.status!=='open'||!messageId)return;
+    if(t.staff_channel_id)return;
     try{
-      const ch=await channel(t.channel_id),msg=await ch.messages.fetch(messageId);
+      const ch=await channel(t.staff_channel_id||t.channel_id),msg=await ch.messages.fetch(messageId);
       await msg.edit({content:ticketRuntimeContent(msg.content,t),components:ticketControlRows(id,t.state,!!t.claimed_by),allowedMentions:safe});
     }catch{}
   }
   async function openTicket(userId,category,options={}){
-    const guild=requireGuild(),settings=store.settings(),ticketSettings=settings.tickets,configuredStaffIds=staffRoleIds(settings);
+    const guild=requireGuild(),settings=store.settings(),ticketSettings=settings.tickets,configuredStaffIds=ticketWorkspaceStaffRoles();
     if(!configuredStaffIds.length)throw new AppError('Configure ao menos um cargo de Staff ou Alta Staff em Configurações antes de abrir tickets.');
     await guild.roles.fetch();
     const staffRoles=[];
@@ -598,7 +611,7 @@ ${normalized.previewAfter}
     let c;
     try{
       const staffPermissions=[PermissionFlagsBits.ViewChannel,PermissionFlagsBits.SendMessages,PermissionFlagsBits.ReadMessageHistory,PermissionFlagsBits.AttachFiles,PermissionFlagsBits.ManageMessages];
-      c=await guild.channels.create({name:ticketName,type:ChannelType.GuildText,parent:ticketSettings.categoryId||undefined,permissionOverwrites:[
+      c=await guild.channels.create({name:ticketName,type:ChannelType.GuildText,parent:ticketParent(ticketSettings,category)||undefined,permissionOverwrites:[
         {id:guild.id,deny:[PermissionFlagsBits.ViewChannel]},
         {id:userId,allow:[PermissionFlagsBits.ViewChannel,PermissionFlagsBits.SendMessages,PermissionFlagsBits.ReadMessageHistory,PermissionFlagsBits.AttachFiles]},
         {id:client.user.id,allow:[PermissionFlagsBits.ViewChannel,PermissionFlagsBits.SendMessages,PermissionFlagsBits.ReadMessageHistory,PermissionFlagsBits.ManageChannels,PermissionFlagsBits.ManageMessages]},
@@ -608,48 +621,24 @@ ${normalized.previewAfter}
       const customerVars={...(await memberVariables(userId,guild)),category,ticket:ticketName,channel:`<#${c.id}>`};
       const customerPayload=styledPayload(settings.messageStyles.ticketOpen,customerVars,env.DISCORD_GUILD_ID);
       await c.send({...customerPayload,allowedMentions:mentionPolicy(customerPayload,[userId])});
-      const staffPayload=styledPayload(settings.messageStyles.ticketStaffPanel,customerVars,env.DISCORD_GUILD_ID);
-      const initialTicket=store.one('SELECT * FROM tickets WHERE id=?',id);
-      const controlMessage=await c.send({...staffPayload,content:ticketRuntimeContent(staffPayload.content,initialTicket),components:[...(staffPayload.components||[]),...ticketControlRows(id,'waiting_staff',false)],allowedMentions:mentionPolicy(staffPayload)});
-      store.set(`ticket-controls:${id}`,controlMessage.id);
-      ticketAuditWrite(id,{events:[{action:options.reopenedFrom?'reopen':'open',actor:userId,target:userId,at:now}],ticketName,category,openedBy:userId,openedAt:now,channelId:c.id,reopenedFrom:options.reopenedFrom||''});void updateOperationsLive(true);return {...store.one('SELECT * FROM tickets WHERE id=?',id),queuePosition};
+      ticketAuditWrite(id,{events:[{action:options.reopenedFrom?'reopen':'open',actor:userId,target:userId,at:now}],ticketName,category,openedBy:userId,openedAt:now,channelId:c.id,reopenedFrom:options.reopenedFrom||''});
+      if(ticketSettings.staffInfoCategoryId){
+        await ticketWorkspace.sync(id).catch(e=>store.log('aviso',`Ticket criado; canal interno pendente: ${String(e.message).slice(0,180)}`));
+      }else{
+        const staffPayload=styledPayload(settings.messageStyles.ticketStaffPanel,customerVars,env.DISCORD_GUILD_ID);
+        const initialTicket=store.one('SELECT * FROM tickets WHERE id=?',id);
+        const controlMessage=await c.send({...staffPayload,content:ticketRuntimeContent(staffPayload.content,initialTicket),components:[...(staffPayload.components||[]),...ticketControlRows(id,'waiting_staff',false)],allowedMentions:mentionPolicy(staffPayload)});
+        store.set(`ticket-controls:${id}`,controlMessage.id);
+      }
+      void updateOperationsLive(true);return {...store.one('SELECT * FROM tickets WHERE id=?',id),queuePosition};
     }catch(e){
       if(!c)store.run('DELETE FROM tickets WHERE id=?',id);
       else store.log('erro',`Ticket ${id.slice(0,8)} criado, mas mensagem inicial falhou.`);
       throw e;
     }
   }
-  async function webTicketMessages(ticketId,userId){
-    const ticket=store.one('SELECT * FROM tickets WHERE id=? AND user_id=?',ticketId,userId);
-    if(!ticket)throw new AppError('Atendimento não encontrado.',404);
-    if(!ticket.channel_id||ticket.status!=='open')return[];
-    const c=await channel(ticket.channel_id),batch=await c.messages.fetch({limit:100});
-    return [...batch.values()].reverse()
-      .filter(message=>!message.system)
-      .map(message=>({
-        id:message.id,
-        authorId:message.author?.id||'',
-        author:message.member?.displayName||message.author?.globalName||message.author?.username||'Studio K',
-        avatar:message.author?.displayAvatarURL?.({size:64})||'',
-        customer:message.author?.id===userId,
-        bot:!!message.author?.bot,
-        content:String(message.content||'').slice(0,3000),
-        attachments:[...message.attachments.values()].map(a=>({name:a.name||'arquivo',url:a.url})).slice(0,10),
-        created:message.createdAt?.toISOString?.()||store.now()
-      }));
-  }
-  async function webTicketReply(ticketId,userId,text){
-    const ticket=store.one('SELECT * FROM tickets WHERE id=? AND user_id=?',ticketId,userId);
-    if(!ticket)throw new AppError('Atendimento não encontrado.',404);
-    if(ticket.status!=='open'||!ticket.channel_id)throw new AppError('Este atendimento não está aberto.',409);
-    const content=String(text||'').trim().slice(0,1800);if(!content)throw new AppError('Escreva uma mensagem.');
-    const c=await channel(ticket.channel_id);
-    const message=await c.send({content:`**Mensagem enviada pelo site · <@${userId}>**\n${content}`,allowedMentions:{parse:[],users:[userId],roles:[],repliedUser:false}});
-    store.run('INSERT INTO ticket_notes(id,ticket_id,actor,note,private,created) VALUES(?,?,?,?,0,?)',randomUUID(),ticketId,userId,content,store.now());
-    store.run('UPDATE tickets SET state=?,updated=? WHERE id=?','waiting_staff',store.now(),ticketId);
-    ticketAuditAppend(ticketId,{action:'web-reply',actor:userId,target:userId,note:content,at:store.now()});
-    return{id:message.id,created:message.createdAt?.toISOString?.()||store.now()};
-  }
+  async function webTicketMessages(ticketId,userId){return ticketBridge.messages(ticketId,userId);}
+  async function webTicketReply(ticketId,userId,text){return ticketBridge.reply(ticketId,userId,text);}
   async function closeTicket(id,actor,reason=''){
     const ticket=store.one('SELECT * FROM tickets WHERE id=?',id);if(!ticket)throw new AppError('Ticket não encontrado.',404);if(ticket.status==='closed')return;
     const c=await channel(ticket.channel_id),messages=[];let before;
@@ -677,11 +666,8 @@ ${normalized.previewAfter}
     }
     addNotification(store,ticket.user_id,{type:'ticket',title:'Atendimento finalizado',text:`${ticket.category} foi encerrado. O transcript está disponível na sua conta.`,href:'/account'});
         ticketAuditAppend(id,{action:'close',actor,target:ticket.user_id,dmSent,reason:String(reason||'').slice(0,500)});if(/^\d{17,20}$/.test(String(actor||'')))store.recordStaffAction(actor,'close',id,ticket.user_id,{reason:String(reason||'').slice(0,500)});
-    const ticketAudit=ticketAuditFinish(id),events=Array.isArray(ticketAudit.events)?ticketAudit.events:[],openedAt=ticketAudit.openedAt||ticket.created,closedAt=now;
+    const ticketAudit=ticketAuditRead(id),openedAt=ticketAudit.openedAt||ticket.created,closedAt=now;
     const durationMs=Math.max(0,Date.parse(closedAt)-Date.parse(openedAt)),durationMinutes=Math.floor(durationMs/60000);
-    const persistedNotes=store.all('SELECT actor,note,created FROM ticket_notes WHERE ticket_id=? ORDER BY created',id).map(n=>({action:'note',actor:n.actor,target:ticket.user_id,note:n.note,at:n.created}));
-    const seenNotes=new Set(events.filter(e=>e.action==='note').map(e=>String(e.note||'')+'|'+String(e.actor||'')));
-    const timeline=[...events,...persistedNotes.filter(n=>!seenNotes.has(String(n.note||'')+'|'+String(n.actor||'')))].sort((a,b)=>Date.parse(a.at||openedAt)-Date.parse(b.at||openedAt)).map(ticketEventLine);
     const summary=[
       `**Cliente:** <@${ticket.user_id}>`,
       `**Categoria:** ${ticket.category}`,
@@ -693,13 +679,13 @@ ${normalized.previewAfter}
       ...(reason?[`**Motivo do encerramento:** ${String(reason).slice(0,500)}`]:[]),
       `**Transcript:** ${transcriptUrl}`
     ].join('\n');
-    const timelineText=timeline.length?timeline.map((line,index)=>`${index+1}. ${line}`).join('\n'):'Nenhuma ação intermediária registrada.';
-    await audit('ticket finalizado',summary,actor,{targetId:ticket.user_id,channelId:ticket.channel_id,ticketId:id,ticketName,category:ticket.category,action:'close',transcriptUrl,dmSent,openedAt,closedAt,durationMinutes,timeline:timelineText});
+    store.log('ticket finalizado',summary,actor,{targetId:ticket.user_id,channelId:ticket.channel_id,ticketId:id,ticketName,category:ticket.category,action:'close',transcriptUrl,dmSent,openedAt,closedAt,durationMinutes});
+    const logPublished=await ticketWorkspace.close(id,{transcriptUrl,actor,closedAt});
     store.run('DELETE FROM kv WHERE key=?',`ticket-controls:${id}`);
     try{await c.delete(`Studio K: ticket encerrado por ${actor}`);}
     catch(e){store.log('erro',`Ticket ${ticketName} foi encerrado, mas o canal não pôde ser removido: ${String(e.message).slice(0,300)}`,actor);throw new AppError('O atendimento foi encerrado e o transcript salvo, mas não foi possível apagar o canal. Confira a permissão Gerenciar Canais do bot.',500);}
     void updateOperationsLive(true);
-    return {dmSent,transcriptUrl};
+    return {dmSent,transcriptUrl,logPending:!logPublished};
   }
   async function publishPanel(kind,channelId){
     const s=store.settings(),c=await channel(channelId),guild=requireGuild(),staticVars={server:guild.name,count:String(guild.memberCount)};let payload;
@@ -1064,6 +1050,7 @@ ${normalized.previewAfter}
     for(const o of store.all("SELECT id FROM orders WHERE status='pending' AND expires<=?",store.now()))store.cancelOrder(o.id);
     const s=store.settings();if(s.backups.enabled&&Date.now()-Date.parse(store.get('lastBackup','1970-01-01'))>=s.backups.intervalHours*3600000)try{await makeBackup();}catch(e){store.log('erro',`Backup: ${e.message}`);}
     if(!client.isReady())return;
+    void ticketWorkspace.maintain().catch(e=>store.log('aviso',`Rotina de tickets: ${String(e.message).slice(0,180)}`));
     try{await applyVoicePresence();}catch(e){store.log('aviso',`Presença em call: ${e.message}`);}
     await updateLivePanels();
     for(const o of store.all("SELECT * FROM orders WHERE status='paid' LIMIT 10"))await deliverOrder(o);
@@ -1174,7 +1161,7 @@ ${normalized.previewAfter}
       try{if(!await isStaff(i))throw new AppError('Somente a equipe pode adicionar notas.',403);const id=i.customId.split(':')[1];if(!store.one("SELECT id FROM tickets WHERE id=? AND status='open'",id))throw new AppError('Ticket aberto não encontrado.',404);const modal=new ModalBuilder().setCustomId(`note-submit:${id}`).setTitle('Nota interna');const input=new TextInputBuilder().setCustomId('note-text').setLabel('Nota visível apenas para a equipe').setStyle(TextInputStyle.Paragraph).setRequired(true).setMaxLength(1000);modal.addComponents(new ActionRowBuilder().addComponents(input));await i.showModal(modal);}catch(e){await localizedReply(i,{content:e.message,flags:MessageFlags.Ephemeral}).catch(()=>{});}return;
     }
     if(i.isModalSubmit()&&i.customId.startsWith('note-submit:')){
-      try{if(!await isStaff(i))throw new AppError('Somente a equipe pode adicionar notas.',403);const id=i.customId.split(':')[1],t=store.one("SELECT * FROM tickets WHERE id=? AND status='open'",id);if(!t)throw new AppError('Ticket aberto não encontrado.',404);const note=String(i.fields.getTextInputValue('note-text')||'').trim();store.run('INSERT INTO ticket_notes(id,ticket_id,actor,note,private,created) VALUES(?,?,?,?,1,?)',randomUUID(),id,i.user.id,note,store.now());ticketAuditAppend(id,{action:'note',actor:i.user.id,target:t.user_id,note});store.recordStaffAction(i.user.id,'note',id,t.user_id);await localizedReply(i,{content:'Nota interna adicionada.',flags:MessageFlags.Ephemeral});}catch(e){await localizedReply(i,{content:e.message,flags:MessageFlags.Ephemeral}).catch(()=>{});}return;
+      try{if(!await isStaff(i))throw new AppError('Somente a equipe pode adicionar notas.',403);const id=i.customId.split(':')[1],t=store.one("SELECT * FROM tickets WHERE id=? AND status='open'",id);if(!t)throw new AppError('Ticket aberto não encontrado.',404);const note=String(i.fields.getTextInputValue('note-text')||'').trim();await addTicketNote(id,i.user.id,note);await localizedReply(i,{content:'Nota interna adicionada.',flags:MessageFlags.Ephemeral});}catch(e){await localizedReply(i,{content:e.message,flags:MessageFlags.Ephemeral}).catch(()=>{});}return;
     }
     if(i.isButton()&&i.customId.startsWith('tags:')){
       try{if(!await isStaff(i))throw new AppError('Somente a equipe pode editar tags.',403);const id=i.customId.split(':')[1],t=store.one("SELECT * FROM tickets WHERE id=? AND status='open'",id);if(!t)throw new AppError('Ticket aberto não encontrado.',404);const modal=new ModalBuilder().setCustomId(`tags-submit:${id}`).setTitle('Tags do ticket');let tags=[];try{tags=JSON.parse(t.tags||'[]')}catch{}const input=new TextInputBuilder().setCustomId('tags-text').setLabel('Tags separadas por vírgula').setStyle(TextInputStyle.Short).setRequired(false).setMaxLength(300).setValue(tags.join(', ').slice(0,300));modal.addComponents(new ActionRowBuilder().addComponents(input));await i.showModal(modal);}catch(e){await localizedReply(i,{content:e.message,flags:MessageFlags.Ephemeral}).catch(()=>{});}return;
@@ -1292,6 +1279,19 @@ ${normalized.previewAfter}
         const t=store.one("SELECT * FROM tickets WHERE id=? AND status='open'",id);if(!t)throw new AppError('Ticket aberto não encontrado.',404);
         store.run('UPDATE tickets SET priority=?,updated=? WHERE id=?',priority,store.now(),id);ticketAuditAppend(id,{action:'priority',actor:i.user.id,target:t.user_id,priority});store.recordStaffAction(i.user.id,'priority',id,t.user_id,{priority});
         await localizedEdit(i,`Prioridade atualizada para **${ticketPriorityLabel(priority)}**.`);return;
+      }
+      if(action.startsWith('ticket-type:')){
+        if(!await hasStaffPermission(i,'ticketTransfer'))throw new AppError('Você não possui permissão para transferir tickets.',403);
+        const id=action.split(':')[1],t=store.one("SELECT * FROM tickets WHERE id=? AND status='open'",id);if(!t)throw new AppError('Ticket aberto não encontrado.',404);
+        await localizedEdit(i,{content:'Escolha o novo tipo. O canal será movido para a categoria configurada:',components:[row({type:3,custom_id:`ticket-type-select:${id}`,placeholder:'Tipo de atendimento',options:store.settings().tickets.categories.map(name=>({label:name,value:name,default:t.category===name}))})]});return;
+      }
+      if(action.startsWith('ticket-type-select:')){
+        if(!await hasStaffPermission(i,'ticketTransfer'))throw new AppError('Você não possui permissão para transferir tickets.',403);
+        const id=action.split(':')[1],type=String(i.values?.[0]||''),t=store.one("SELECT * FROM tickets WHERE id=? AND status='open'",id);
+        if(!t)throw new AppError('Ticket aberto não encontrado.',404);
+        if(!store.settings().tickets.categories.includes(type))throw new AppError('Este tipo não está mais configurado. Abra o seletor novamente.',400);
+        store.run('UPDATE tickets SET category=?,updated=? WHERE id=?',type,store.now(),id);ticketAuditAppend(id,{action:'type',actor:i.user.id,target:t.user_id,from:t.category,to:type});store.recordStaffAction(i.user.id,'type',id,t.user_id,{from:t.category,to:type});await refreshTicketControls(id);
+        await localizedEdit(i,`Tipo atualizado para **${type}**. O destino acompanha a configuração do painel.`);return;
       }
       if(action.startsWith('transfer:')){
         if(!await hasStaffPermission(i,'ticketTransfer'))throw new AppError('Você não possui permissão para transferir tickets.',403);
@@ -1597,7 +1597,7 @@ ${normalized.previewAfter}
     try{const guild=requireGuild();const commands=[{name:'central',description:'Abra a Central Studio K'},{name:'perfil',description:'Veja sua conta, Studio K ID, tickets e pedidos'},{name:'id',description:'Veja seu Studio K ID'},{name:'ajuda',description:'Pesquise ajuda e perguntas frequentes',options:[{name:'busca',description:'Assunto ou palavra-chave',type:3,required:false}]},{name:'loja',description:'Veja produtos e serviços disponíveis'},{name:'cupom',description:'Aplique um cupom na próxima compra',options:[{name:'codigo',description:'Código do cupom',type:3,required:true}]},{name:'pedido',description:'Consulte um pedido e recupere sua entrega',options:[{name:'id',description:'Código completo do pedido; deixe vazio para o mais recente',type:3,required:false}]},{name:'ticket',description:'Abra um atendimento privado'},{name:'verificar',description:'Aceite as regras e receba acesso'},{name:'notificacoes',description:'Escolha quais notificações deseja receber'},{name:'idioma',description:'Escolha o idioma das mensagens privadas do Studio K'},{name:'Traduzir mensagem',type:3}];await new REST({version:'10'}).setToken(env.DISCORD_TOKEN).put(Routes.applicationGuildCommands(env.DISCORD_CLIENT_ID||client.user.id,guild.id),{body:commands});const s=store.settings().brand;client.user.setPresence({status:s.status,activities:s.activity?[{name:s.activity,type:ActivityType[s.activityType]}]:[]});await refreshInviteCache(guild);for(const state of guild.voiceStates.cache.values())if(state.member&&!state.member.user.bot&&state.channelId)startVoiceForUser(state.id,store.now());try{await applyVoicePresence();}catch(e){store.log('aviso',`Presença em call: ${e.message}`);}store.log('conexão',`Conectado ao servidor ${guild.name}.`);error='';await tick();}catch(e){error=e.message;store.log('erro',e.message);}
   });
   const timer=setInterval(()=>void tick(),30000);timer.unref();
-  return {status,translationStatus:translator.status,client,channel,member,memberProfile,studioIdProfileFor,assignRole,verifyOAuthUser,sendMessage,openTicket,closeTicket,webTicketMessages,webTicketReply,publishPanel,publishConfiguredMessage,publishProduct,createGiveaway,evaluateGiveaway,updateSalesLive,updateOverviewLive,updateLivePanels,createEvent,applyBrand,applyVoicePresence,makeBackup,tick,
+  return {addTicketNote,validateTicketSettings:ticketWorkspace.validate,syncTicketWorkspaces:ticketWorkspace.maintain,createTicketDestination:ticketWorkspace.createDestination,status,translationStatus:translator.status,client,channel,member,memberProfile,studioIdProfileFor,assignRole,verifyOAuthUser,sendMessage,openTicket,closeTicket,webTicketMessages,webTicketReply,publishPanel,publishConfiguredMessage,publishProduct,createGiveaway,evaluateGiveaway,updateSalesLive,updateOverviewLive,updateLivePanels,createEvent,applyBrand,applyVoicePresence,makeBackup,tick,
     async metadata(){
       const g=requireGuild();
       await Promise.all([g.channels.fetch(),g.roles.fetch(),g.emojis.fetch(),g.members.fetch()]);

@@ -1620,13 +1620,15 @@ app.get('/api/state',(req,res)=>{
   res.json({demo,status:bot.status(),oauth:{configured:!!(process.env.DISCORD_CLIENT_ID&&process.env.DISCORD_CLIENT_SECRET),redirectUri:oauthRedirect},integrations:{youtube:{configured:!!(process.env.GOOGLE_CLIENT_ID&&process.env.GOOGLE_CLIENT_SECRET),redirectUri:googleRedirect},translation:bot.translationStatus()},settings,products,orders,summary,ops,staffMetrics,tickets,coupons:store.all('SELECT * FROM coupons ORDER BY created DESC LIMIT 200'),alerts:store.all("SELECT * FROM alerts ORDER BY created DESC LIMIT 100"),giveaways:store.all('SELECT * FROM giveaways ORDER BY created DESC LIMIT 100').map(g=>({...g,data:JSON.parse(g.data),entries:store.one('SELECT COUNT(*) AS n FROM entries WHERE giveaway_id=?',g.id).n,attempts:store.one('SELECT COUNT(*) AS n FROM giveaway_attempts WHERE giveaway_id=?',g.id).n,incomplete:store.one("SELECT COUNT(*) AS n FROM giveaway_attempts WHERE giveaway_id=? AND status='incomplete'",g.id).n})),events:store.all('SELECT * FROM events ORDER BY created DESC LIMIT 100').map(e=>({...e,data:JSON.parse(e.data)})),logs:store.all('SELECT * FROM logs ORDER BY id DESC LIMIT 200').map(l=>({...l,meta:(()=>{try{return JSON.parse(l.meta||'{}')}catch{return {}}})()})),feedbacks:store.all("SELECT id,type,source_id,user_id,status,rating,comment,meta,created,submitted_at FROM feedback_requests WHERE status='submitted' ORDER BY submitted_at DESC LIMIT 100").map(f=>({...f,meta:JSON.parse(f.meta||'{}')})),templates:store.all('SELECT * FROM templates ORDER BY name').map(t=>({...t,data:JSON.parse(t.data)})),lastBackup:store.get('lastBackup'),backups:readdirSync(join(store.dir,'backups')).filter(f=>f.endsWith('.json')).sort().reverse()});
 });
 app.get('/api/discord/metadata',async(req,res)=>res.json(await bot.metadata()));
-app.put('/api/settings',(req,res)=>{
+app.put('/api/settings',async(req,res)=>{
   const settings=settingsSchema.parse(req.body);
+  const ticketsChanged=JSON.stringify(settings.tickets)!==JSON.stringify(store.settings().tickets);
+  if(ticketsChanged&&bot.status().connected)await bot.validateTicketSettings(settings.tickets);
   store.set('settings',settings);
   store.log('configuração','Configurações atualizadas.','administrador');
   res.json({ok:true});
   if(bot.status().connected){
-    void Promise.allSettled([bot.updateLivePanels(true),bot.applyVoicePresence()]).then(results=>{
+    void Promise.allSettled([bot.updateLivePanels(true),bot.applyVoicePresence(),...(ticketsChanged?[bot.syncTicketWorkspaces()]:[])]).then(results=>{
       for(const result of results)if(result.status==='rejected')store.log('aviso',`Sincronização após salvar configurações: ${String(result.reason?.message||result.reason).slice(0,400)}`);
     });
   }
@@ -1661,7 +1663,11 @@ app.post('/api/coupons',(req,res)=>{
 app.post('/api/coupons/:code/toggle',(req,res)=>{const code=String(req.params.code||'').toUpperCase(),row=store.one('SELECT active FROM coupons WHERE code=?',code);if(!row)throw new AppError('Cupom não encontrado.',404);store.run('UPDATE coupons SET active=? WHERE code=?',row.active?0:1,code);res.json({ok:true});});
 app.delete('/api/coupons/:code',(req,res)=>{store.run('DELETE FROM coupons WHERE code=?',String(req.params.code||'').toUpperCase());res.json({ok:true});});
 app.post('/api/alerts/:id/resolve',(req,res)=>{store.run("UPDATE alerts SET status='resolved',resolved=? WHERE id=?",store.now(),req.params.id);res.json({ok:true});});
-app.post('/api/tickets/:id/note',(req,res)=>{const body=z.object({note:z.string().trim().min(2).max(1500)}).parse(req.body),t=store.one('SELECT id FROM tickets WHERE id=?',req.params.id);if(!t)throw new AppError('Ticket não encontrado.',404);const noteId=randomUUID();store.run('INSERT INTO ticket_notes(id,ticket_id,actor,note,private,created) VALUES(?,?,?,?,1,?)',noteId,t.id,'administrador',body.note,store.now());res.json({id:noteId});});
+app.post('/api/tickets/:id/note',async(req,res)=>{const body=z.object({note:z.string().trim().min(2).max(1500)}).parse(req.body);res.json(await bot.addTicketNote(req.params.id,'administrador',body.note));});
+app.post('/api/tickets/destinations',async(req,res)=>{
+  const body=z.object({name:z.string().trim().min(1).max(100),kind:z.enum(['category','log']),parentId:z.union([id,z.literal('')]).default('')}).parse(req.body);
+  res.json(await bot.createTicketDestination(body));
+});
 app.get('/api/tickets/:id/notes',(req,res)=>res.json(store.all('SELECT * FROM ticket_notes WHERE ticket_id=? ORDER BY created',req.params.id)));
 app.post('/api/embeds/publish',async(req,res)=>{
   const body=z.object({

@@ -43,6 +43,10 @@ export function openStore(directory) {
     CREATE TABLE IF NOT EXISTS logs(id INTEGER PRIMARY KEY AUTOINCREMENT,type TEXT NOT NULL,actor TEXT NOT NULL,detail TEXT NOT NULL,created TEXT NOT NULL,meta TEXT NOT NULL DEFAULT '{}');
     CREATE TABLE IF NOT EXISTS ticket_notes(id TEXT PRIMARY KEY,ticket_id TEXT NOT NULL REFERENCES tickets(id),actor TEXT NOT NULL,note TEXT NOT NULL,private INTEGER NOT NULL DEFAULT 1,created TEXT NOT NULL);
     CREATE INDEX IF NOT EXISTS ticket_notes_ticket ON ticket_notes(ticket_id,created);
+    CREATE TABLE IF NOT EXISTS ticket_web_messages(message_id TEXT PRIMARY KEY,ticket_id TEXT NOT NULL REFERENCES tickets(id),user_id TEXT NOT NULL,author_name TEXT NOT NULL,avatar_url TEXT NOT NULL,created TEXT NOT NULL);
+    CREATE INDEX IF NOT EXISTS ticket_web_messages_ticket ON ticket_web_messages(ticket_id);
+    CREATE TABLE IF NOT EXISTS ticket_events(id INTEGER PRIMARY KEY AUTOINCREMENT,ticket_id TEXT NOT NULL REFERENCES tickets(id),fingerprint TEXT NOT NULL,data TEXT NOT NULL,created TEXT NOT NULL,UNIQUE(ticket_id,fingerprint));
+    CREATE INDEX IF NOT EXISTS ticket_events_ticket ON ticket_events(ticket_id,created,id);
     CREATE TABLE IF NOT EXISTS staff_actions(id INTEGER PRIMARY KEY AUTOINCREMENT,staff_id TEXT NOT NULL,action TEXT NOT NULL,ticket_id TEXT,target_id TEXT,meta TEXT NOT NULL DEFAULT '{}',created TEXT NOT NULL);
     CREATE INDEX IF NOT EXISTS staff_actions_staff ON staff_actions(staff_id,created);
     CREATE TABLE IF NOT EXISTS member_notes(id TEXT PRIMARY KEY,user_id TEXT NOT NULL,actor TEXT NOT NULL,note TEXT NOT NULL,created TEXT NOT NULL);
@@ -91,6 +95,8 @@ export function openStore(directory) {
     ['state',"ALTER TABLE tickets ADD COLUMN state TEXT NOT NULL DEFAULT 'waiting_staff'"],
     ['closed_reason',"ALTER TABLE tickets ADD COLUMN closed_reason TEXT"],
     ['reopened_from',"ALTER TABLE tickets ADD COLUMN reopened_from TEXT"],
+    ['staff_channel_id',"ALTER TABLE tickets ADD COLUMN staff_channel_id TEXT"],
+    ['staff_message_id',"ALTER TABLE tickets ADD COLUMN staff_message_id TEXT"],
     ['tags',"ALTER TABLE tickets ADD COLUMN tags TEXT NOT NULL DEFAULT '[]'"],
     ['coupon_code',"ALTER TABLE orders ADD COLUMN coupon_code TEXT"],
     ['discount',"ALTER TABLE orders ADD COLUMN discount INTEGER NOT NULL DEFAULT 0"],
