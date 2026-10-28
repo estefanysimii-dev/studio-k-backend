@@ -1,5 +1,6 @@
 import { createTranslator } from './translation.js';
 import {createTicketWebBridge} from './ticket-web.js';
+import {buildTicketTranscript,saveTicketTranscript} from './ticket-transcript.js';
 import {createTicketWorkspace,ticketParent} from './ticket-workspace.js';
 import { SUPPORTED_LANGUAGES, normalizeLanguage, resolvePreferredLanguage } from './translation-utils.js';
 import { Client, GatewayIntentBits, Partials, Events, ChannelType, PermissionFlagsBits, ActivityType, REST, Routes, MessageFlags, GuildScheduledEventEntityType, GuildScheduledEventPrivacyLevel, ModalBuilder, TextInputBuilder, TextInputStyle, ActionRowBuilder, AuditLogEvent } from 'discord.js';
@@ -644,10 +645,13 @@ ${normalized.previewAfter}
     const c=await channel(ticket.channel_id),messages=[];let before;
     for(let page=0;page<50;page++){const batch=await c.messages.fetch({limit:100,before});if(!batch.size)break;messages.push(...batch.values());before=batch.last().id;if(batch.size<100)break;}
     const ticketName=c.name;
-    const transcript=messages.reverse().map(m=>`[${m.createdAt.toISOString()}] ${m.author?.tag||'desconhecido'} (${m.author?.id||''}): ${m.content||''}${m.attachments.size?'\n'+[...m.attachments.values()].map(a=>a.url).join('\n'):''}${m.embeds.length?'\n'+m.embeds.map(e=>[e.title,e.description].filter(Boolean).join('\n')).join('\n'):''}`).join('\n\n');
+    const transcript=await buildTicketTranscript({store,ticket,messages:messages.reverse(),botId:client.user.id,getMember:member});
     const shareToken=randomBytes(32).toString('base64url'),now=store.now();
-    store.run("UPDATE tickets SET transcript=?,status='closed',state='closed',closed_reason=?,updated=? WHERE id=?",transcript,String(reason||'').slice(0,500)||null,now,id);
-    store.set(`transcript-share:${id}`,{hash:createHash('sha256').update(shareToken).digest('hex'),created:now});
+    store.transaction(()=>{
+      store.run("UPDATE tickets SET transcript=?,status='closed',state='closed',closed_reason=?,updated=? WHERE id=?",transcript.text,String(reason||'').slice(0,500)||null,now,id);
+      saveTicketTranscript(store,id,transcript);
+      store.set(`transcript-share:${id}`,{hash:createHash('sha256').update(shareToken).digest('hex'),created:now});
+    });
     const publicBase=(env.PUBLIC_URL||'').replace(/\/$/,'');
     const transcriptUrl=`${publicBase}/api/public/tickets/${id}/transcript/${shareToken}`;
     let dmSent=false;

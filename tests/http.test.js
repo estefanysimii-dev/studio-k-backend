@@ -72,6 +72,6 @@ test('public customer transcript requires its private token and supports downloa
   store.db.close();
 
   const bad=await fetch(`${origin}/api/public/tickets/${id}/transcript/token-incorreto-xxxxxxxxxxxx`);assert.equal(bad.status,404);
-  const page=await fetch(`${origin}/api/public/tickets/${id}/transcript/${token}`);assert.equal(page.status,200);const html=await page.text();assert.match(html,/Orçamento/);assert.match(html,/Cliente: Olá/);assert.match(html,/Baixar transcript/);
+  const page=await fetch(`${origin}/api/public/tickets/${id}/transcript/${token}`);assert.equal(page.status,200);const html=await page.text();assert.match(html,/Orçamento/);assert.match(html,/Cliente: Olá/);assert.match(html,/Baixar transcript/);assert.match(html,/aria-label="Conversa do atendimento"/);assert.doesNotMatch(html,/<pre>/);assert.equal(page.headers.get('cache-control'),'no-store');
   const download=await fetch(`${origin}/api/public/tickets/${id}/transcript/${token}?download=1`);assert.equal(download.status,200);assert.match(download.headers.get('content-disposition')||'',/attachment/);assert.equal(await download.text(),'Cliente: Olá\nAtendente: Atendimento concluído.');
 });

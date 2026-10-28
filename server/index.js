@@ -9,6 +9,7 @@ import { z } from 'zod';
 import { openStore, AppError } from './store.js';
 import { installClothTool } from './clothtool.js';
 import { createBot } from './discord.js';
+import {readTicketTranscript,renderTicketTranscript} from './ticket-transcript.js';
 import { createPurinCash, installPurinCashWebhook } from './purincash.js';
 import { createPortfolioProcessRunner } from './portfolio-process.js';
 import { defaultRadio, radioSchema, normalizeRadio, radioSnapshot } from './radio.js';
@@ -264,7 +265,7 @@ app.get('/api/public/tickets/:id/transcript/:token',(req,res)=>{
     res.attachment(`ticket-${ticket.id}.txt`).type('text/plain; charset=utf-8').send(ticket.transcript);return;
   }
   const download=`/api/public/tickets/${encodeURIComponent(ticket.id)}/transcript/${encodeURIComponent(req.params.token)}?download=1`;
-  res.type('html').send(`<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Studio K · Transcript</title><style>body{margin:0;background:#0d0c13;color:#f4f1ff;font:15px/1.55 system-ui,-apple-system,Segoe UI,sans-serif}.wrap{max-width:980px;margin:0 auto;padding:32px 18px 56px}.top{display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap;margin-bottom:20px}.eyebrow{color:#F345FE;font-size:12px;font-weight:800;letter-spacing:.14em;text-transform:uppercase}h1{margin:4px 0 0;font-size:28px}.meta{color:#a9a2b8;margin:6px 0 0}.btn{display:inline-block;background:#F345FE;color:#19091b;text-decoration:none;font-weight:800;padding:11px 16px;border-radius:10px}.card{background:#17141f;border:1px solid #2d2739;border-radius:14px;padding:18px;box-shadow:0 18px 50px #0004}pre{white-space:pre-wrap;overflow-wrap:anywhere;margin:0;color:#eee8ff;font:13px/1.55 ui-monospace,SFMono-Regular,Consolas,monospace}.note{color:#8f879f;font-size:12px;margin-top:14px}</style></head><body><main class="wrap"><div class="top"><div><div class="eyebrow">Studio K · histórico de atendimento</div><h1>${htmlEscape(ticket.category)}</h1><p class="meta">Ticket ${htmlEscape(ticket.id.slice(0,8))} · encerrado em ${htmlEscape(ticket.updated)}</p></div><a class="btn" href="${download}">Baixar transcript .txt</a></div><section class="card"><pre>${htmlEscape(ticket.transcript)}</pre></section><p class="note">Este link é privado. Não compartilhe se o atendimento contiver informações pessoais.</p></main></body></html>`);
+  res.type('html').send(renderTicketTranscript(ticket,readTicketTranscript(store,ticket),download));
 });
 
 
@@ -1139,10 +1140,10 @@ app.get('/api/portfolio/me/tickets',async(req,res)=>{
 });
 app.get('/api/portfolio/me/tickets/:id/transcript',(req,res)=>{
   const web=portfolioSession(req);if(!web?.user?.id)throw new AppError('Conecte sua conta para ver o transcript.',401);
-  const ticket=store.one('SELECT id,transcript,status FROM tickets WHERE id=? AND user_id=?',req.params.id,web.user.id);
+  const ticket=store.one('SELECT id,user_id,transcript,status FROM tickets WHERE id=? AND user_id=?',req.params.id,web.user.id);
   if(!ticket)throw new AppError('Atendimento não encontrado.',404);
   if(!ticket.transcript)throw new AppError('O transcript estará disponível após o encerramento.',409);
-  res.json({id:ticket.id,transcript:ticket.transcript});
+  res.json({id:ticket.id,transcript:ticket.transcript,messages:readTicketTranscript(store,ticket)});
 });
 app.get('/api/portfolio/me/tickets/:id/messages',async(req,res)=>{
   const web=portfolioSession(req);if(!web?.user?.id)throw new AppError('Conecte sua conta para ver o atendimento.',401);
