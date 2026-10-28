@@ -22,6 +22,7 @@ function fixture(t){
     const channel={id,name,type,parentId,guild,publicView,sent,isTextBased:()=>type===ChannelType.GuildText,permissionOverwrites:{cache:new Map()},
       permissionsFor:role=>bitset(channel.publicView||role.id===STAFF||role.id===BOT?[P.ViewChannel]:[]),
       setParent:async(parent,options)=>{channel.parentId=parent;channel.lastParentOptions=options;},
+      setName:async name=>{channel.name=name;channel.renames=(channel.renames||0)+1;},
       delete:async()=>{channel.deleted=true;channels.delete(id);},
       messages:{fetch:async messageId=>{if(typeof messageId==='object')return messages;const found=messages.get(messageId);if(!found)throw Object.assign(new Error('Unknown message'),{code:10008});return found;}},
       send:async payload=>{
@@ -76,6 +77,29 @@ test('changing the internal category moves existing information channels without
   const f=fixture(t);await f.workspace.sync('ticket-1');const info=f.created[0];
   f.makeChannel('new-internal',{type:ChannelType.GuildCategory});f.cfg.tickets.staffInfoCategoryId='new-internal';
   await f.workspace.sync('ticket-1');assert.equal(info.parentId,'new-internal');assert.equal(info.lastParentOptions.lockPermissions,false);assert.equal(f.created.length,1);
+});
+
+test('renamed customer channels update their existing private info channel without losing messages or repeating renames',async t=>{
+  const f=fixture(t);await f.workspace.sync('ticket-1');const info=f.created[0],messageId=f.store.one('SELECT staff_message_id FROM tickets WHERE id=?','ticket-1').staff_message_id;
+  assert.equal(info.name,'info-suporte-1');assert.equal(info.renames,undefined);
+  f.customer.name='atendendo-kiki';await f.workspace.maintain();
+  assert.equal(info.name,'info-atendendo-kiki');assert.equal(info.renames,1);assert.equal(f.created.length,1);
+  assert.equal(f.store.one('SELECT staff_message_id FROM tickets WHERE id=?','ticket-1').staff_message_id,messageId);
+  assert.equal(info.parentId,'internal');assert.equal(info.creation.permissionOverwrites.some(o=>o.id===USER),false);
+  await f.workspace.sync('ticket-1');assert.equal(info.renames,1);
+  f.customer.name='compra-jaqueta';await f.workspace.sync('ticket-1');assert.equal(info.name,'info-compra-jaqueta');assert.equal(info.renames,2);
+});
+
+test('info names retain their prefix within the Discord channel name limit',async t=>{
+  const f=fixture(t);await f.workspace.sync('ticket-1');const info=f.created[0];
+  f.customer.name='a'.repeat(100);await f.workspace.sync('ticket-1');
+  assert.equal(info.name,'info-'+'a'.repeat(95));assert.equal(info.name.length,100);
+});
+
+test('closed tickets do not rename retained info channels or require a customer channel',async t=>{
+  const f=fixture(t);await f.workspace.sync('ticket-1');const info=f.created[0];
+  f.store.run("UPDATE tickets SET status='closed'");f.channels.delete(f.customer.id);
+  await f.workspace.sync('ticket-1');assert.equal(info.name,'info-suporte-1');assert.equal(info.renames,undefined);
 });
 
 test('the actual bot accepts category destinations and keeps private notes out of the customer transcript',async t=>{
