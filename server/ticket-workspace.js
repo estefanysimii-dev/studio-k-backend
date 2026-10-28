@@ -126,6 +126,10 @@ export function createTicketWorkspace({store,getGuild,getChannel,botId,staffRole
       ticket=store.one('SELECT * FROM tickets WHERE id=?',id);
     }
     await assertPrivateStaffChannel(channel,guild,roles,botId());
+    if(ticket.status==='open'&&ticket.channel_id){
+      const customer=await getChannel(ticket.channel_id),name=`info-${customer.name}`.slice(0,100);
+      if(channel.name!==name)await channel.setName(name,'Nome sincronizado com o canal de atendimento.');
+    }
     if(ticket.status==='open'&&settings.staffInfoCategoryId&&channel.parentId!==settings.staffInfoCategoryId){
       await assertPrivateStaffChannel(await category(settings.staffInfoCategoryId),guild,roles,botId());
       await channel.setParent(settings.staffInfoCategoryId,{lockPermissions:false,reason:'Categoria interna configurada no painel.'});
