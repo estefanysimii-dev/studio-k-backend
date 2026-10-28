@@ -4,6 +4,21 @@ import {AppError} from './store.js';
 const noMentions={parse:[],users:[],roles:[],repliedUser:false};
 const HOOK_NAME='Studio K · atendimento pelo site';
 
+export function ticketMessageOrigin(store,ticket,message,botId){
+  const saved=store.one('SELECT * FROM ticket_web_messages WHERE message_id=? AND ticket_id=?',message.id,ticket.id);
+  let origin=saved?.user_id===ticket.user_id?saved:null,content=String(message.content||'');
+  if(!origin&&message.author?.id===botId&&!message.webhookId){
+    const legacy=content.match(/^\*\*Mensagem enviada pelo site · <@!?(\d{17,20})>\*\*\r?\n/);
+    if(legacy?.[1]===ticket.user_id){
+      const body=content.slice(legacy[0].length);
+      if(store.one('SELECT id FROM ticket_notes WHERE ticket_id=? AND actor=? AND private=0 AND note=?',ticket.id,ticket.user_id,body)){
+        origin={user_id:ticket.user_id,author_name:'',avatar_url:''};content=body;
+      }
+    }
+  }
+  return{origin,content};
+}
+
 export function createTicketWebBridge({store,getChannel,getProfile,botId,onReply=async()=>{}}){
   const hookTasks=new Map();
   function ticketFor(ticketId,userId){
@@ -52,19 +67,7 @@ export function createTicketWebBridge({store,getChannel,getProfile,botId,onReply
       return profiles.get(id);
     };
     return Promise.all([...batch.values()].reverse().filter(message=>!message.system).map(async message=>{
-      const saved=store.one('SELECT * FROM ticket_web_messages WHERE message_id=? AND ticket_id=?',message.id,ticketId);
-      let origin=saved?.user_id===ticket.user_id?saved:null,content=String(message.content||'');
-      // Recognize old bridge messages only when our bot sent them and a matching
-      // public reply exists in this ticket's database. Arbitrary text cannot spoof it.
-      if(!origin&&message.author?.id===botId()&&!message.webhookId){
-        const legacy=content.match(/^\*\*Mensagem enviada pelo site · <@!?(\d{17,20})>\*\*\r?\n/);
-        if(legacy?.[1]===ticket.user_id){
-          const body=content.slice(legacy[0].length);
-          if(store.one('SELECT id FROM ticket_notes WHERE ticket_id=? AND actor=? AND private=0 AND note=?',ticketId,ticket.user_id,body)){
-            origin={user_id:ticket.user_id,author_name:'',avatar_url:''};content=body;
-          }
-        }
-      }
+      const {origin,content}=ticketMessageOrigin(store,ticket,message,botId());
       const person=origin?await profile(origin.user_id):null;
       return{
         id:message.id,authorId:origin?.user_id||message.author?.id||'',
